@@ -36,29 +36,127 @@ place() {
 # Match the actual configured path, including sshd's rewritten process title.
 running() {
   python3 - "$1" <<'PY'
-import os, pathlib, sys
-needle = sys.argv[1].encode()
+import os, pathlib, re, sys
+def linux_path(path):
+    # Linux treats even exactly two leading slashes as its single root.
+    path = os.path.normpath(path)
+    return b'/' + path.lstrip(b'/') if path.startswith(b'/') else path
+
+needle = linux_path(sys.argv[1].encode())
+def resolved_path(path):
+    try:
+        return linux_path(os.fsencode(os.path.realpath(path))) if path else None
+    except OSError:
+        # An unrelated process may retain a relative argv[0] after our
+        # working directory has disappeared; it must not abort the scan.
+        return None
+
+python_executable = resolved_path(sys.executable)
+def same_path(path):
+    return bool(path) and linux_path(path) == needle
+
+def basename(path):
+    return path.rsplit(b'/', 1)[-1]
+
+def matches(args, exe):
+    if not args: args = [b'']
+    if needle.endswith(b'/shim.py'):
+        # Only the Python script operand counts, never arguments to -c/-m,
+        # an editor, or a different script.
+        interpreter = exe if exe is not None else args[0]
+        if not (re.fullmatch(rb'(?:python(?:3(?:\.\d+)?)?|pypy3(?:\.\d+)?)', basename(interpreter))
+                or (python_executable is not None and resolved_path(interpreter) == python_executable)):
+            return False
+        i = 1
+        while i < len(args):
+            arg = args[i]
+            if arg == b'--':
+                i += 1
+                break
+            if arg == b'--check-hash-based-pycs':
+                i += 1
+                if i >= len(args) or args[i] not in (b'default', b'always', b'never'):
+                    return False
+                i += 1
+                continue
+            if not arg.startswith(b'-'):
+                break
+            j = 1
+            if len(arg) < 2:
+                return False
+            while j < len(arg):
+                option = arg[j:j + 1]
+                if option in (b'W', b'X'):
+                    if j + 1 == len(arg):
+                        i += 1
+                        if i >= len(args):
+                            return False
+                    break
+                if option not in (b'u', b'B', b'E', b'I', b's', b'S', b'O',
+                                  b'b', b'd', b'i', b'P', b'q', b'R', b'v', b'x'):
+                    return False
+                j += 1
+            i += 1
+        return i < len(args) and same_path(args[i])
+    if needle.endswith(b'/sshd_config'):
+        # OpenSSH can collapse argv into a rewritten listener title.
+        if args[0].startswith(b'sshd: '):
+            title = args[0][6:].split()
+            if b'[listener]' not in title:
+                return False
+            args = title[:title.index(b'[listener]')]
+        if not args or basename(exe if exe is not None else args[0]) != b'sshd':
+            return False
+        # Parse all options: config checks (-t/-T) are not listeners, even
+        # when combined with other flags or placed after the config path.
+        # Consume option operands, so "-o -f CONFIG" is not misread.
+        i = 1
+        config = None
+        while i < len(args):
+            arg = args[i]
+            if not arg.startswith(b'-') or len(arg) < 2:
+                return False
+            j = 1
+            while j < len(arg):
+                option = arg[j:j + 1]
+                if option in (b't', b'T'):
+                    return False
+                if option in (b'c', b'E', b'f', b'g', b'h', b'o', b'p', b'u', b'C'):
+                    value = arg[j + 1:]
+                    if not value:
+                        i += 1
+                        if i >= len(args):
+                            return False
+                        value = args[i]
+                    if option == b'f':
+                        if config is not None:
+                            return False
+                        config = value
+                    break
+                if option not in (b'D', b'd', b'e', b'i', b'q', b'4', b'6'):
+                    return False
+                j += 1
+            i += 1
+        return config is not None and same_path(config)
+    return same_path(exe) if exe is not None else same_path(args[0])
+
 for p in pathlib.Path('/proc').iterdir():
     if not p.name.isdigit() or int(p.name) == os.getpid(): continue
     try:
         if p.stat().st_uid != os.getuid(): continue
-    except (FileNotFoundError, PermissionError):
-        continue
-    # cmdline is often readable even when the sandbox denies /proc/PID/exe.
-    try:
-        args = (p/'cmdline').read_bytes().split(b'\0')
-    except (FileNotFoundError, PermissionError):
-        args = []
-    if needle in args:
-        sys.exit(0)
-    # OpenSSH rewrites argv[0] into a single process title.
-    if args and args[0].startswith(b'sshd: ') and needle in args[0].split():
-        sys.exit(0)
-    try:
-        exe = os.readlink(p/'exe').encode()
     except (FileNotFoundError, PermissionError, ProcessLookupError):
         continue
-    if needle == exe:
+    try:
+        args = (p/'cmdline').read_bytes().rstrip(b'\0').split(b'\0')
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        args = []
+    try:
+        exe = os.readlink(p/'exe').encode()
+        if exe.endswith(b' (deleted)'):
+            exe = exe[:-len(b' (deleted)')]
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        exe = None
+    if matches(args, exe):
         sys.exit(0)
 sys.exit(1)
 PY
