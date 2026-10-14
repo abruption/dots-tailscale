@@ -3,6 +3,7 @@ import contextlib
 import io
 import pathlib
 import re
+import subprocess
 import types
 import unittest
 from unittest import mock
@@ -108,6 +109,57 @@ class ProcessDetectionTests(unittest.TestCase):
         for arg in (TARGET + ".old", "echo " + TARGET, "--path=" + TARGET):
             with self.subTest(arg=arg):
                 self.assertEqual(self.detect({"42": process([arg])}), 1)
+
+    def test_data_arguments_are_not_services(self):
+        for target in (TARGET, "/workspace/.dots-tailscale/shim/shim.py",
+                       "/workspace/.dots-tailscale/sshd/sshd_config"):
+            for argv in (["vim", target], ["less", target], ["other", target],
+                         ["python3", "-c", "import time; time.sleep(4)", target],
+                         ["python3", "-m", "module", target],
+                         ["python3", "another.py", target]):
+                with self.subTest(target=target, argv=argv):
+                    self.assertEqual(self.detect({"42": process(argv)}, target), 1)
+
+    def test_python_script_operand(self):
+        target = "/workspace/.dots-tailscale/shim/shim.py"
+        for prefix in (["python3"], ["/usr/bin/python3.13", "-u", "-B"],
+                       ["python3", "-W", "ignore", "-X", "dev", "--"]):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(self.detect({"42": process(prefix + [target])}, target), 0)
+        self.assertEqual(self.detect({"42": process(["python3", target], exe="/usr/bin/vim")}, target), 1)
+
+    def test_sshd_config_operand(self):
+        target = "/workspace/.dots-tailscale/sshd/sshd_config"
+        for argv in (["/usr/sbin/sshd", "-D", "-f", target],
+                     ["sshd", "-E", "/tmp/log", "-f" + target]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.detect({"42": process(argv)}, target), 0)
+        for argv in (["sshd", target], ["sshd", "-o", "-f", target],
+                     ["sshd", "-f", target + ".old"],
+                     ["sshd: /usr/sbin/sshd -f " + target + " [session]"],
+                     ["sshd: /usr/sbin/sshd -o " + target + " [listener]"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.detect({"42": process(argv)}, target), 1)
+
+    def test_readable_executable_overrules_spoofed_argv_zero(self):
+        self.assertEqual(self.detect({"42": process([TARGET], exe="/usr/bin/less")}), 1)
+
+    def test_unreadable_and_disappearing_records(self):
+        for record in (process(uid=PermissionError()), process(uid=ProcessLookupError()),
+                       process(cmdline=ProcessLookupError(), exe=ProcessLookupError())):
+            self.assertEqual(self.detect({"2": record, "42": process([TARGET])}), 0)
+
+    def test_false_positive_only_allows_launch(self):
+        launch = re.search(r"(launch_needed\(\) \{.*?\n\})", SOURCE, re.S).group(1)
+        for target in (TARGET, "/workspace/.dots-tailscale/shim/shim.py",
+                       "/workspace/.dots-tailscale/sshd/sshd_config"):
+            with self.subTest(target=target):
+                rc = self.detect({"42": process(["less", target])}, target)
+                result = subprocess.run(
+                    ["bash", "-c", "running() { return " + str(rc) + "; }; " +
+                     launch + '; if launch_needed "$1"; then echo launched; fi', "-", target],
+                    capture_output=True, text=True, check=True)
+                self.assertEqual(result.stdout, "launched\n")
 
 
 if __name__ == "__main__":

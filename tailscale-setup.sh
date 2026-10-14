@@ -36,29 +36,75 @@ place() {
 # Match the actual configured path, including sshd's rewritten process title.
 running() {
   python3 - "$1" <<'PY'
-import os, pathlib, sys
+import os, pathlib, re, sys
 needle = sys.argv[1].encode()
+def basename(path):
+    return path.rsplit(b'/', 1)[-1]
+
+def matches(args, exe):
+    if not args: args = [b'']
+    if needle.endswith(b'/shim.py'):
+        # Only the Python script operand counts, never arguments to -c/-m,
+        # an editor, or a different script.
+        interpreter = exe if exe is not None else args[0]
+        if not re.fullmatch(rb'python(?:3(?:\.\d+)?)?', basename(interpreter)):
+            return False
+        i = 1
+        while i < len(args):
+            arg = args[i]
+            if arg == b'--':
+                i += 1
+                break
+            if arg in (b'-W', b'-X'):
+                i += 2
+            elif arg in (b'-u', b'-B', b'-E', b'-I', b'-s', b'-S', b'-O', b'-OO'):
+                i += 1
+            elif arg.startswith((b'-W', b'-X')):
+                i += 1
+            else:
+                break
+        return i < len(args) and args[i] == needle
+    if needle.endswith(b'/sshd_config'):
+        # OpenSSH can collapse argv into a rewritten listener title.
+        if args[0].startswith(b'sshd: '):
+            title = args[0][6:].split()
+            if b'[listener]' not in title:
+                return False
+            args = title[:title.index(b'[listener]')]
+        if not args or basename(exe if exe is not None else args[0]) != b'sshd':
+            return False
+        # Consume option operands, so "-o -f CONFIG" is not misread.
+        i = 1
+        while i < len(args):
+            arg = args[i]
+            if arg == b'-f':
+                return i + 1 < len(args) and args[i + 1] == needle
+            if arg.startswith(b'-f'):
+                return arg[2:] == needle
+            if arg in (b'-c', b'-E', b'-h', b'-o', b'-p', b'-u', b'-C'):
+                i += 2
+            elif arg in (b'-D', b'-d', b'-dd', b'-ddd', b'-e', b'-i', b'-q', b'-t', b'-T', b'-4', b'-6'):
+                i += 1
+            else:
+                return False
+        return False
+    return exe == needle or (exe is None and args[0] == needle)
+
 for p in pathlib.Path('/proc').iterdir():
     if not p.name.isdigit() or int(p.name) == os.getpid(): continue
     try:
         if p.stat().st_uid != os.getuid(): continue
-    except (FileNotFoundError, PermissionError):
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
         continue
-    # cmdline is often readable even when the sandbox denies /proc/PID/exe.
     try:
-        args = (p/'cmdline').read_bytes().split(b'\0')
-    except (FileNotFoundError, PermissionError):
+        args = (p/'cmdline').read_bytes().rstrip(b'\0').split(b'\0')
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
         args = []
-    if needle in args:
-        sys.exit(0)
-    # OpenSSH rewrites argv[0] into a single process title.
-    if args and args[0].startswith(b'sshd: ') and needle in args[0].split():
-        sys.exit(0)
     try:
         exe = os.readlink(p/'exe').encode()
     except (FileNotFoundError, PermissionError, ProcessLookupError):
-        continue
-    if needle == exe:
+        exe = None
+    if matches(args, exe):
         sys.exit(0)
 sys.exit(1)
 PY
