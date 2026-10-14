@@ -1,6 +1,7 @@
 """Exercise the actual embedded process detector without inspecting host /proc."""
 import contextlib
 import io
+import os
 import pathlib
 import re
 import subprocess
@@ -59,10 +60,12 @@ def process(args=(), *, uid=1000, exe=PermissionError(), cmdline=None):
 class ProcessDetectionTests(unittest.TestCase):
     def detect(self, records, needle=TARGET):
         stderr = io.StringIO()
+        real_readlink = os.readlink
         with mock.patch("pathlib.Path", side_effect=lambda p: ProcPath(p, records)), \
                 mock.patch("os.getuid", return_value=1000), \
                 mock.patch("os.getpid", return_value=999), \
-                mock.patch("os.readlink", side_effect=lambda p: p.value("exe")), \
+                mock.patch("os.readlink", side_effect=lambda p: p.value("exe")
+                           if isinstance(p, ProcPath) else real_readlink(p)), \
                 mock.patch("sys.argv", ["-", needle]), \
                 contextlib.redirect_stderr(stderr):
             with self.assertRaises(SystemExit) as result:
@@ -191,6 +194,37 @@ class ProcessDetectionTests(unittest.TestCase):
             with self.subTest(needle=needle):
                 self.assertEqual(self.detect({"42": process([needle], exe=TARGET)}, needle), 0)
                 self.assertEqual(self.detect({"42": process([needle], exe="/usr/bin/less")}, needle), 1)
+
+    def test_linux_leading_slashes_match_all_components(self):
+        shim = "/workspace/.dots-tailscale/shim/shim.py"
+        config = "/workspace/.dots-tailscale/sshd/sshd_config"
+        for target, argv, exe in ((TARGET, [TARGET], TARGET),
+                                  (shim, ["python3", shim], "/usr/bin/python3"),
+                                  (config, ["sshd", "-f", config], "/usr/sbin/sshd")):
+            for prefix in ("//", "///"):
+                needle = prefix + target.lstrip("/")
+                with self.subTest(needle=needle):
+                    self.assertEqual(self.detect({"42": process(argv, exe=exe)}, needle), 0)
+                    rewritten = [arg.replace(target, needle) for arg in argv]
+                    self.assertEqual(self.detect({"42": process(rewritten)}, target), 0)
+
+    def test_pypy_and_resolved_current_python_executables(self):
+        target = "/workspace/.dots-tailscale/shim/shim.py"
+        for executable in ("/usr/bin/pypy3", "/usr/bin/pypy3.10"):
+            with self.subTest(executable=executable):
+                self.assertEqual(self.detect({"42": process(["python3", target], exe=executable)}, target), 0)
+        with mock.patch("sys.executable", "/opt/custom/python-runtime"):
+            self.assertEqual(self.detect({"42": process(["python3", target],
+                                                      exe="/opt/custom/python-runtime")}, target), 0)
+            self.assertEqual(self.detect({"42": process(["python3", target],
+                                                      exe="/usr/bin/vim")}, target), 1)
+        real_realpath = os.path.realpath
+        with mock.patch("sys.executable", "/opt/custom/bin/python3"), \
+                mock.patch("os.path.realpath", side_effect=lambda path:
+                           "/opt/custom/runtime" if path == "/opt/custom/bin/python3"
+                           else real_realpath(path)):
+            self.assertEqual(self.detect({"42": process(["python3", target],
+                                                      exe="/opt/custom/runtime")}, target), 0)
 
     def test_false_positive_only_allows_launch(self):
         launch = re.search(r"(launch_needed\(\) \{.*?\n\})", SOURCE, re.S).group(1)

@@ -37,9 +37,15 @@ place() {
 running() {
   python3 - "$1" <<'PY'
 import os, pathlib, re, sys
-needle = os.path.normpath(sys.argv[1].encode())
+def linux_path(path):
+    # Linux treats even exactly two leading slashes as its single root.
+    path = os.path.normpath(path)
+    return b'/' + path.lstrip(b'/') if path.startswith(b'/') else path
+
+needle = linux_path(sys.argv[1].encode())
+python_executable = linux_path(os.fsencode(os.path.realpath(sys.executable)))
 def same_path(path):
-    return bool(path) and os.path.normpath(path) == needle
+    return bool(path) and linux_path(path) == needle
 
 def basename(path):
     return path.rsplit(b'/', 1)[-1]
@@ -50,7 +56,8 @@ def matches(args, exe):
         # Only the Python script operand counts, never arguments to -c/-m,
         # an editor, or a different script.
         interpreter = exe if exe is not None else args[0]
-        if not re.fullmatch(rb'python(?:3(?:\.\d+)?)?', basename(interpreter)):
+        if not (re.fullmatch(rb'(?:python(?:3(?:\.\d+)?)?|pypy3(?:\.\d+)?)', basename(interpreter))
+                or linux_path(os.fsencode(os.path.realpath(interpreter))) == python_executable):
             return False
         i = 1
         while i < len(args):
