@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 import shim
+from ws_test_helpers import valid_response
 
 TIMEOUT = 3
 
@@ -137,9 +138,10 @@ class TransportTests(unittest.TestCase):
                 worker = track_thread(target=run_bridge, daemon=True)
                 worker.start()
                 try:
-                    self.assertIn(b"Upgrade: websocket", head(server))
-                    server.sendall(response or (
-                        b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n" + first_frame))
+                    request_head = head(server)
+                    self.assertIn(b"Upgrade: websocket", request_head)
+                    reply = response(request_head) if callable(response) else response
+                    server.sendall(reply or (valid_response(request_head) + first_frame))
                     if not rejected and not fast_start:
                         self.assertIn(b"101 Switching Protocols", head(client))
                     yield client, server, threads, errors
@@ -314,6 +316,79 @@ class TransportTests(unittest.TestCase):
                     server.shutdown(socket.SHUT_WR)
                     self.assert_peer_eof(client)
                     self.assert_workers_exit(threads)
+
+    def test_invalid_handshakes_fail_before_payload_or_bridge_worker(self):
+        def remove(header):
+            def mutate(response):
+                return b"\r\n".join(line for line in response.split(b"\r\n")
+                                    if not line.lower().startswith(header.lower() + b":"))
+            return mutate
+        mutations = {
+            "missing-accept": remove(b"Sec-WebSocket-Accept"),
+            "wrong-accept": lambda r: remove(b"Sec-WebSocket-Accept")(r).replace(
+                b"\r\n\r\n", b"\r\nSec-WebSocket-Accept: wrong\r\n\r\n"),
+            "duplicate-accept": lambda r: r.replace(b"\r\n\r\n", b"\r\n" +
+                next(line for line in r.split(b"\r\n") if line.startswith(b"Sec-WebSocket-Accept:")) + b"\r\n\r\n"),
+            "missing-upgrade": remove(b"Upgrade"),
+            "wrong-upgrade": lambda r: r.replace(b"Upgrade: websocket", b"Upgrade: h2c"),
+            "missing-connection": remove(b"Connection"),
+            "substring-connection": lambda r: r.replace(b"Connection: Upgrade", b"Connection: notupgrade"),
+            "wrong-subprotocol": lambda r: remove(b"Sec-WebSocket-Protocol")(r).replace(
+                b"\r\n\r\n", b"\r\nSec-WebSocket-Protocol: unrequested\r\n\r\n"),
+            "duplicate-subprotocol": lambda r: r.replace(b"\r\n\r\n",
+                b"\r\nSec-WebSocket-Protocol: derp\r\n\r\n"),
+            "subprotocol-list": lambda r: r.replace(b"Sec-WebSocket-Protocol: derp",
+                b"Sec-WebSocket-Protocol: derp, other"),
+            "unrequested-extension": lambda r: r.replace(b"\r\n\r\n",
+                b"\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n"),
+            "malformed-header": lambda r: r.replace(b"Upgrade: websocket", b"Upgrade websocket"),
+            "folded-header": lambda r: r.replace(b"Connection: Upgrade", b"Connection:\r\n Upgrade"),
+            "invalid-status": lambda r: r.replace(b"HTTP/1.1 101", b"nonsense 101"),
+            "four-digit-status": lambda r: r.replace(b"HTTP/1.1 101", b"HTTP/1.1 1010"),
+            "http10-status": lambda r: r.replace(b"HTTP/1.1 101", b"HTTP/1.0 101"),
+        }
+        for name, mutate in mutations.items():
+            for fast_start in (False, True):
+                with self.subTest(case=name, fast_start=fast_start):
+                    def response(request):
+                        return mutate(valid_response(request)) + server_frame(2, b"must-not-release")
+                    with self.bridge(response=response, rejected=True, fast_start=fast_start,
+                                     initial_data=b"must-not-send") as (client, server, threads, _):
+                        self.assert_workers_exit(threads)
+                        self.assertEqual(len(threads), 1, "invalid handshake started frame reader")
+                        self.assert_peer_eof(client)
+                        self.assert_peer_eof(server)
+
+    def test_header_case_token_lists_and_optional_subprotocol(self):
+        for selected in (True, False):
+            for upgrade in ("DERP", "tailscale-control-protocol"):
+                with self.subTest(selected=selected, upgrade=upgrade):
+                    def response(request):
+                        reply = valid_response(request).replace(b"Upgrade: websocket", b"uPgRaDe: WebSocket")
+                        reply = reply.replace(b"Connection: Upgrade", b"connection: keep-alive\r\nCONNECTION: UpGrAdE, custom")
+                        reply = reply.replace(b"Sec-WebSocket-Accept: ", b"sEc-WeBsOcKeT-aCcEpT: \t")
+                        if not selected:
+                            reply = b"\r\n".join(line for line in reply.split(b"\r\n")
+                                                   if not line.startswith(b"Sec-WebSocket-Protocol:"))
+                        return reply + server_frame(2, b"hello")
+                    with self.bridge(response=response, upgrade=upgrade) as (client, server, _, _):
+                        self.assertEqual(exact(client, 5), b"hello")
+                        client.sendall(b"ready")
+                        self.assertEqual(client_frame(server), (2, b"ready"))
+
+    def test_known_rfc6455_accept_vector(self):
+        response = ("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                    "Connection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+        shim.validate_ws_response(response, "dGhlIHNhbXBsZSBub25jZQ==", "derp")
+        with self.assertRaisesRegex(OSError, "Sec-WebSocket-Accept"):
+            shim.validate_ws_response(response, "differentnonce", "derp")
+
+    def test_status_code_is_not_a_reason_phrase_substring(self):
+        response = b"HTTP/1.1 403 refused 101 upgrade\r\nContent-Length: 0\r\n\r\n"
+        with self.bridge(response=response, rejected=True) as (client, server, threads, _):
+            self.assertEqual(exact(client, len(response)), response)
+            self.assert_workers_exit(threads)
+            self.assert_peer_eof(server)
 
     def test_established_websocket_outlives_setup_deadline(self):
         with mock.patch.object(shim, "SETUP_TIMEOUT", 0.15):

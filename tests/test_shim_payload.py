@@ -12,6 +12,7 @@ import unittest
 from unittest import mock
 
 import shim
+from ws_test_helpers import valid_response
 
 
 class ScriptedSocket:
@@ -30,6 +31,8 @@ class ScriptedSocket:
     def recv(self, size):
         if self.chunks:
             chunk = self.chunks.popleft()
+            if callable(chunk):
+                chunk = chunk(b"".join(self.sent))
             if len(chunk) > size:
                 self.chunks.appendleft(chunk[size:])
             return chunk[:size]
@@ -86,7 +89,7 @@ class UpgradePayloadTests(unittest.TestCase):
             *chunks,
         ])
         upstream = ScriptedSocket([
-            response or b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n"
+            response or valid_response
         ], wait_at_eof=True)
         if fail_initial_send:
             sendall = upstream.sendall
