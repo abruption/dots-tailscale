@@ -86,10 +86,10 @@ def pipe(a, b, tag=""):
             try: x.shutdown(socket.SHUT_RDWR)
             except OSError: pass
 
-def read_head(sock, deadline=None):
+def read_head(sock, deadline=None, initial=b""):
     if deadline is None:
         deadline = time.monotonic() + SETUP_TIMEOUT
-    buf = b""
+    buf = initial
     while b"\r\n\r\n" not in buf:
         set_deadline(sock, deadline)
         d = sock.recv(4096)
@@ -99,6 +99,8 @@ def read_head(sock, deadline=None):
         if (end + 4 if end >= 0 else len(buf)) > MAX_HEADER_BYTES:
             raise OSError("HTTP headers too large")
     head, rest = buf.split(b"\r\n\r\n", 1)
+    if len(head) + 4 > MAX_HEADER_BYTES:
+        raise OSError("HTTP headers too large")
     return head.decode("latin1"), rest
 
 def recv_exact(sock, n, pre):
@@ -168,8 +170,9 @@ def _ws_bridge(c, u, req_head, host, initial_data=b""):
     try:
         if initial_data:
             u.sendall(ws_frame(2, initial_data))
-        worker = threading.Thread(target=up_to_client, daemon=True)
-        worker.start()
+        candidate = threading.Thread(target=up_to_client, daemon=True)
+        candidate.start()
+        worker = candidate
         while (d := c.recv(65536)):
             with wlock: u.sendall(ws_frame(2, d))
     except OSError: pass
@@ -214,14 +217,22 @@ def handle(c):
         c.settimeout(None)
         if port != "443":
             u.settimeout(None)
-        worker = threading.Thread(target=pipe, args=(c, u, ">" + host), daemon=True)
-        worker.start()
+        candidate = threading.Thread(target=pipe, args=(c, u, ">" + host), daemon=True)
+        candidate.start()
+        worker = candidate
         if port == "443":
             # Forward request-body bytes concurrently while bounding the first
             # HTTP response. Do not deadlock uploads waiting for their response.
-            response, rest = read_head(u)
-            c.settimeout(SETUP_TIMEOUT)
-            c.sendall(response.encode("latin1") + b"\r\n\r\n" + rest)
+            deadline = time.monotonic() + SETUP_TIMEOUT
+            rest = b""
+            while True:
+                response, rest = read_head(u, deadline, rest)
+                status = response.split("\r\n")[0].split()
+                interim = len(status) >= 2 and status[1].isdigit() and 100 <= int(status[1]) < 200 and status[1] != "101"
+                set_deadline(c, deadline)
+                c.sendall(response.encode("latin1") + b"\r\n\r\n" + (b"" if interim else rest))
+                if not interim:
+                    break
             c.settimeout(None)
             u.settimeout(None)
         pipe(u, c, "<" + host)
@@ -229,9 +240,11 @@ def handle(c):
         print(f"shim: {e}", file=sys.stderr, flush=True)
     finally:
         shutdown(c, u)
-        if worker is not None:
-            worker.join()
-        close(c, u)
+        try:
+            if worker is not None:
+                worker.join()
+        finally:
+            close(c, u)
 
 def main():
     with socket.socket() as listener:

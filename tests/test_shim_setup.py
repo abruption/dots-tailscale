@@ -195,7 +195,7 @@ class SetupTests(unittest.TestCase):
         class IdentityTLS:
             def wrap_socket(self, sock, **kwargs):
                 return IdentitySocket(sock)
-        for stage in ("client-header", "upstream-header", "success"):
+        for stage in ("client-header", "upstream-header", "interim-stall", "interim-coalesced", "success"):
             with self.subTest(stage=stage):
                 client, owned = self.pair()
                 server, upstream = self.pair()
@@ -208,6 +208,15 @@ class SetupTests(unittest.TestCase):
                         if stage != "client-header":
                             client.sendall(b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\n")
                             self.assertIn(b"POST /", head(server))
+                        if stage == "interim-stall":
+                            server.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
+                            self.assertIn(b"100 Continue", head(client))
+                        if stage == "interim-coalesced":
+                            server.sendall(b"HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nreply")
+                            self.assertIn(b"103 Early Hints", head(client))
+                            self.assertIn(b"200 OK", head(client))
+                            self.assertEqual(exact(client, 5), b"reply")
+                            server.shutdown(socket.SHUT_WR)
                         if stage == "success":
                             # Body was not in the initial headers' recv.
                             client.sendall(b"body")
@@ -223,6 +232,19 @@ class SetupTests(unittest.TestCase):
                         self.eof(client)
                         self.eof(server)
                         self.assertEqual(errors, [])
+
+    def test_bridge_thread_start_failure_still_closes_owned_sockets(self):
+        client, owned = self.pair()
+        server, upstream = self.pair()
+        client.sendall(b"CONNECT example.test:22 HTTP/1.1\r\n\r\n")
+        with mock.patch.object(shim, "upstream_connect", return_value=upstream), \
+                mock.patch.object(threading.Thread, "start", side_effect=RuntimeError("no threads")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            shim.handle(owned)
+        self.assertEqual(owned.fileno(), -1)
+        self.assertEqual(upstream.fileno(), -1)
+        self.eof(client)
+        self.eof(server)
 
     def test_raw_tunnel_survives_setup_deadline_then_cleans_up(self):
         client, owned = self.pair()
