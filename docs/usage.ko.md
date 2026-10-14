@@ -158,9 +158,9 @@ SSH 키 파일·호스트 별칭은 자신의 설정에 맞게 지정하세요. 
 
 ## 현재 확인한 범위
 
-![SSH에서 설치 파일·상태와 Tailscale 버전을 확인하는 실제 터미널 스크린샷](assets/dots-tailscale-ssh-verification.png)
+![Dots 데스크톱 터미널에서 설치 파일·상태와 Tailscale 버전을 확인하는 스크린샷](assets/dots-tailscale-ssh-verification.png)
 
-2026-10-14 Dots에 SSH로 접속해 캡처한 실제 터미널 화면입니다. tailnet IP·호스트명과 창 제목의 로컬 사용자명은 가렸습니다. 다음 두 명령으로 기존 설치 파일·상태와 Tailscale `1.102.4`를 확인했습니다. 새로 설치하는 과정이나 VM 교체 전후를 보여주는 화면은 아닙니다.
+관리자가 제공한 Dots 데스크톱 터미널의 스크린샷을 그대로 사용했습니다. 다음 두 명령으로 기존 설치 파일·상태와 Tailscale `1.102.4`를 확인한 화면입니다. 새로 설치하는 과정이나 VM 교체 전후를 보여주는 화면은 아닙니다.
 
 ```bash
 bash /workspace/.dots-tailscale/start.sh check

@@ -8,9 +8,9 @@ These instructions target a user-level installation in an environment that prese
 
 The initial public repository clone and raw downloads of both installation files were verified against the prepared source. [Release v0.1.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.1.0) includes ZIP and tar.gz archives plus `tailscale-setup.sh` and `shim.py` as individual assets. The Git clone example uses `main`; the direct-download example pins both files to `v0.1.0`.
 
-![Actual terminal screenshot of installation checks and Tailscale version over SSH](assets/dots-tailscale-ssh-verification.png)
+![Dots desktop terminal screenshot of installation checks and Tailscale version](assets/dots-tailscale-ssh-verification.png)
 
-This actual terminal screenshot, captured on 2026-10-14, shows `start.sh check` and Tailscale version `1.102.4` from an existing Dots installation. The tailnet IP, hostname, and local username in the window title are masked. It documents the installation's files and status and the working SSH session, rather than a new installation or a later VM replacement.
+This screenshot provided by the maintainer shows `start.sh check` and Tailscale version `1.102.4` in the Dots desktop terminal. The supplied image is used unchanged. It documents the existing installation's files, status, and CLI version, rather than a new installation or a VM replacement.
 
 ## Install and start
 
