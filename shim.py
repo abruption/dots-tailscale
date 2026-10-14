@@ -13,7 +13,7 @@ upgrades (control "tailscale-control-protocol", DERP "DERP") are re-issued
 upstream as WebSockets and bridged to the client as a raw byte stream.
 Non-443 CONNECTs are passed through untouched.
 """
-import base64, os, socket, ssl, struct, subprocess, threading, sys, urllib.parse, time
+import base64, hashlib, re, os, socket, ssl, struct, subprocess, threading, sys, urllib.parse, time
 
 UP = (os.environ.get("UPSTREAM_HOST", "browser-proxy"), int(os.environ.get("UPSTREAM_PORT", "8889")))
 LISTEN = ("127.0.0.1", int(os.environ.get("SHIM_PORT", "18089")))
@@ -120,6 +120,54 @@ def ws_frame(op, payload):
           bytes([0x80 | 126]) + struct.pack(">H", n) if n < 65536 else bytes([0x80 | 127]) + struct.pack(">Q", n))
     return hdr + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
 
+def response_status(head):
+    # Parse the status code, never search for " 101 " in arbitrary text.
+    line = head.split("\r\n", 1)[0]
+    match = re.fullmatch(r"HTTP/1\.[01] ([0-9]{3})(?: [\t\x20-\x7e\x80-\xff]*)?", line)
+    if match is None:
+        raise OSError("ws upgrade refused: malformed HTTP status")
+    return int(match.group(1))
+
+def websocket_sha1(data):
+    # SHA-1 is mandated by the WebSocket protocol, not used for security here.
+    # Python 3.8 predates the usedforsecurity keyword.
+    try:
+        return hashlib.sha1(data, usedforsecurity=False)
+    except TypeError as error:
+        message = str(error)
+        if ("usedforsecurity" not in message and "takes no keyword arguments" not in message
+                and "takes at most 1 argument (2 given)" not in message):
+            raise
+        return hashlib.sha1(data)
+
+def validate_ws_response(head, key, protocol):
+    """RFC 6455 section 4.1: validate before releasing any protocol bytes."""
+    if response_status(head) != 101 or not head.startswith("HTTP/1.1 "):
+        raise OSError("ws upgrade refused: expected HTTP/1.1 status 101")
+    headers = {}
+    for line in head.split("\r\n")[1:]:
+        name, separator, value = line.partition(":")
+        if not separator or not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
+            raise OSError("ws upgrade refused: malformed header")
+        if any(ord(char) < 32 and char != "\t" or ord(char) == 127 for char in value):
+            raise OSError("ws upgrade refused: malformed header value")
+        headers.setdefault(name.lower(), []).append(value.strip(" \t"))
+    if [value.lower() for value in headers.get("upgrade", [])] != ["websocket"]:
+        raise OSError("ws upgrade refused: invalid Upgrade")
+    connection = [token.strip(" \t").lower() for value in headers.get("connection", []) for token in value.split(",")]
+    if "upgrade" not in connection or any(
+            token and not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", token) for token in connection):
+        raise OSError("ws upgrade refused: invalid Connection")
+    accept = base64.b64encode(websocket_sha1(
+        (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()).decode("ascii")
+    if headers.get("sec-websocket-accept") != [accept]:
+        raise OSError("ws upgrade refused: invalid Sec-WebSocket-Accept")
+    if "sec-websocket-protocol" in headers and headers["sec-websocket-protocol"] != [protocol]:
+        raise OSError("ws upgrade refused: unrequested or ambiguous subprotocol")
+    # No extensions were offered; even a valid Accept cannot authorize one.
+    if "sec-websocket-extensions" in headers:
+        raise OSError("ws upgrade refused: unrequested extension")
+
 def ws_bridge(c, u, req_head, host, initial_data=b""):
     try:
         return _ws_bridge(c, u, req_head, host, initial_data)
@@ -136,15 +184,17 @@ def _ws_bridge(c, u, req_head, host, initial_data=b""):
     else:
         proto = "derp"
     extra = "".join(f"{k}: {v}\r\n" for k, v in hdrs.items() if k.startswith(("derp-", "x-tailscale")) and k != "derp-fast-start")
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
     deadline = time.monotonic() + SETUP_TIMEOUT
     set_deadline(u, deadline)
     u.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
-               f"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {base64.b64encode(os.urandom(16)).decode()}\r\n"
+               f"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {key}\r\n"
                f"Sec-WebSocket-Protocol: {proto}\r\n{extra}\r\n").encode())
     resp, rest = read_head(u, deadline)
     set_deadline(c, deadline)
-    if " 101 " not in resp.split("\r\n")[0]:
+    if response_status(resp) != 101:
         c.sendall(resp.encode("latin1") + b"\r\n\r\n" + rest); raise OSError("ws upgrade refused: " + resp.split("\r\n")[0])
+    validate_ws_response(resp, key, proto)
     if hdrs.get("derp-fast-start") != "1":
         c.sendall(f"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: {upg}\r\n\r\n".encode())
     c.settimeout(None)
