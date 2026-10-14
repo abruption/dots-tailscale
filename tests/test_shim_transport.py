@@ -4,6 +4,7 @@ import importlib.util
 import pathlib
 import socket
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -76,6 +77,9 @@ class FirstPacketRecv:
                 raise AssertionError("test packet exceeds requested read size")
             return exact(self.sock, size)
         return self.sock.recv(count)
+
+    def __getattr__(self, name):
+        return getattr(self.sock, name)
 
 
 class TransportTests(unittest.TestCase):
@@ -310,6 +314,15 @@ class TransportTests(unittest.TestCase):
                     server.shutdown(socket.SHUT_WR)
                     self.assert_peer_eof(client)
                     self.assert_workers_exit(threads)
+
+    def test_established_websocket_outlives_setup_deadline(self):
+        with mock.patch.object(shim, "SETUP_TIMEOUT", 0.15):
+            with self.bridge() as (client, server, _, _):
+                time.sleep(0.3)
+                client.sendall(b"still-alive")
+                self.assertEqual(client_frame(server), (2, b"still-alive"))
+                server.sendall(server_frame(2, b"reply"))
+                self.assertEqual(exact(client, 5), b"reply")
 
     def test_import_does_not_bind_or_create_cert_directory(self):
         spec = importlib.util.spec_from_file_location("shim_import_check", pathlib.Path(shim.__file__))
