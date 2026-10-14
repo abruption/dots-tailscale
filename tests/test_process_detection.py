@@ -142,6 +142,29 @@ class ProcessDetectionTests(unittest.TestCase):
             with self.subTest(argv=argv):
                 self.assertEqual(self.detect({"42": process(argv)}, target), 1)
 
+    def test_sshd_diagnostic_modes_are_not_listeners(self):
+        target = "/workspace/.dots-tailscale/sshd/sshd_config"
+        for flag in ("-t", "-T", "-Dt", "-deT"):
+            for argv in (["sshd", flag, "-f", target],
+                         ["sshd", "-f", target, flag],
+                         ["sshd", "-f" + target, flag]):
+                with self.subTest(argv=argv):
+                    self.assertEqual(self.detect({"42": process(argv)}, target), 1)
+
+    def test_sshd_consumes_full_option_list(self):
+        target = "/workspace/.dots-tailscale/sshd/sshd_config"
+        for argv in (["sshd", "-Df" + target, "-E", "/tmp/log"],
+                     ["sshd", "-f", target, "-o", "LogLevel=DEBUG"],
+                     ["sshd", "-f", target, "-E/tmp/-t-log"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.detect({"42": process(argv)}, target), 0)
+        for argv in (["sshd", "-f", target, "-E"],
+                     ["sshd", "-f", target, "unexpected"],
+                     ["sshd", "-Dof", target],
+                     ["sshd", "-f", target, "-f", target + ".old"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.detect({"42": process(argv)}, target), 1)
+
     def test_readable_executable_overrules_spoofed_argv_zero(self):
         self.assertEqual(self.detect({"42": process([TARGET], exe="/usr/bin/less")}), 1)
 

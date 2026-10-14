@@ -76,21 +76,37 @@ def matches(args, exe):
             args = title[:title.index(b'[listener]')]
         if not args or basename(exe if exe is not None else args[0]) != b'sshd':
             return False
+        # Parse all options: config checks (-t/-T) are not listeners, even
+        # when combined with other flags or placed after the config path.
         # Consume option operands, so "-o -f CONFIG" is not misread.
         i = 1
+        config = None
         while i < len(args):
             arg = args[i]
-            if arg == b'-f':
-                return i + 1 < len(args) and same_path(args[i + 1])
-            if arg.startswith(b'-f'):
-                return same_path(arg[2:])
-            if arg in (b'-c', b'-E', b'-h', b'-o', b'-p', b'-u', b'-C'):
-                i += 2
-            elif re.fullmatch(rb'-[DdeiqtT46]+', arg) or (arg[:2] in (b'-c', b'-E', b'-h', b'-o', b'-p', b'-u', b'-C') and len(arg) > 2):
-                i += 1
-            else:
+            if not arg.startswith(b'-') or len(arg) < 2:
                 return False
-        return False
+            j = 1
+            while j < len(arg):
+                option = arg[j:j + 1]
+                if option in (b't', b'T'):
+                    return False
+                if option in (b'c', b'E', b'f', b'h', b'o', b'p', b'u', b'C'):
+                    value = arg[j + 1:]
+                    if not value:
+                        i += 1
+                        if i >= len(args):
+                            return False
+                        value = args[i]
+                    if option == b'f':
+                        if config is not None:
+                            return False
+                        config = value
+                    break
+                if option not in (b'D', b'd', b'e', b'i', b'q', b'4', b'6'):
+                    return False
+                j += 1
+            i += 1
+        return config is not None and same_path(config)
     return same_path(exe) if exe is not None else same_path(args[0])
 
 for p in pathlib.Path('/proc').iterdir():
