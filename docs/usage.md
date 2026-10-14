@@ -64,7 +64,15 @@ Append a client public key as one complete line and set the file to mode `600`. 
 ssh-keygen -lf /workspace/.dots-tailscale/sshd/ssh_host_ed25519_key.pub
 ```
 
-For a first connection, run the following on your tailnet client. At the host-key prompt, compare the displayed fingerprint with the one you obtained independently in the Dots terminal. Accept it only if they match; this records the key in the client's `known_hosts` file.
+In the Dots terminal, obtain the node address through the installed wrapper:
+
+```bash
+bash /workspace/.dots-tailscale/start.sh check
+```
+
+This uses the installed CLI and its per-user `/tmp/dots-tailscale-$(id -u)/tailscaled.sock`; no global `tailscale` command or default socket is required. The daemon must already be running to display its address. For a custom installation, use that installation's `start.sh`.
+
+For a first connection, run the following on your tailnet client. At the host-key prompt, compare the displayed fingerprint with the one you obtained independently in the Dots terminal. If they differ, answer `no` and stop; do not enroll the key or remove an existing entry. Do not trust `ssh-keyscan` output alone. Accept it only if they match; this records the key in the client's `known_hosts` file.
 
 ```bash
 ssh -o StrictHostKeyChecking=ask -i /path/to/client_private_key 'agent@<tailscale-ip>' 'id; pwd'
@@ -156,13 +164,37 @@ Custom paths are available through `--home` and `--probe-root`. No periodic exec
 
 ## Update installed scripts
 
-There is no automatic updater. Stage and review `tailscale-setup.sh` and `shim.py` together outside `/workspace/.dots-tailscale`, using a selected commit or release rather than updating installed files in place from a moving branch. Record that version and both SHA-256 hashes. Validate the staged shell syntax and parse the staged Python source before changing the installation:
+There is no automatic updater. Stage and review `tailscale-setup.sh` and `shim.py` together outside `/workspace/.dots-tailscale`, using a selected commit or release rather than updating installed files in place from a moving branch. Record that version and both SHA-256 hashes. Validate the staged shell syntax and parse the staged Python source before changing the installation.
 
+Use a separate staging checkout at `/workspace/dots-tailscale` (adjust the path if needed). Replace `<REVIEWED_COMMIT>` with the full 40-character SHA you reviewed. This same block works from a branch or detached HEAD, including repeated updates. It refuses tracked, staged, and untracked changes without discarding them. Fetch, revision, checkout, or validation failures stop the subshell; continue with deployment only if the entire block succeeds. It changes only the staging checkout, not installed files or authentication state. Proxy settings apply only to fetch; keep certificate verification enabled.
+
+<!-- update-staging:start -->
 ```bash
-bash -n /path/to/staged/tailscale-setup.sh
-python3 -c 'import ast, pathlib; ast.parse(pathlib.Path("/path/to/staged/shim.py").read_text())'
-sha256sum /path/to/staged/tailscale-setup.sh /path/to/staged/shim.py
+(
+  set -euo pipefail
+  cd /workspace/dots-tailscale
+  REVIEWED_COMMIT='<REVIEWED_COMMIT>'
+  [[ "$REVIEWED_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || {
+    printf 'Stop: specify the full reviewed commit SHA.\n' >&2
+    exit 1
+  }
+  status=$(git status --porcelain --untracked-files=all)
+  [[ -z "$status" ]] || {
+    printf 'Stop: preserve and review local changes before updating.\n%s\n' "$status" >&2
+    exit 1
+  }
+  HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
+    git fetch --tags origin
+  target=$(git rev-parse --verify "${REVIEWED_COMMIT}^{commit}")
+  git switch --detach "$target"
+  [[ "$(git rev-parse HEAD)" = "$target" ]]
+  bash -n tailscale-setup.sh
+  python3 -c 'from pathlib import Path; compile(Path("shim.py").read_text(), "shim.py", "exec")'
+  git rev-parse HEAD
+  sha256sum tailscale-setup.sh shim.py
+)
 ```
+<!-- update-staging:end -->
 
 Use this deployment sequence when the shim changes:
 
@@ -179,3 +211,7 @@ A successful controlled restart verifies process recovery for that environment, 
 ## Protect generated files
 
 Keep Tailscale state, host and client private keys, shim CA private keys, auth-key files, generated backups, and runtime logs out of Git. Do not copy one Tailscale node's state into multiple simultaneously running VMs. `/workspace` is not automatically a private location; only use a directory whose access you control.
+
+## Offline regression checks
+
+Run `python3 -m unittest discover -s tests -v` and `bash -n tailscale-setup.sh` from the repository checkout. The onboarding tests require Git, Bash, Python 3, and OpenSSH client/server tools. They use disposable repositories, keys, `known_hosts`, a mocked Tailscale CLI, and an isolated Unix socket. SSH runs over local stdio without a listener; these tests do not authenticate to a tailnet, exercise the live proxy, or validate VM replacement.

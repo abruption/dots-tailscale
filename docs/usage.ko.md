@@ -34,7 +34,15 @@ Dots의 GUI 터미널에서 다음 명령으로 지문을 확인합니다.
 ssh-keygen -lf /workspace/.dots-tailscale/sshd/ssh_host_ed25519_key.pub
 ```
 
-접속할 장비에서 `<TAILNET_IP>`를 실제 Dots 주소로 바꾸고 실행합니다. 실행 중인 `start.sh check` 출력에서 주소를 확인할 수 있습니다. 최초 접속 시 표시되는 지문을 위 결과와 대조한 뒤 일치할 때만 승인하세요.
+Dots 터미널에서 설치된 래퍼로 노드 주소를 확인합니다.
+
+```bash
+bash /workspace/.dots-tailscale/start.sh check
+```
+
+설치된 CLI와 사용자별 `/tmp/dots-tailscale-$(id -u)/tailscaled.sock`을 사용하므로 전역 `tailscale` 명령이나 기본 socket이 필요하지 않습니다. 주소가 표시되려면 데몬이 이미 실행 중이어야 합니다. 설치 경로를 변경했다면 해당 설치의 `start.sh`를 사용하세요.
+
+접속할 장비에서 `<TAILNET_IP>`를 실제 Dots 주소로 바꾸고 실행합니다. 최초 접속 시 표시되는 지문을 위 결과와 대조한 뒤 일치할 때만 승인하세요. 다르면 `no`로 거부하고 중단하며 키를 등록하거나 기존 항목을 삭제하지 마세요. `ssh-keyscan` 결과만으로 신뢰하지 마세요.
 
 ```bash
 ssh -o StrictHostKeyChecking=ask -i /path/to/client_private_key 'agent@<TAILNET_IP>' 'id; pwd'
@@ -84,19 +92,35 @@ bash /workspace/.dots-tailscale/start.sh check
 shim 수정이 포함된 업데이트는 **setup.sh만 교체해서 완료되지 않습니다.** 다음 절차는 운영자가 별도로 수행할 배치·복구 절차이며 현재 자동 updater로 구현돼 있지 않습니다. 2026-10-14 shim 수정본의 실환경 배포 후 DERP ping과 엄격한 호스트 키 검증을 유지한 SSH 연결은 성공했습니다. 수정본 상태에서 이후 VM 교체를 거친 복구는 아직 관찰하지 않았습니다. 자세한 범위는 아래 [현재 확인한 범위](#current-validation)를 참고하세요.
 
 1. Tailscale과 독립적인 플랫폼 GUI 터미널을 확보합니다. 일시·시간대·소스 리비전·설치 setup/shim 해시·OS·Tailscale/클라이언트 버전·프록시 전제·공개 SSH 호스트 키 지문·probe 결과를 VM 밖 비공개 위치에 기록합니다.
-2. 설치 디렉터리 밖의 별도 staging 체크아웃에서 검토할 커밋을 준비합니다. `<REVIEWED_COMMIT>`을 실제 검토한 커밋으로 바꾸고, 이동 후 리비전과 두 파일 해시를 다시 기록합니다. `git status --short` 출력이 없는 깨끗한 소스를 사용합니다. 다음 명령으로 파일을 가져온 뒤 셸 구문과 shim 구문을 확인할 수 있습니다.
+2. 설치 디렉터리 밖의 별도 staging 체크아웃에서 검토할 커밋을 준비합니다. 이동 후 리비전과 두 파일 해시를 다시 기록합니다. 아래 블록에서 `<REVIEWED_COMMIT>`은 검토한 전체 40자리 SHA로 바꾸세요. 브랜치와 detached HEAD 모두에서 반복 실행할 수 있습니다. 추적·스테이징·미추적 변경이 있으면 그대로 보존하고 중단합니다. fetch·리비전 확인·checkout·구문 검사 중 실패하면 서브셸이 중단되므로 블록 전체가 성공한 경우에만 배포를 계속하세요. 설치 파일이나 인증 state는 변경하지 않습니다. 필요하면 staging 경로를 바꾸세요. 프록시는 fetch에만 적용하며 인증서 검증은 유지합니다.
 
+<!-- update-staging:start -->
 ```bash
-cd /workspace/dots-tailscale
-HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git fetch --tags origin
-git switch --detach '<REVIEWED_COMMIT>'
-git rev-parse HEAD
-git status --short
-bash -n tailscale-setup.sh
-python3 -c 'from pathlib import Path; compile(Path("shim.py").read_text(), "shim.py", "exec")'
-sha256sum tailscale-setup.sh shim.py
+(
+  set -euo pipefail
+  cd /workspace/dots-tailscale
+  REVIEWED_COMMIT='<REVIEWED_COMMIT>'
+  [[ "$REVIEWED_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || {
+    printf 'Stop: specify the full reviewed commit SHA.\n' >&2
+    exit 1
+  }
+  status=$(git status --porcelain --untracked-files=all)
+  [[ -z "$status" ]] || {
+    printf 'Stop: preserve and review local changes before updating.\n%s\n' "$status" >&2
+    exit 1
+  }
+  HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
+    git fetch --tags origin
+  target=$(git rev-parse --verify "${REVIEWED_COMMIT}^{commit}")
+  git switch --detach "$target"
+  [[ "$(git rev-parse HEAD)" = "$target" ]]
+  bash -n tailscale-setup.sh
+  python3 -c 'from pathlib import Path; compile(Path("shim.py").read_text(), "shim.py", "exec")'
+  git rev-parse HEAD
+  sha256sum tailscale-setup.sh shim.py
+)
 ```
+<!-- update-staging:end -->
 
 3. 기존 **setup/shim 코드 파일만** 별도 보관합니다. state·CA·SSH 개인키는 복제하거나 삭제하지 않습니다.
 4. GUI 터미널에서 실행 파일/명령행이 설치된 `shim/shim.py`와 일치하는 정확한 listener PID를 확인해 해당 프로세스만 종료합니다. 광범위한 `pkill python` 등은 사용하지 않습니다. 중복 shim이 없음을 확인한 뒤 `setup.sh`와 `shim/shim.py`에 검토한 파일을 모드 `700`으로 배치합니다. 이때 Tailscale 연결이 잠시 끊길 수 있습니다.
@@ -174,7 +198,7 @@ bash /workspace/.dots-tailscale/start.sh check
 
 ## 검증과 문제 해결
 
-셸 검사와 오프라인 회귀 테스트는 저장소의 `tests/`에서 실행합니다. 테스트는 실제 인증이나 외부 연결을 수행하지 않습니다.
+저장소 체크아웃에서 `python3 -m unittest discover -s tests -v`와 `bash -n tailscale-setup.sh`를 실행합니다. 최초 접속 회귀 테스트에는 Git·Bash·Python 3·OpenSSH 클라이언트/서버 도구가 필요합니다. 임시 저장소·키·`known_hosts`, 모의 Tailscale CLI와 격리된 Unix socket을 사용합니다. SSH는 listener 없이 로컬 표준 입출력으로 실행하며 tailnet 인증·실제 프록시 연결·VM 교체는 검증하지 않습니다.
 
 - 이전 버전의 `cannot inspect process` 또는 현재의 `process inspection failed`: 현재 스크립트는 일부 `/proc` 접근 거부를 건너뜁니다. 기존 설치의 `setup.sh`는 위 [업데이트 절차](#restart-update)에 따라 검토한 코드로 갱신하세요.
 - `Permission denied (publickey)`: `sshd/authorized_keys`의 공개키 지문을 확인하고 접속 장비의 공개키를 등록하세요. `running` 메시지는 공개키 인증 성공까지 확인하지 않습니다.
