@@ -1,6 +1,6 @@
 <h1 align="center">dots-tailscale</h1>
 
-<p align="center">English · <a href="README.ko.md">한국어</a></p>
+<p align="center"><a href="README.md">English</a> · 한국어</p>
 
 Dots 클라우드 컴퓨터에서 사용자 권한으로 Tailscale과 OpenSSH를 실행합니다. 설치 파일·장치 state·SSH identity는 `/workspace`, 실행 socket·PID·로그는 `/tmp`에 둡니다.
 
