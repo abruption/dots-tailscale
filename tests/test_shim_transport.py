@@ -332,6 +332,10 @@ class TransportTests(unittest.TestCase):
             "missing-upgrade": remove(b"Upgrade"),
             "wrong-upgrade": lambda r: r.replace(b"Upgrade: websocket", b"Upgrade: h2c"),
             "missing-connection": remove(b"Connection"),
+            "non-ascii-whitespace": lambda r: r.replace(b"Connection: Upgrade", b"Connection: \xa0Upgrade"),
+            "invalid-connection-token": lambda r: r.replace(b"Connection: Upgrade", b"Connection: Upgrade, bad token"),
+            "nul-in-reason": lambda r: r.replace(b"Switching Protocols", b"Switching\x00Protocols"),
+            "del-in-reason": lambda r: r.replace(b"Switching Protocols", b"Switching\x7fProtocols"),
             "substring-connection": lambda r: r.replace(b"Connection: Upgrade", b"Connection: notupgrade"),
             "wrong-subprotocol": lambda r: remove(b"Sec-WebSocket-Protocol")(r).replace(
                 b"\r\n\r\n", b"\r\nSec-WebSocket-Protocol: unrequested\r\n\r\n"),

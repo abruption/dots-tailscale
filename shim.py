@@ -123,7 +123,7 @@ def ws_frame(op, payload):
 def response_status(head):
     # Parse the status code, never search for " 101 " in arbitrary text.
     line = head.split("\r\n", 1)[0]
-    match = re.fullmatch(r"HTTP/1\.[01] ([0-9]{3})(?: [^\r\n]*)?", line)
+    match = re.fullmatch(r"HTTP/1\.[01] ([0-9]{3})(?: [\t\x20-\x7e\x80-\xff]*)?", line)
     if match is None:
         raise OSError("ws upgrade refused: malformed HTTP status")
     return int(match.group(1))
@@ -142,8 +142,9 @@ def validate_ws_response(head, key, protocol):
         headers.setdefault(name.lower(), []).append(value.strip(" \t"))
     if [value.lower() for value in headers.get("upgrade", [])] != ["websocket"]:
         raise OSError("ws upgrade refused: invalid Upgrade")
-    connection = [token.strip().lower() for value in headers.get("connection", []) for token in value.split(",")]
-    if "upgrade" not in connection:
+    connection = [token.strip(" \t").lower() for value in headers.get("connection", []) for token in value.split(",")]
+    if "upgrade" not in connection or any(
+            token and not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", token) for token in connection):
         raise OSError("ws upgrade refused: invalid Connection")
     accept = base64.b64encode(hashlib.sha1(
         (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii"),
