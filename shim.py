@@ -123,15 +123,15 @@ def ws_frame(op, payload):
 def response_status(head):
     # Parse the status code, never search for " 101 " in arbitrary text.
     line = head.split("\r\n", 1)[0]
-    match = re.fullmatch(r"HTTP/1\.1 ([0-9]{3})(?: [^\r\n]*)?", line)
+    match = re.fullmatch(r"HTTP/1\.[01] ([0-9]{3})(?: [^\r\n]*)?", line)
     if match is None:
         raise OSError("ws upgrade refused: malformed HTTP status")
     return int(match.group(1))
 
 def validate_ws_response(head, key, protocol):
     """RFC 6455 section 4.1: validate before releasing any protocol bytes."""
-    if response_status(head) != 101:
-        raise OSError("ws upgrade refused: expected status 101")
+    if response_status(head) != 101 or not head.startswith("HTTP/1.1 "):
+        raise OSError("ws upgrade refused: expected HTTP/1.1 status 101")
     headers = {}
     for line in head.split("\r\n")[1:]:
         name, separator, value = line.partition(":")

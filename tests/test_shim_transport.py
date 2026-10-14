@@ -390,6 +390,16 @@ class TransportTests(unittest.TestCase):
             self.assert_workers_exit(threads)
             self.assert_peer_eof(server)
 
+    def test_http10_error_response_is_forwarded_before_cleanup(self):
+        for status in (b"403 Forbidden", b"407 Proxy Authentication Required", b"502 Bad Gateway"):
+            with self.subTest(status=status):
+                response = b"HTTP/1.0 " + status + b"\r\nContent-Length: 6\r\n\r\ndenied"
+                with self.bridge(response=response, rejected=True, initial_data=b"private") as (client, server, threads, _):
+                    self.assertEqual(exact(client, len(response)), response)
+                    self.assert_workers_exit(threads)
+                    self.assert_peer_eof(client)
+                    self.assert_peer_eof(server)
+
     def test_established_websocket_outlives_setup_deadline(self):
         with mock.patch.object(shim, "SETUP_TIMEOUT", 0.15):
             with self.bridge() as (client, server, _, _):
