@@ -120,7 +120,9 @@ for p in pathlib.Path('/proc').iterdir():
     except (FileNotFoundError, PermissionError, ProcessLookupError):
         args = []
     try:
-        exe = os.readlink(p/'exe').encode().removesuffix(b' (deleted)')
+        exe = os.readlink(p/'exe').encode()
+        if exe.endswith(b' (deleted)'):
+            exe = exe[:-len(b' (deleted)')]
     except (FileNotFoundError, PermissionError, ProcessLookupError):
         exe = None
     if matches(args, exe):
