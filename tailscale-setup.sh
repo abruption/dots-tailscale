@@ -37,7 +37,10 @@ place() {
 running() {
   python3 - "$1" <<'PY'
 import os, pathlib, re, sys
-needle = sys.argv[1].encode()
+needle = os.path.normpath(sys.argv[1].encode())
+def same_path(path):
+    return bool(path) and os.path.normpath(path) == needle
+
 def basename(path):
     return path.rsplit(b'/', 1)[-1]
 
@@ -57,13 +60,13 @@ def matches(args, exe):
                 break
             if arg in (b'-W', b'-X'):
                 i += 2
-            elif arg in (b'-u', b'-B', b'-E', b'-I', b'-s', b'-S', b'-O', b'-OO'):
+            elif re.fullmatch(rb'-[uBEIsSO]+', arg):
                 i += 1
             elif arg.startswith((b'-W', b'-X')):
                 i += 1
             else:
                 break
-        return i < len(args) and args[i] == needle
+        return i < len(args) and same_path(args[i])
     if needle.endswith(b'/sshd_config'):
         # OpenSSH can collapse argv into a rewritten listener title.
         if args[0].startswith(b'sshd: '):
@@ -78,17 +81,17 @@ def matches(args, exe):
         while i < len(args):
             arg = args[i]
             if arg == b'-f':
-                return i + 1 < len(args) and args[i + 1] == needle
+                return i + 1 < len(args) and same_path(args[i + 1])
             if arg.startswith(b'-f'):
-                return arg[2:] == needle
+                return same_path(arg[2:])
             if arg in (b'-c', b'-E', b'-h', b'-o', b'-p', b'-u', b'-C'):
                 i += 2
-            elif arg in (b'-D', b'-d', b'-dd', b'-ddd', b'-e', b'-i', b'-q', b'-t', b'-T', b'-4', b'-6'):
+            elif re.fullmatch(rb'-[DdeiqtT46]+', arg) or (arg[:2] in (b'-c', b'-E', b'-h', b'-o', b'-p', b'-u', b'-C') and len(arg) > 2):
                 i += 1
             else:
                 return False
         return False
-    return exe == needle or (exe is None and args[0] == needle)
+    return same_path(exe) if exe is not None else same_path(args[0])
 
 for p in pathlib.Path('/proc').iterdir():
     if not p.name.isdigit() or int(p.name) == os.getpid(): continue
@@ -101,7 +104,7 @@ for p in pathlib.Path('/proc').iterdir():
     except (FileNotFoundError, PermissionError, ProcessLookupError):
         args = []
     try:
-        exe = os.readlink(p/'exe').encode()
+        exe = os.readlink(p/'exe').encode().removesuffix(b' (deleted)')
     except (FileNotFoundError, PermissionError, ProcessLookupError):
         exe = None
     if matches(args, exe):

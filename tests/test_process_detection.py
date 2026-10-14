@@ -122,7 +122,7 @@ class ProcessDetectionTests(unittest.TestCase):
 
     def test_python_script_operand(self):
         target = "/workspace/.dots-tailscale/shim/shim.py"
-        for prefix in (["python3"], ["/usr/bin/python3.13", "-u", "-B"],
+        for prefix in (["python3"], ["python3", "-uB"], ["/usr/bin/python3.13", "-u", "-B"],
                        ["python3", "-W", "ignore", "-X", "dev", "--"]):
             with self.subTest(prefix=prefix):
                 self.assertEqual(self.detect({"42": process(prefix + [target])}, target), 0)
@@ -131,7 +131,8 @@ class ProcessDetectionTests(unittest.TestCase):
     def test_sshd_config_operand(self):
         target = "/workspace/.dots-tailscale/sshd/sshd_config"
         for argv in (["/usr/sbin/sshd", "-D", "-f", target],
-                     ["sshd", "-E", "/tmp/log", "-f" + target]):
+                     ["sshd", "-E", "/tmp/log", "-f" + target],
+                     ["sshd", "-E/tmp/log", "-f", target]):
             with self.subTest(argv=argv):
                 self.assertEqual(self.detect({"42": process(argv)}, target), 0)
         for argv in (["sshd", target], ["sshd", "-o", "-f", target],
@@ -148,6 +149,25 @@ class ProcessDetectionTests(unittest.TestCase):
         for record in (process(uid=PermissionError()), process(uid=ProcessLookupError()),
                        process(cmdline=ProcessLookupError(), exe=ProcessLookupError())):
             self.assertEqual(self.detect({"2": record, "42": process([TARGET])}), 0)
+
+    def test_deleted_executable_keeps_running_process_identifiable(self):
+        shim = "/workspace/.dots-tailscale/shim/shim.py"
+        config = "/workspace/.dots-tailscale/sshd/sshd_config"
+        for target, argv, exe in (
+                (TARGET, [TARGET], TARGET),
+                (shim, ["python3", shim], "/usr/bin/python3.13"),
+                (config, ["sshd", "-f", config], "/usr/sbin/sshd"),
+                (config, ["sshd: /usr/sbin/sshd -f " + config + " [listener]"], "/usr/sbin/sshd")):
+            with self.subTest(target=target, argv=argv):
+                self.assertEqual(self.detect({"42": process(argv, exe=exe + " (deleted)")}, target), 0)
+
+    def test_equivalent_paths_match_readable_executable(self):
+        for needle in ("/workspace/.dots-tailscale//tailscaled",
+                       "/workspace/./.dots-tailscale/tailscaled",
+                       "/workspace/other/../.dots-tailscale/tailscaled"):
+            with self.subTest(needle=needle):
+                self.assertEqual(self.detect({"42": process([needle], exe=TARGET)}, needle), 0)
+                self.assertEqual(self.detect({"42": process([needle], exe="/usr/bin/less")}, needle), 1)
 
     def test_false_positive_only_allows_launch(self):
         launch = re.search(r"(launch_needed\(\) \{.*?\n\})", SOURCE, re.S).group(1)
