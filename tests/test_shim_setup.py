@@ -145,7 +145,7 @@ class SetupTests(unittest.TestCase):
                     self.eof(client)
                     self.eof(server)
                     self.assertEqual(len(errors), 1)
-                    self.assertIsInstance(errors[0], TimeoutError)
+                    self.assertIsInstance(errors[0], (TimeoutError, socket.timeout))
 
     def test_slow_trickle_cannot_extend_absolute_header_deadline(self):
         client, owned = self.pair()
@@ -161,7 +161,7 @@ class SetupTests(unittest.TestCase):
         try:
             started = time.monotonic()
             with mock.patch.object(shim, "SETUP_TIMEOUT", BUDGET):
-                with self.assertRaises(TimeoutError):
+                with self.assertRaises((TimeoutError, socket.timeout)):
                     shim.read_head(owned)
             self.assertLess(time.monotonic() - started, 1)
         finally:

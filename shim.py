@@ -134,7 +134,9 @@ def websocket_sha1(data):
     try:
         return hashlib.sha1(data, usedforsecurity=False)
     except TypeError as error:
-        if "usedforsecurity" not in str(error) and "takes no keyword arguments" not in str(error):
+        message = str(error)
+        if ("usedforsecurity" not in message and "takes no keyword arguments" not in message
+                and "takes at most 1 argument (2 given)" not in message):
             raise
         return hashlib.sha1(data)
 

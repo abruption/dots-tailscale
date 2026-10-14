@@ -393,19 +393,22 @@ class TransportTests(unittest.TestCase):
                    "\r\nSec-WebSocket-Protocol: derp\r\n\r\n").encode("ascii")
         material = (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")
         digest = shim.websocket_sha1(material)
-        for legacy in (False, True):
-            with self.subTest(legacy=legacy):
+        for legacy_error in (None,
+                "'usedforsecurity' is an invalid keyword argument for openssl_sha1()",
+                "openssl_sha1() takes at most 1 argument (2 given)",
+                "sha1() takes no keyword arguments"):
+            with self.subTest(legacy_error=legacy_error):
                 calls = []
                 def sha1(data, **kwargs):
                     self.assertEqual(data, material)
                     calls.append(kwargs)
-                    if legacy and kwargs:
-                        raise TypeError("'usedforsecurity' is an invalid keyword argument for openssl_sha1()")
+                    if legacy_error and kwargs:
+                        raise TypeError(legacy_error)
                     return digest.copy()
                 with mock.patch.object(shim.hashlib, "sha1", side_effect=sha1):
                     response = valid_response(request).decode("ascii").split("\r\n\r\n", 1)[0]
                     shim.validate_ws_response(response, key, "derp")
-                expected = [{"usedforsecurity": False}, {}] if legacy else [{"usedforsecurity": False}]
+                expected = [{"usedforsecurity": False}, {}] if legacy_error else [{"usedforsecurity": False}]
                 self.assertEqual(calls, expected * 2)
 
     def test_websocket_sha1_does_not_retry_unrelated_typeerror(self):
