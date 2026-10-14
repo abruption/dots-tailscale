@@ -8,9 +8,9 @@ Dots 클라우드 컴퓨터에서 사용자 권한으로 Tailscale과 OpenSSH를
 
 ## 데모
 
-![SSH에서 설치 파일을 점검하고 Tailscale 버전 1.102.4를 확인하는 출력](docs/assets/dots-tailscale-ssh-demo.gif)
+![SSH로 설치 상태와 Tailscale 버전 1.102.4를 확인하는 실제 터미널 스크린샷](docs/assets/dots-tailscale-ssh-verification.png)
 
-2026-10-14에 Dots 클라우드 컴퓨터에서 SSH로 확인한 실제 출력을 약 15초의 애니메이션으로 다시 렌더링했습니다. 화면 녹화는 아니며, tailnet IP와 호스트명은 가렸습니다. 기존 설치 파일과 Tailscale 1.102.4 버전을 확인하는 장면으로, 새로 설치하는 과정은 포함하지 않습니다.
+2026-10-14에 Dots 클라우드 컴퓨터에 SSH로 접속해 캡처한 실제 터미널 스크린샷입니다. tailnet IP와 호스트명, 창 제목의 로컬 사용자명은 가렸습니다. 기존 설치 파일과 상태, Tailscale 1.102.4 버전을 확인하는 장면이며, 새로 설치하는 과정은 포함하지 않습니다.
 
 ```bash
 bash /workspace/.dots-tailscale/start.sh check
