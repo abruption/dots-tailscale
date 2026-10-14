@@ -86,12 +86,15 @@ def pipe(a, b, tag=""):
             try: x.shutdown(socket.SHUT_RDWR)
             except OSError: pass
 
-def read_head(sock, deadline=None, initial=b""):
+def read_head(sock, deadline=None, initial=b"", configure_timeout=True):
     if deadline is None:
         deadline = time.monotonic() + SETUP_TIMEOUT
     buf = initial
     while b"\r\n\r\n" not in buf:
-        set_deadline(sock, deadline)
+        if configure_timeout:
+            set_deadline(sock, deadline)
+        elif time.monotonic() >= deadline:
+            raise TimeoutError("connection setup deadline exceeded")
         d = sock.recv(4096)
         if not d: raise OSError("closed before headers")
         buf += d
@@ -212,11 +215,12 @@ def handle(c):
         elif initial:
             u.settimeout(SETUP_TIMEOUT)
             u.sendall(initial)
-        # The request-body reader blocks until shutdown. Changing a socket's
-        # timeout cannot cancel a recv deadline that is already in progress.
+        # Never change shared socket timeouts underneath the upload worker.
+        # An in-flight recv/sendall retains its original timeout even if the
+        # timeout is later cleared. The HTTP response stage uses shutdown on a
+        # scoped timer instead; after it is cancelled both streams stay blocking.
         c.settimeout(None)
-        if port != "443":
-            u.settimeout(None)
+        u.settimeout(None)
         candidate = threading.Thread(target=pipe, args=(c, u, ">" + host), daemon=True)
         candidate.start()
         worker = candidate
@@ -224,17 +228,21 @@ def handle(c):
             # Forward request-body bytes concurrently while bounding the first
             # HTTP response. Do not deadlock uploads waiting for their response.
             deadline = time.monotonic() + SETUP_TIMEOUT
-            rest = b""
-            while True:
-                response, rest = read_head(u, deadline, rest)
-                status = response.split("\r\n")[0].split()
-                interim = len(status) >= 2 and status[1].isdigit() and 100 <= int(status[1]) < 200 and status[1] != "101"
-                set_deadline(c, deadline)
-                c.sendall(response.encode("latin1") + b"\r\n\r\n" + (b"" if interim else rest))
-                if not interim:
-                    break
-            c.settimeout(None)
-            u.settimeout(None)
+            timer = threading.Timer(SETUP_TIMEOUT, shutdown, args=(c, u))
+            timer.daemon = True
+            timer.start()
+            try:
+                rest = b""
+                while True:
+                    response, rest = read_head(u, deadline, rest, configure_timeout=False)
+                    status = response.split("\r\n")[0].split()
+                    interim = len(status) >= 2 and status[1].isdigit() and 100 <= int(status[1]) < 200 and status[1] != "101"
+                    c.sendall(response.encode("latin1") + b"\r\n\r\n" + (b"" if interim else rest))
+                    if not interim:
+                        break
+            finally:
+                timer.cancel()
+                timer.join()
         pipe(u, c, "<" + host)
     except Exception as e:
         print(f"shim: {e}", file=sys.stderr, flush=True)

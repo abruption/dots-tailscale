@@ -218,9 +218,13 @@ class SetupTests(unittest.TestCase):
                             self.assertEqual(exact(client, 5), b"reply")
                             server.shutdown(socket.SHUT_WR)
                         if stage == "success":
-                            # Body was not in the initial headers' recv.
+                            # Interim response must not leave the concurrent
+                            # upload reader with a timeout after establishment.
+                            server.sendall(b"HTTP/1.1 100 Continue\r\n\r\n")
+                            self.assertIn(b"100 Continue", head(client))
                             client.sendall(b"body")
                             self.assertEqual(exact(server, 4), b"body")
+                            time.sleep(0.03)
                             server.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n")
                             self.assertIn(b"200 OK", head(client))
                             time.sleep(BUDGET * 2)
