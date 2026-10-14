@@ -1,0 +1,164 @@
+# Usage
+
+[English README](../README.md) · [한국어 사용법](usage.ko.md)
+
+These instructions target a user-level installation in an environment that preserves `/workspace` across environment replacements. The intended recovery path reuses saved installation files, authentication state, and SSH host keys when starting a replacement environment, without a new login while saved credentials remain valid. Actual authenticated continuity after a VM replacement has not yet been observed; a controlled process restart is a separate test. Installation does not register a startup hook; run the start command in each new environment.
+
+## Install and start
+
+Clone the repository from `https://github.com/abruption/dots-tailscale` into `/workspace` so the setup script and `shim.py` are available together. Cloning requires Git and GitHub HTTPS access through the cloud computer's proxy. The setup requires Linux x86_64, Python 3, `timeout`, `flock`, OpenSSL, `ssh-keygen`, and `/usr/sbin/sshd`. Installation additionally requires curl, tar, and sha256sum. Binding port 22 must be allowed for the current user; root or systemd is not required.
+
+```bash
+cd /workspace
+HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
+  git clone 'https://github.com/abruption/dots-tailscale' dots-tailscale
+cd dots-tailscale
+bash tailscale-setup.sh check
+bash tailscale-setup.sh install
+bash /workspace/.dots-tailscale/start.sh login
+```
+
+These proxy settings apply only to the clone command; they do not change global Git configuration. Use the proxy supplied by your environment if its address differs. Keep HTTPS certificate verification enabled. The actual cloud-computer clone test used the reference `abruption/codex-unlock` repository. This reference connectivity test does not validate this project's clone or installation. Check the README for tested behavior and the remaining verification steps.
+
+`install` places files without starting processes. Existing binaries are retained; a conflicting configuration or script stops installation for manual review. The downloaded Tailscale archive is pinned to the version in the script and checked against its official SHA-256 file.
+
+`login` starts missing components and runs interactive Tailscale authentication, with a 180-second limit. Open the printed URL and approve the intended account and tailnet. No auth key is embedded in these scripts; optional file-based authentication is described below.
+
+After authentication, use this command to start missing components:
+
+```bash
+bash /workspace/.dots-tailscale/start.sh
+```
+
+For inspection or explicit authentication, pass `check` or `login` to that installed wrapper. Installation generates `start.sh` in the installation directory and copies `tailscale-setup.sh` to `setup.sh`. The generated wrapper derives that directory from its own location and invokes the neighboring `setup.sh`.
+
+| Setting | Default |
+| --- | --- |
+| `DOTS_TS_DIR` | `/workspace/.dots-tailscale` |
+| `UPSTREAM_PROXY` | `http://browser-proxy:8889` |
+| `NODE_HOSTNAME` | `dots-sandbox` |
+
+An alternate `DOTS_TS_DIR` must be an absolute path without whitespace. Use consistent settings for installation and subsequent starts. The shim currently listens on port 18089 and SSH on port 22; this is a single-installation setup.
+
+### SSH keys and readiness
+
+SSH listens on `127.0.0.1:22` and uses public-key authentication. Tailscale SSH is disabled; the local OpenSSH server handles shell sessions. If HOME already contains `.ssh/authorized_keys`, installation copies it into the persistent installation. Otherwise, add your client public key to:
+
+```text
+/workspace/.dots-tailscale/sshd/authorized_keys
+```
+
+Append a client public key as one complete line and set the file to mode `600`. On your client, retrieve the public key from its `.pub` file; never transfer the private key. Verify the server host-key fingerprint in the cloud computer before accepting it on your client:
+
+```bash
+ssh-keygen -lf /workspace/.dots-tailscale/sshd/ssh_host_ed25519_key.pub
+```
+
+After independently comparing the host fingerprint, test shell access from a tailnet client using your key and the node's Tailscale address:
+
+```bash
+ssh -o StrictHostKeyChecking=yes -i /path/to/client_private_key 'agent@<tailscale-ip>' 'id; pwd'
+```
+
+Replace the example username if your cloud-computer user differs. Use the address reported by `tailscale status`; do not bypass host-key verification.
+
+`running: Tailscale and local SSH ready` means the backend is Running and the local SSH banner responds. It does not prove client key authentication; test an actual SSH command separately.
+
+| Start result | Exit code |
+| --- | --- |
+| Running and local SSH ready | `0` |
+| Authentication required (`needs_auth`) | `10` |
+| Another backend state (`unavailable`) | `11` |
+| Setup or component failure | Nonzero, normally `1` |
+
+Ordinary `start` does not invoke login. Previously authenticated state disappearing causes a failure for manual review rather than silent identity replacement. Existing conflicting files, partial CA installations, and missing established host keys also require review. Do not delete the installation directory to update a script: it holds node state and private keys.
+
+The custom TLS/WebSocket shim implements the configured local HTTP CONNECT bridge. Local tests cover initial payload preservation and transport boundaries using isolated sockets. The revised shim was deployed on 2026-10-14 and passed live DERP ping and strict public-key SSH checks through the proxy path. Earlier recovery observations used the previous shim, and the revised version has not yet been observed across a later environment change. Changes to the platform proxy can break it.
+
+There is no VM cron, systemd service, or automatic startup registration in this repository. A process loop inside the VM cannot survive destruction of that environment. Start the installation explicitly in a new environment or through a separately verified platform execution mechanism.
+
+### Install without Git
+
+The raw URLs below point to this repository’s `main` branch. For reproducible installation, substitute a reviewed tag or commit ref. Download both files into the same directory:
+
+```bash
+mkdir -p /workspace/dots-tailscale-download
+cd /workspace/dots-tailscale-download
+curl -fsSL --proxy http://browser-proxy:8889 \
+  'https://raw.githubusercontent.com/abruption/dots-tailscale/main/tailscale-setup.sh' \
+  -o tailscale-setup.sh
+curl -fsSL --proxy http://browser-proxy:8889 \
+  'https://raw.githubusercontent.com/abruption/dots-tailscale/main/shim.py' \
+  -o shim.py
+```
+
+Continue only after both downloads succeed. Review the downloaded files, then run:
+
+```bash
+bash tailscale-setup.sh check
+bash tailscale-setup.sh install
+bash /workspace/.dots-tailscale/start.sh login
+```
+
+The setup needs its own file path and the neighboring `shim.py`, so save the files before execution. These raw URLs point to the public `main` branch. For reproducible installation, use a reviewed tag or commit. The reference-repository download test does not verify this project's own raw URLs; confirm those after publication.
+
+### Optional noninteractive authentication
+
+If browser-free authentication is needed, supply a Tailscale auth key through a private file, then explicitly run `auth`:
+
+```bash
+chmod 600 /workspace/.dots-tailscale/auth.key
+DOTS_TS_AUTH_KEY_FILE=/workspace/.dots-tailscale/auth.key \
+  bash /workspace/.dots-tailscale/start.sh auth
+```
+
+Create the key file separately using a secure method. Do not paste the key into chat, source code, command-line arguments, or Git. `DOTS_TS_AUTH_KEY_FILE` must name an absolute path to a regular file owned by the current user, with no symlink and permissions exactly `600` or `400`. The key is passed to Tailscale as `--auth-key=file:PATH`.
+
+If the backend is already Running, `auth` skips authentication without reading or requiring the key file. This mode still refuses missing state after an established authentication marker; it does not silently replace an existing node identity. The script does not change tailnet tags or ACL policy, force reauthentication, or reset preferences. Auth commands are bounded by a 60-second process timeout and a 45-second connection timeout; they do not fall back to a browser. Actual auth-key enrollment has not been tested. Ordinary `start` never falls back to an auth key automatically.
+
+## Check HOME continuity
+
+Run the probe from the repository checkout in Dots:
+
+```bash
+python3 /workspace/dots-tailscale/home-persistence-probe.py
+```
+
+The first run creates a random marker in `$HOME/.dots-home-persistence-marker.json` and a baseline, workspace marker, latest result, and history under `/workspace/.dots-persistence-probe`. Later runs compare against that original baseline. The probe reads its own markers and process context, not authentication state or user documents.
+
+| `assessment` | Meaning |
+| --- | --- |
+| `baseline_created` | First observation recorded |
+| `markers_intact` | Both marker identities match the baseline |
+| `home_marker_changed_workspace_intact` | HOME marker changed or disappeared while workspace marker remained intact |
+| `marker_continuity_changed` | Other marker continuity change |
+
+Marker loss is evidence of marker loss, not proof that the entire HOME directory was reset. Hostname, boot ID, and PID 1 start ticks provide context; boot ID alone cannot distinguish a container replacement from a host reboot. If the workspace baseline disappears too, the next run creates a new baseline, so retain a result outside the VM for comparison.
+
+Custom paths are available through `--home` and `--probe-root`. No periodic execution is registered for this probe.
+
+## Update installed scripts
+
+There is no automatic updater. Stage and review `tailscale-setup.sh` and `shim.py` together outside `/workspace/.dots-tailscale`, using a selected commit or release rather than updating installed files in place from a moving branch. Record that version and both SHA-256 hashes. Validate the staged shell syntax and parse the staged Python source before changing the installation:
+
+```bash
+bash -n /path/to/staged/tailscale-setup.sh
+python3 -c 'import ast, pathlib; ast.parse(pathlib.Path("/path/to/staged/shim.py").read_text())'
+sha256sum /path/to/staged/tailscale-setup.sh /path/to/staged/shim.py
+```
+
+Use this deployment sequence when the shim changes:
+
+1. Open the cloud computer's platform GUI terminal, independently of Tailscale SSH. Keep that terminal available for recovery. Record the installed `setup.sh` and `shim/shim.py` hashes, the node address, and the public SSH host-key fingerprint outside the VM. Confirm an authenticated baseline and record it separately from the candidate version.
+2. Save private rollback copies of the old `setup.sh` and `shim/shim.py` source files only. Leave authentication state, CA keys, SSH host keys, and authorized keys in place; do not copy state into another installation. Have a bounded, detached restart plan and a rollback plan ready before stopping a process. The detached action must survive loss of the SSH session; this repository does not implement that updater for you.
+3. Identify the running shim by its exact command line and installed script path. From the independent terminal, stop only that identified shim PID. Do not use broad process-name termination. Confirm it exited and that no duplicate shim remains. Install the staged `shim.py` at `shim/shim.py` and the staged `tailscale-setup.sh` at `setup.sh`, both with mode `700`.
+4. Execute the prepared detached startup, then compare the installed source hashes with the staged hashes. Confirm a single shim and the expected daemon processes. Check Tailscale CLI state and the local SSH banner in the independent terminal, then test external DERP connectivity and a real SSH command with strict host-key verification. Record the results against the candidate version.
+5. If validation fails, use the independent terminal to stop only the identified candidate shim, restore the old source files, and run startup again. Recheck the old hashes and baseline connection. Preserve existing state and keys throughout rollback; investigate any unexpected host-key change instead of accepting it.
+
+Do not run `install` as an update shortcut or delete the installation directory. Installation intentionally rejects conflicting files, and the installed directory contains identity material. A setup-script-only update still needs version and hash records and startup validation; it does not establish that a separately changed shim has been loaded.
+
+A successful controlled restart verifies process recovery for that environment, not persistence after VM replacement. The continuity probe remains observational: wait for a natural environment change, retain its results externally, and evaluate authenticated continuity separately. No forced reset or restart is needed for the continuity probe.
+
+## Protect generated files
+
+Keep Tailscale state, host and client private keys, shim CA private keys, auth-key files, generated backups, and runtime logs out of Git. Do not copy one Tailscale node's state into multiple simultaneously running VMs. `/workspace` is not automatically a private location; only use a directory whose access you control.

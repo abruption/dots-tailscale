@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.env.*
+*.log
+.dots-tailscale/
+.dots-tailscale-backup/
+.dots-persistence-probe/
+auth.key
+*.authkey
