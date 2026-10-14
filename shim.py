@@ -13,12 +13,16 @@ upgrades (control "tailscale-control-protocol", DERP "DERP") are re-issued
 upstream as WebSockets and bridged to the client as a raw byte stream.
 Non-443 CONNECTs are passed through untouched.
 """
-import base64, os, socket, ssl, struct, subprocess, threading, sys, urllib.parse
+import base64, os, socket, ssl, struct, subprocess, threading, sys, urllib.parse, time
 
 UP = (os.environ.get("UPSTREAM_HOST", "browser-proxy"), int(os.environ.get("UPSTREAM_PORT", "8889")))
 LISTEN = ("127.0.0.1", int(os.environ.get("SHIM_PORT", "18089")))
 D = os.path.dirname(os.path.abspath(__file__))
 CERTS = os.path.join(D, "certs")
+# Per-stage absolute deadlines apply only while establishing a connection.
+# Established raw/DERP/control streams remain long-lived and blocking.
+SETUP_TIMEOUT = 15
+MAX_HEADER_BYTES = 65536
 lock = threading.Lock()
 up_ctx = ssl.create_default_context(); up_ctx.set_alpn_protocols(["http/1.1"])
 
@@ -36,17 +40,38 @@ def leaf(host):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(crt, key); ctx.set_alpn_protocols(["http/1.1"])
     return ctx
 
+def set_deadline(sock, deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("connection setup deadline exceeded")
+    sock.settimeout(remaining)
+
+def shutdown(*sockets):
+    for sock in sockets:
+        if sock is not None:
+            try: sock.shutdown(socket.SHUT_RDWR)
+            except OSError: pass
+
+def close(*sockets):
+    shutdown(*sockets)
+    for sock in sockets:
+        if sock is not None:
+            try: sock.close()
+            except OSError: pass
+
 def upstream_connect(target):
-    s = socket.create_connection(UP, timeout=15)
-    s.sendall(f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
-    buf = b""
-    while b"\r\n\r\n" not in buf:
-        d = s.recv(4096)
-        if not d: raise OSError("upstream closed")
-        buf += d
-    if b" 200 " not in buf.split(b"\r\n")[0]: raise OSError(buf.split(b"\r\n")[0].decode())
-    s.settimeout(None)
-    return s
+    deadline = time.monotonic() + SETUP_TIMEOUT
+    s = socket.create_connection(UP, timeout=SETUP_TIMEOUT)
+    try:
+        set_deadline(s, deadline)
+        s.sendall(f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
+        head, _ = read_head(s, deadline)
+        if " 200 " not in head.split("\r\n")[0]:
+            raise OSError(head.split("\r\n")[0])
+        return s
+    except BaseException:
+        close(s)
+        raise
 
 def pipe(a, b, tag=""):
     first = True
@@ -61,13 +86,24 @@ def pipe(a, b, tag=""):
             try: x.shutdown(socket.SHUT_RDWR)
             except OSError: pass
 
-def read_head(sock):
-    buf = b""
+def read_head(sock, deadline=None, initial=b"", configure_timeout=True):
+    if deadline is None:
+        deadline = time.monotonic() + SETUP_TIMEOUT
+    buf = initial
     while b"\r\n\r\n" not in buf:
+        if configure_timeout:
+            set_deadline(sock, deadline)
+        elif time.monotonic() >= deadline:
+            raise TimeoutError("connection setup deadline exceeded")
         d = sock.recv(4096)
         if not d: raise OSError("closed before headers")
         buf += d
+        end = buf.find(b"\r\n\r\n")
+        if (end + 4 if end >= 0 else len(buf)) > MAX_HEADER_BYTES:
+            raise OSError("HTTP headers too large")
     head, rest = buf.split(b"\r\n\r\n", 1)
+    if len(head) + 4 > MAX_HEADER_BYTES:
+        raise OSError("HTTP headers too large")
     return head.decode("latin1"), rest
 
 def recv_exact(sock, n, pre):
@@ -85,6 +121,12 @@ def ws_frame(op, payload):
     return hdr + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
 
 def ws_bridge(c, u, req_head, host, initial_data=b""):
+    try:
+        return _ws_bridge(c, u, req_head, host, initial_data)
+    finally:
+        close(c, u)
+
+def _ws_bridge(c, u, req_head, host, initial_data=b""):
     lines = req_head.split("\r\n"); method, path, _ = lines[0].split(" ", 2)
     hdrs = {k.strip().lower(): v.strip() for k, v in (l.split(":", 1) for l in lines[1:] if ":" in l)}
     upg = hdrs.get("upgrade", "")
@@ -94,14 +136,19 @@ def ws_bridge(c, u, req_head, host, initial_data=b""):
     else:
         proto = "derp"
     extra = "".join(f"{k}: {v}\r\n" for k, v in hdrs.items() if k.startswith(("derp-", "x-tailscale")) and k != "derp-fast-start")
+    deadline = time.monotonic() + SETUP_TIMEOUT
+    set_deadline(u, deadline)
     u.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
                f"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {base64.b64encode(os.urandom(16)).decode()}\r\n"
                f"Sec-WebSocket-Protocol: {proto}\r\n{extra}\r\n").encode())
-    resp, rest = read_head(u)
+    resp, rest = read_head(u, deadline)
+    set_deadline(c, deadline)
     if " 101 " not in resp.split("\r\n")[0]:
         c.sendall(resp.encode("latin1") + b"\r\n\r\n" + rest); raise OSError("ws upgrade refused: " + resp.split("\r\n")[0])
     if hdrs.get("derp-fast-start") != "1":
         c.sendall(f"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: {upg}\r\n\r\n".encode())
+    c.settimeout(None)
+    u.settimeout(None)
     wlock = threading.Lock()
     def up_to_client():
         pre = [rest]
@@ -122,45 +169,90 @@ def ws_bridge(c, u, req_head, host, initial_data=b""):
             except OSError: pass
     # read_head() may have consumed protocol bytes after the HTTP headers.
     # Flush them after the upstream Upgrade, before reading any later bytes.
+    worker = None
     try:
         if initial_data:
             u.sendall(ws_frame(2, initial_data))
-        threading.Thread(target=up_to_client, daemon=True).start()
+        candidate = threading.Thread(target=up_to_client, daemon=True)
+        candidate.start()
+        worker = candidate
         while (d := c.recv(65536)):
             with wlock: u.sendall(ws_frame(2, d))
     except OSError: pass
-    for x in (c, u):
-        try: x.shutdown(socket.SHUT_RDWR)
-        except OSError: pass
+    finally:
+        shutdown(c, u)
+        if worker is not None:
+            worker.join()
 
 def handle(c):
+    u = None
+    worker = None
     try:
-        buf = b""
-        while b"\r\n\r\n" not in buf:
-            d = c.recv(4096)
-            if not d: return c.close()
-            buf += d
-        line = buf.split(b"\r\n")[0].decode()
-        method, target, _ = line.split(" ", 2)
+        head, initial = read_head(c)
+        method, target, _ = head.split("\r\n")[0].split(" ", 2)
         if method != "CONNECT":
-            c.sendall(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n"); return c.close()
+            c.sendall(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n")
+            return
         host, port = target.rsplit(":", 1)
         u = upstream_connect(target)
+        c.settimeout(SETUP_TIMEOUT)
         c.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
         if port == "443":
-            c = leaf(host).wrap_socket(c, server_side=True)
-            u = up_ctx.wrap_socket(u, server_hostname=host)
+            # Retain ownership before handshaking: wrap_socket's automatic
+            # handshake can otherwise lose the socket on failure.
+            c = leaf(host).wrap_socket(c, server_side=True, do_handshake_on_connect=False)
+            c.settimeout(SETUP_TIMEOUT)
+            c.do_handshake()
+            u = up_ctx.wrap_socket(u, server_hostname=host, do_handshake_on_connect=False)
+            u.settimeout(SETUP_TIMEOUT)
+            u.do_handshake()
             head, rest = read_head(c)
             if os.environ.get("SHIM_DEBUG"): print(">", host, head.split("\r\n")[0], file=sys.stderr, flush=True)
             if "\r\nupgrade:" in head.lower() and "upgrade: websocket" not in head.lower():
                 return ws_bridge(c, u, head, host, rest)
+            u.settimeout(SETUP_TIMEOUT)
             u.sendall(head.encode("latin1") + b"\r\n\r\n" + rest)
-        threading.Thread(target=pipe, args=(c, u, ">" + host), daemon=True).start()
+        elif initial:
+            u.settimeout(SETUP_TIMEOUT)
+            u.sendall(initial)
+        # Never change shared socket timeouts underneath the upload worker.
+        # An in-flight recv/sendall retains its original timeout even if the
+        # timeout is later cleared. The HTTP response stage uses shutdown on a
+        # scoped timer instead; after it is cancelled both streams stay blocking.
+        c.settimeout(None)
+        u.settimeout(None)
+        candidate = threading.Thread(target=pipe, args=(c, u, ">" + host), daemon=True)
+        candidate.start()
+        worker = candidate
+        if port == "443":
+            # Forward request-body bytes concurrently while bounding the first
+            # HTTP response. Do not deadlock uploads waiting for their response.
+            deadline = time.monotonic() + SETUP_TIMEOUT
+            timer = threading.Timer(SETUP_TIMEOUT, shutdown, args=(c, u))
+            timer.daemon = True
+            timer.start()
+            try:
+                rest = b""
+                while True:
+                    response, rest = read_head(u, deadline, rest, configure_timeout=False)
+                    status = response.split("\r\n")[0].split()
+                    interim = len(status) >= 2 and status[1].isdigit() and 100 <= int(status[1]) < 200 and status[1] != "101"
+                    c.sendall(response.encode("latin1") + b"\r\n\r\n" + (b"" if interim else rest))
+                    if not interim:
+                        break
+            finally:
+                timer.cancel()
+                timer.join()
         pipe(u, c, "<" + host)
     except Exception as e:
         print(f"shim: {e}", file=sys.stderr, flush=True)
-        try: c.close()
-        except OSError: pass
+    finally:
+        shutdown(c, u)
+        try:
+            if worker is not None:
+                worker.join()
+        finally:
+            close(c, u)
 
 def main():
     with socket.socket() as listener:

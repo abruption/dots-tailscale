@@ -21,6 +21,12 @@ class ScriptedSocket:
         self.wait_at_eof = wait_at_eof
         self.closed = threading.Event()
 
+    def settimeout(self, value):
+        self.timeout = value
+
+    def do_handshake(self):
+        pass
+
     def recv(self, size):
         if self.chunks:
             chunk = self.chunks.popleft()
