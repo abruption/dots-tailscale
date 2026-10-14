@@ -8,9 +8,9 @@ This setup targets environments that preserve `/workspace`. Processes still need
 
 ## Demo
 
-![Terminal screenshot showing installation checks and Tailscale version 1.102.4 over SSH](docs/assets/dots-tailscale-ssh-verification.png)
+![Dots terminal screenshot showing installation checks and Tailscale version 1.102.4](docs/assets/dots-tailscale-ssh-verification.png)
 
-An actual terminal screenshot captured from a live SSH session to a Dots cloud computer on 2026-10-14. The tailnet IP, hostname, and local username in the window title are masked. It shows existing installation checks and status, plus Tailscale version 1.102.4. No new installation is performed in this screenshot.
+A screenshot provided by the maintainer from the Dots desktop terminal. It shows existing installation checks and status, plus Tailscale version 1.102.4. The supplied image is used unchanged. No new installation is performed in this screenshot.
 
 ```bash
 bash /workspace/.dots-tailscale/start.sh check
