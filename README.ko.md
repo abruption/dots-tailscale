@@ -6,6 +6,17 @@ Dots 클라우드 컴퓨터에서 사용자 권한으로 Tailscale과 OpenSSH를
 
 `/workspace`가 환경 교체 후 보존되는 환경을 대상으로 합니다. 새 환경에서는 start 명령을 실행해야 합니다. OpenAI 또는 Tailscale 공식 도구가 아닌 독립 프로젝트입니다.
 
+## 데모
+
+![SSH에서 설치 파일을 점검하고 Tailscale 버전 1.102.4를 확인하는 출력](docs/assets/dots-tailscale-ssh-demo.gif)
+
+2026-10-14에 Dots 클라우드 컴퓨터에서 SSH로 확인한 실제 출력을 약 15초의 애니메이션으로 다시 렌더링했습니다. 화면 녹화는 아니며, tailnet IP와 호스트명은 가렸습니다. 기존 설치 파일과 Tailscale 1.102.4 버전을 확인하는 장면으로, 새로 설치하는 과정은 포함하지 않습니다.
+
+```bash
+bash /workspace/.dots-tailscale/start.sh check
+/workspace/.dots-tailscale/tailscale version
+```
+
 ## 빠른 시작
 
 Linux x86_64, Git, Python 3, OpenSSH와 사용자 계정의 22번 포트 바인딩 권한이 필요합니다. 전체 의존성 및 SSH 설정은 [한국어 사용 가이드](docs/usage.ko.md)를 참고하세요.

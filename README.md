@@ -6,6 +6,17 @@ Run Tailscale with user-level OpenSSH in a Dots cloud computer. Installation fil
 
 This setup targets environments that preserve `/workspace`. Processes still need a start command in each new environment. This project is independent and is not an official OpenAI or Tailscale tool.
 
+## Demo
+
+![SSH output showing installation-file checks and Tailscale version 1.102.4](docs/assets/dots-tailscale-ssh-demo.gif)
+
+Real SSH output captured from a Dots cloud computer on 2026-10-14, re-rendered as an approximately 15-second animation rather than a screen recording. The tailnet IP and hostname are redacted. It checks existing installation files and shows Tailscale 1.102.4; it does not perform a new installation.
+
+```bash
+bash /workspace/.dots-tailscale/start.sh check
+/workspace/.dots-tailscale/tailscale version
+```
+
 ## Quick start
 
 Requires Linux x86_64, Git, Python 3, OpenSSH, and permission to bind local port 22. Follow the [usage guide](docs/usage.md) for all dependencies and SSH setup.
