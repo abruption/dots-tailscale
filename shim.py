@@ -128,6 +128,16 @@ def response_status(head):
         raise OSError("ws upgrade refused: malformed HTTP status")
     return int(match.group(1))
 
+def websocket_sha1(data):
+    # SHA-1 is mandated by the WebSocket protocol, not used for security here.
+    # Python 3.8 predates the usedforsecurity keyword.
+    try:
+        return hashlib.sha1(data, usedforsecurity=False)
+    except TypeError as error:
+        if "usedforsecurity" not in str(error) and "takes no keyword arguments" not in str(error):
+            raise
+        return hashlib.sha1(data)
+
 def validate_ws_response(head, key, protocol):
     """RFC 6455 section 4.1: validate before releasing any protocol bytes."""
     if response_status(head) != 101 or not head.startswith("HTTP/1.1 "):
@@ -146,9 +156,8 @@ def validate_ws_response(head, key, protocol):
     if "upgrade" not in connection or any(
             token and not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", token) for token in connection):
         raise OSError("ws upgrade refused: invalid Connection")
-    accept = base64.b64encode(hashlib.sha1(
-        (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii"),
-        usedforsecurity=False).digest()).decode("ascii")
+    accept = base64.b64encode(websocket_sha1(
+        (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()).decode("ascii")
     if headers.get("sec-websocket-accept") != [accept]:
         raise OSError("ws upgrade refused: invalid Sec-WebSocket-Accept")
     if "sec-websocket-protocol" in headers and headers["sec-websocket-protocol"] != [protocol]:

@@ -387,6 +387,33 @@ class TransportTests(unittest.TestCase):
         with self.assertRaisesRegex(OSError, "Sec-WebSocket-Accept"):
             shim.validate_ws_response(response, "differentnonce", "derp")
 
+    def test_websocket_accept_python38_and_modern_hashlib(self):
+        key = "dGhlIHNhbXBsZSBub25jZQ=="
+        request = ("GET /derp HTTP/1.1\r\nSec-WebSocket-Key: " + key +
+                   "\r\nSec-WebSocket-Protocol: derp\r\n\r\n").encode("ascii")
+        material = (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")
+        digest = shim.websocket_sha1(material)
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                calls = []
+                def sha1(data, **kwargs):
+                    self.assertEqual(data, material)
+                    calls.append(kwargs)
+                    if legacy and kwargs:
+                        raise TypeError("'usedforsecurity' is an invalid keyword argument for openssl_sha1()")
+                    return digest.copy()
+                with mock.patch.object(shim.hashlib, "sha1", side_effect=sha1):
+                    response = valid_response(request).decode("ascii").split("\r\n\r\n", 1)[0]
+                    shim.validate_ws_response(response, key, "derp")
+                expected = [{"usedforsecurity": False}, {}] if legacy else [{"usedforsecurity": False}]
+                self.assertEqual(calls, expected * 2)
+
+    def test_websocket_sha1_does_not_retry_unrelated_typeerror(self):
+        with mock.patch.object(shim.hashlib, "sha1", side_effect=TypeError("invalid data")) as sha1:
+            with self.assertRaisesRegex(TypeError, "invalid data"):
+                shim.websocket_sha1(b"payload")
+            sha1.assert_called_once_with(b"payload", usedforsecurity=False)
+
     def test_status_code_is_not_a_reason_phrase_substring(self):
         response = b"HTTP/1.1 403 refused 101 upgrade\r\nContent-Length: 0\r\n\r\n"
         with self.bridge(response=response, rejected=True) as (client, server, threads, _):
