@@ -145,6 +145,47 @@ class ProcessDetectionTests(unittest.TestCase):
             with self.subTest(argv=argv):
                 self.assertEqual(self.detect({"42": process(argv)}, target), 1)
 
+    def test_python_nonterminating_options_and_consumed_operands(self):
+        target = "/workspace/.dots-tailscale/shim/shim.py"
+        for flags in (["-s", "-P", "-bb", "-q"], ["-dvRx"], ["-uWignore", "-BXdev"],
+                      ["--check-hash-based-pycs", "always"],
+                      ["--check-hash-based-pycs", "never", "-v"]):
+            with self.subTest(flags=flags):
+                self.assertEqual(self.detect({"42": process(["python3"] + flags + [target])}, target), 0)
+        for argv in (["python3", "-W", target], ["python3", "-X", target],
+                     ["python3", "--check-hash-based-pycs", target],
+                     ["python3", "--check-hash-based-pycs", "invalid", target],
+                     ["python3", "-uc", "pass", target],
+                     ["python3", "-um", "module", target],
+                     ["python3", "--help", target], ["python3", "-V", target],
+                     ["python3", "-"], ["python3", "-q"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.detect({"42": process(argv)}, target), 1)
+
+    def test_unresolvable_relative_interpreter_does_not_abort_scan(self):
+        target = "/workspace/.dots-tailscale/shim/shim.py"
+        real_realpath = os.path.realpath
+        def resolve(path):
+            if path in (b"bash", "relative-python"):
+                raise FileNotFoundError("working directory was removed")
+            return real_realpath(path)
+        with mock.patch("os.path.realpath", side_effect=resolve):
+            self.assertEqual(self.detect({"2": process(["bash", target]),
+                                          "42": process(["python3", target])}, target), 0)
+            with mock.patch("sys.executable", "relative-python"):
+                self.assertEqual(self.detect({"2": process(["bash", target])}, target), 1)
+
+    def test_sshd_login_grace_option(self):
+        target = "/workspace/.dots-tailscale/sshd/sshd_config"
+        for argv in (["sshd", "-g", "30", "-f", target],
+                     ["sshd", "-f", target, "-g30"],
+                     ["sshd", "-Dg30", "-f", target]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.detect({"42": process(argv)}, target), 0)
+        for argv in (["sshd", "-g", "-f", target], ["sshd", "-f", target, "-g"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.detect({"42": process(argv)}, target), 1)
+
     def test_sshd_diagnostic_modes_are_not_listeners(self):
         target = "/workspace/.dots-tailscale/sshd/sshd_config"
         for flag in ("-t", "-T", "-Dt", "-deT"):

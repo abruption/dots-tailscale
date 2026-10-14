@@ -43,7 +43,15 @@ def linux_path(path):
     return b'/' + path.lstrip(b'/') if path.startswith(b'/') else path
 
 needle = linux_path(sys.argv[1].encode())
-python_executable = linux_path(os.fsencode(os.path.realpath(sys.executable)))
+def resolved_path(path):
+    try:
+        return linux_path(os.fsencode(os.path.realpath(path))) if path else None
+    except OSError:
+        # An unrelated process may retain a relative argv[0] after our
+        # working directory has disappeared; it must not abort the scan.
+        return None
+
+python_executable = resolved_path(sys.executable)
 def same_path(path):
     return bool(path) and linux_path(path) == needle
 
@@ -57,7 +65,7 @@ def matches(args, exe):
         # an editor, or a different script.
         interpreter = exe if exe is not None else args[0]
         if not (re.fullmatch(rb'(?:python(?:3(?:\.\d+)?)?|pypy3(?:\.\d+)?)', basename(interpreter))
-                or linux_path(os.fsencode(os.path.realpath(interpreter))) == python_executable):
+                or (python_executable is not None and resolved_path(interpreter) == python_executable)):
             return False
         i = 1
         while i < len(args):
@@ -65,14 +73,30 @@ def matches(args, exe):
             if arg == b'--':
                 i += 1
                 break
-            if arg in (b'-W', b'-X'):
-                i += 2
-            elif re.fullmatch(rb'-[uBEIsSO]+', arg):
+            if arg == b'--check-hash-based-pycs':
                 i += 1
-            elif arg.startswith((b'-W', b'-X')):
+                if i >= len(args) or args[i] not in (b'default', b'always', b'never'):
+                    return False
                 i += 1
-            else:
+                continue
+            if not arg.startswith(b'-'):
                 break
+            j = 1
+            if len(arg) < 2:
+                return False
+            while j < len(arg):
+                option = arg[j:j + 1]
+                if option in (b'W', b'X'):
+                    if j + 1 == len(arg):
+                        i += 1
+                        if i >= len(args):
+                            return False
+                    break
+                if option not in (b'u', b'B', b'E', b'I', b's', b'S', b'O',
+                                  b'b', b'd', b'i', b'P', b'q', b'R', b'v', b'x'):
+                    return False
+                j += 1
+            i += 1
         return i < len(args) and same_path(args[i])
     if needle.endswith(b'/sshd_config'):
         # OpenSSH can collapse argv into a rewritten listener title.
@@ -97,7 +121,7 @@ def matches(args, exe):
                 option = arg[j:j + 1]
                 if option in (b't', b'T'):
                     return False
-                if option in (b'c', b'E', b'f', b'h', b'o', b'p', b'u', b'C'):
+                if option in (b'c', b'E', b'f', b'g', b'h', b'o', b'p', b'u', b'C'):
                     value = arg[j + 1:]
                     if not value:
                         i += 1
