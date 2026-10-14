@@ -41,7 +41,12 @@ class SSHOnboardingTests(unittest.TestCase):
     def setUp(self):
         if os.geteuid() == 0:
             self.skipTest("run the isolated sshd fixture as an unprivileged user")
-        temporary = tempfile.TemporaryDirectory(prefix="ssh-onboarding-")
+        # StrictModes checks every authorized_keys ancestor, not just the
+        # private fixture directory. A normal shared /tmp (mode 1777) fails
+        # that check, so use this checkout's user-owned directory instead.
+        temporary = tempfile.TemporaryDirectory(
+            prefix=".ssh-onboarding-", dir=pathlib.Path(__file__).resolve().parents[1]
+        )
         self.addCleanup(temporary.cleanup)
         self.root = pathlib.Path(temporary.name)
         self.username = pwd.getpwuid(os.getuid()).pw_name
@@ -53,6 +58,7 @@ class SSHOnboardingTests(unittest.TestCase):
         self.authorized_keys.write_text(
             "restrict " + self.client_key.with_suffix(".pub").read_text()
         )
+        self.authorized_keys.chmod(0o600)
         self.config = self.root / "sshd_config"
         self.write_server_config(self.host_key)
         self.audit = self.root / "askpass.jsonl"
@@ -105,7 +111,8 @@ PermitUserRC no
 DisableForwarding yes
 PermitTTY no
 LoginGraceTime 10
-LogLevel ERROR
+# Captured and shown only on assertion failure, including permission failures.
+LogLevel DEBUG3
 Subsystem sftp internal-sftp -d {self.root}
 ForceCommand internal-sftp -d {self.root}
 """)
