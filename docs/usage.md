@@ -6,11 +6,45 @@ These instructions target a user-level installation in an environment that prese
 
 ## Published version and verification
 
-The initial public repository clone and raw downloads of both installation files were verified against the prepared source. [Release v0.1.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.1.0) includes ZIP and tar.gz archives plus `tailscale-setup.sh` and `shim.py` as individual assets. The Git clone example uses `main`; the direct-download example pins both files to `v0.1.0`.
+The initial public repository clone and raw downloads of both installation files were verified against the prepared source. [Release v0.2.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.2.0) includes ZIP and tar.gz archives plus `tailscale-setup.sh` and `shim.py` as individual assets. The Git clone example uses `main`; the direct-download example pins both files to `v0.2.0`. The bundled Tailscale version remains `1.102.4`.
 
 ![Dots desktop terminal screenshot of installation checks and Tailscale version](assets/dots-tailscale-ssh-verification.png)
 
 This screenshot provided by the maintainer shows `start.sh check` and Tailscale version `1.102.4` in the Dots desktop terminal. The supplied image is used unchanged. It documents the existing installation's files, status, and CLI version, rather than a new installation or a VM replacement.
+
+<a id="download-proxy"></a>
+
+## Download connectivity and proxy settings
+
+In the Dots SSH environment tested on 2026-10-15, direct HTTPS requests to the GitHub repository, raw file, and release asset URLs failed, while requests explicitly using `http://browser-proxy:8889` succeeded. A proxy-backed clone resolved `v0.2.0` to commit `643484`, and the downloaded raw files matched that revision's checksums. These observations apply to that environment; they do not establish a global GitHub block. Browser downloads must be checked separately; these terminal checks do not diagnose browser errors.
+
+If clone or download fails, run these bounded checks in the affected terminal to inspect the proxy path. They discard response bodies and print the final HTTP status without exposing redirected, signed download URLs:
+
+```bash
+for url in \
+  'https://github.com/abruption/dots-tailscale' \
+  'https://raw.githubusercontent.com/abruption/dots-tailscale/v0.2.0/tailscale-setup.sh' \
+  'https://github.com/abruption/dots-tailscale/releases/download/v0.2.0/tailscale-setup.sh'
+do
+  printf '%s\n' "$url"
+  curl --fail --silent --show-error --location \
+    --proxy http://browser-proxy:8889 --connect-timeout 5 --max-time 20 \
+    --output /dev/null --write-out 'HTTP %{http_code}\n' "$url"
+done
+```
+
+For a direct-path comparison, replace `--proxy http://browser-proxy:8889` with `--noproxy '*'` in the same commands. curl exit code `7` means a connection failed and `28` means the time limit was reached; neither result alone proves a hostname is blocked. Keep certificate verification enabled and use the proxy address actually provided by your environment if it differs.
+
+The settings serve different scopes:
+
+| Setting | Scope |
+| --- | --- |
+| `HTTPS_PROXY` / `HTTP_PROXY` before `git clone` or `git fetch` | Only that Git command; no global Git setting is changed |
+| curl `--proxy` | Only that download or diagnostic request |
+| Installer `UPSTREAM_PROXY` | Tailscale package/checksum downloads during installation, and the shim's upstream proxy during startup |
+| Local shim at `127.0.0.1:18089` | TLS/WebSocket bridge used by the started Tailscale daemon through its process environment |
+
+The local shim does not configure a global proxy or route unrelated applications through Tailscale. Set `UPSTREAM_PROXY` explicitly for installation and subsequent starts if your environment uses a different upstream address.
 
 ## Install and start
 
@@ -103,16 +137,16 @@ There is no VM cron, systemd service, or automatic startup registration in this 
 
 ### Install without Git
 
-The raw URLs below select the published `v0.1.0` release. To review development sources instead, set `DOTS_TS_REF` to a reviewed commit or `main`. Use the same ref for both files and download them into the same directory:
+The raw URLs below select the published `v0.2.0` release. To review development sources instead, set `DOTS_TS_REF` to a reviewed commit or `main`. Use the same ref for both files and download them into the same directory:
 
 ```bash
 mkdir -p /workspace/dots-tailscale-download
 cd /workspace/dots-tailscale-download
-DOTS_TS_REF=v0.1.0
-curl -fsSL --proxy http://browser-proxy:8889 \
+DOTS_TS_REF=v0.2.0
+curl -fsSL --proxy http://browser-proxy:8889 --connect-timeout 5 --max-time 60 \
   "https://raw.githubusercontent.com/abruption/dots-tailscale/${DOTS_TS_REF}/tailscale-setup.sh" \
   -o tailscale-setup.sh
-curl -fsSL --proxy http://browser-proxy:8889 \
+curl -fsSL --proxy http://browser-proxy:8889 --connect-timeout 5 --max-time 60 \
   "https://raw.githubusercontent.com/abruption/dots-tailscale/${DOTS_TS_REF}/shim.py" \
   -o shim.py
 ```
