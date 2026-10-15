@@ -21,6 +21,8 @@ bash /workspace/.dots-tailscale/start.sh check
 
 Requires Linux x86_64, Git, Python 3, OpenSSH, and permission to bind local port 22. Follow the [usage guide](docs/usage.md) for all dependencies and SSH setup.
 
+The clone command explicitly uses the Dots proxy because direct GitHub HTTPS failed in the tested Dots SSH environment. See [download connectivity and proxy settings](docs/usage.md#download-proxy) for diagnostics and the scope of these settings.
+
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \

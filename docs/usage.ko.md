@@ -4,7 +4,40 @@
 
 `/workspace`가 환경 교체 후에도 유지되는 Dots 환경에서 실행합니다. 설치·인증 상태와 실행 중에만 필요한 파일을 다른 위치에 두어 재기동 시 기존 장치 신원을 이어 사용합니다.
 
-공개 저장소 주소는 `https://github.com/abruption/dots-tailscale`입니다. 최초 공개 시 실제 clone과 raw 다운로드를 확인했습니다. [v0.1.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.1.0)에 ZIP·tar.gz와 `tailscale-setup.sh`·`shim.py` 파일이 올라와 있습니다. `main`은 이후 변경될 수 있으므로 같은 소스로 다시 설치하려면 검토한 tag나 commit을 지정하세요.
+공개 저장소 주소는 `https://github.com/abruption/dots-tailscale`입니다. 최초 공개 시 실제 clone과 raw 다운로드를 확인했습니다. [v0.2.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.2.0)에 ZIP·tar.gz와 `tailscale-setup.sh`·`shim.py` 파일이 올라와 있습니다. `main`은 이후 변경될 수 있으므로 같은 소스로 다시 설치하려면 검토한 tag나 commit을 지정하세요.
+
+<a id="download-proxy"></a>
+
+## 다운로드와 프록시 연결 확인
+
+2026-10-15 Dots에 SSH로 접속해 확인했을 때, 프록시 없이 GitHub 저장소·raw 파일·릴리스 파일에 직접 HTTPS 요청을 보내면 curl이 종료코드 `7`로 실패했고 Git clone도 실패했습니다. `http://browser-proxy:8889`를 명시하면 세 URL은 모두 HTTP `200`을 반환했고, `v0.2.0` clone과 두 raw 파일 다운로드도 성공했습니다. raw 파일은 해당 tag의 소스와 SHA-256이 일치했습니다. 이는 당시 확인한 Dots 터미널 환경의 결과이며 모든 Dots 환경이나 외부 HTTPS 주소에 대한 차단을 뜻하지 않습니다. 브라우저의 `ERR_*` 오류는 터미널과 실행 환경이 다르므로 별도로 확인해야 합니다.
+
+다운로드나 clone이 실패하면 같은 Dots 터미널에서 다음 명령으로 프록시 경유 연결을 확인하세요. 저장소 페이지, raw 설치 파일, 릴리스 설치 파일 순서이며, 각 요청은 연결 5초·전체 20초로 제한합니다. 검사한 원본 URL과 HTTP 상태 코드만 표시하며, 본문과 리디렉션 목적지의 서명된 URL은 출력하지 않습니다.
+
+```bash
+for url in \
+  'https://github.com/abruption/dots-tailscale' \
+  'https://raw.githubusercontent.com/abruption/dots-tailscale/v0.2.0/tailscale-setup.sh' \
+  'https://github.com/abruption/dots-tailscale/releases/download/v0.2.0/tailscale-setup.sh'
+do
+  printf '%s\n' "$url"
+  curl --fail --silent --show-error --location \
+    --proxy http://browser-proxy:8889 --connect-timeout 5 --max-time 20 \
+    --output /dev/null --write-out 'HTTP %{http_code}\n' "$url"
+done
+```
+
+직접 연결과 비교하려면 같은 명령에서 `--proxy http://browser-proxy:8889`를 `--noproxy '*'`로 바꾸세요. curl 종료코드 `7`은 연결 실패, `28`은 시간 초과를 뜻합니다. 코드만으로 방화벽·DNS·프록시 등 구체적인 원인을 단정할 수는 없습니다. curl 오류 메시지도 함께 확인하세요. 환경에서 제공하는 프록시 주소가 다르면 명령의 주소를 바꾸고, HTTPS 인증서 검증은 유지하세요.
+
+프록시 설정은 다음 범위에 적용됩니다.
+
+| 설정 | 적용 범위 |
+|---|---|
+| clone·fetch 앞의 `HTTPS_PROXY`·`HTTP_PROXY` | 해당 Git 명령에만 적용하며 전역 Git 설정은 바꾸지 않음 |
+| `curl --proxy` | 해당 다운로드·진단 요청에 적용 |
+| `UPSTREAM_PROXY` | 설치 스크립트의 Tailscale 다운로드와 실행 시 shim의 업스트림 연결에 사용. 기본값은 `http://browser-proxy:8889` |
+
+실행 시 shim은 로컬 `127.0.0.1:18089`에서 Tailscale용 연결을 중계합니다. 이 주소는 다른 앱이나 시스템 전체에 설정할 프록시가 아닙니다. Git clone이나 raw 파일 다운로드에는 위 예시처럼 환경에서 제공하는 프록시를 직접 지정하세요.
 
 ## 최초 설치
 
@@ -52,16 +85,18 @@ ssh -o StrictHostKeyChecking=ask -i /path/to/client_private_key 'agent@<TAILNET_
 
 ## Git 없이 직접 다운로드
 
-`raw.githubusercontent.com`에서 설치 스크립트와 shim을 같은 디렉터리에 받으면 Git 없이 설치할 수 있습니다. 설치 스크립트는 shim 파일을 찾으므로 두 파일을 모두 내려받은 뒤 실행합니다. 아래 예시는 공개 릴리스 `v0.1.0`으로 고정합니다. 최신 개발 소스를 검토하려면 `DOTS_TS_REF`를 검토한 commit이나 `main`으로 바꾸세요. 두 파일에 같은 값을 사용하며, `main`은 다운로드 사이에도 변경될 수 있습니다.
+`raw.githubusercontent.com`에서 설치 스크립트와 shim을 같은 디렉터리에 받으면 Git 없이 설치할 수 있습니다. 설치 스크립트는 shim 파일을 찾으므로 두 파일을 모두 내려받은 뒤 실행합니다. 아래 예시는 공개 릴리스 `v0.2.0`으로 고정합니다. 최신 개발 소스를 검토하려면 `DOTS_TS_REF`를 검토한 commit이나 `main`으로 바꾸세요. 두 파일에 같은 값을 사용하며, `main`은 다운로드 사이에도 변경될 수 있습니다.
 
 ```bash
 mkdir -p /workspace/dots-tailscale-download
 cd /workspace/dots-tailscale-download
-DOTS_TS_REF=v0.1.0
+DOTS_TS_REF=v0.2.0
 curl -fsSL --proxy http://browser-proxy:8889 \
+  --connect-timeout 5 --max-time 60 \
   "https://raw.githubusercontent.com/abruption/dots-tailscale/${DOTS_TS_REF}/tailscale-setup.sh" \
   -o tailscale-setup.sh
 curl -fsSL --proxy http://browser-proxy:8889 \
+  --connect-timeout 5 --max-time 60 \
   "https://raw.githubusercontent.com/abruption/dots-tailscale/${DOTS_TS_REF}/shim.py" \
   -o shim.py
 ```

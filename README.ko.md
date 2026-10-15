@@ -21,6 +21,8 @@ bash /workspace/.dots-tailscale/start.sh check
 
 Linux x86_64, Git, Python 3, OpenSSH와 사용자 계정의 22번 포트 바인딩 권한이 필요합니다. 전체 의존성 및 SSH 설정은 [한국어 사용 가이드](docs/usage.ko.md)를 참고하세요.
 
+확인한 Dots SSH 환경에서는 GitHub에 직접 HTTPS 연결이 실패해 아래 clone 명령에 제공된 프록시를 지정했습니다. 연결이 실패하면 [다운로드·프록시 확인 방법](docs/usage.ko.md#download-proxy)을 참고하세요.
+
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
