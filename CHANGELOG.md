@@ -1,8 +1,15 @@
 # Changelog
 
-## v0.2.0 — release preparation
+## v0.3.0 — unreleased
 
-This entry prepares the next release. The tag and GitHub Release are not published by this PR.
+- Add `dots-ts cli` for socket-aware Tailscale commands and a read-only `doctor` that reports installation, process, socket, backend, proxy and optional TCP reachability separately.
+- Add opt-in loopback SOCKS5/HTTP proxy configuration with explicit daemon apply, process/socket ownership checks, bounded readiness and rollback. Listeners remain disabled by default.
+- Add bilingual private HTTPS API instructions covering network grants, application authentication, TLS and per-process proxy use.
+- Source installation now requires `tailscale-setup.sh`, `shim.py`, `dots-ts` and `dots_proxy.py` together. Existing state and keys remain in the installation directory.
+
+Live proxy enable/disable, authenticated tailnet API and real policy-denial acceptance checks remain required before release; isolated tests are recorded in the implementation PR.
+
+## v0.2.0 — 2026-10-14
 
 ### Fixed
 

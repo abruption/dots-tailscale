@@ -45,6 +45,8 @@ Linux x86_64, Python 3, OpenSSH, `timeout`, `flock`, `openssl`, `ssh-keygen`, `c
 
 Git이 설치된 VM 터미널에서 HTTPS로 저장소를 clone한 뒤 설치 스크립트를 실행합니다. Git 네트워크 요청에만 프록시 환경변수를 적용합니다. 인증서 검증은 유지합니다.
 
+v0.3 개발판은 `tailscale-setup.sh`, `shim.py`, `dots-ts`, `dots_proxy.py` 네 파일을 함께 준비해야 합니다. 병합 전에는 이번 변경을 포함하는 검토한 체크아웃을 사용하세요. `main` clone으로 새 도구를 받는 것은 병합 후부터 가능합니다. 현재 공개된 v0.2.0은 기존 두 파일로 설치하며 새 도구가 포함되지 않습니다.
+
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
@@ -83,9 +85,67 @@ ssh -o StrictHostKeyChecking=ask -i /path/to/client_private_key 'agent@<TAILNET_
 
 승인한 뒤에는 `ssh -o StrictHostKeyChecking=yes -i /path/to/client_private_key 'agent@<TAILNET_IP>' 'id; pwd'`로 접속할 수 있습니다. 사용자명과 SSH 키 경로는 자신의 설정에 맞게 지정하세요. 이후 지문이 달라지면 Dots GUI 터미널에서 다시 확인하세요.
 
-## Git 없이 직접 다운로드
+<a id="development-helpers"></a>
 
-`raw.githubusercontent.com`에서 설치 스크립트와 shim을 같은 디렉터리에 받으면 Git 없이 설치할 수 있습니다. 설치 스크립트는 shim 파일을 찾으므로 두 파일을 모두 내려받은 뒤 실행합니다. 아래 예시는 공개 릴리스 `v0.2.0`으로 고정합니다. 최신 개발 소스를 검토하려면 `DOTS_TS_REF`를 검토한 commit이나 `main`으로 바꾸세요. 두 파일에 같은 값을 사용하며, `main`은 다운로드 사이에도 변경될 수 있습니다.
+## 개발용 도구와 선택적 애플리케이션 프록시
+
+아래 명령은 v0.3 개발 파일을 함께 설치한 경우에만 사용할 수 있으며, v0.2.0에는 없습니다. `dots-ts`는 Python 3 표준 라이브러리를 사용하며 자기 위치에서 설치 경로를 찾습니다. 전역 `tailscale` 명령·소켓 심볼릭 링크·셸 프로필 변경은 필요하지 않습니다.
+
+```bash
+/workspace/.dots-tailscale/dots-ts cli status
+/workspace/.dots-tailscale/dots-ts doctor
+/workspace/.dots-tailscale/dots-ts doctor --json
+/workspace/.dots-tailscale/dots-ts doctor --target api.example.internal:8443
+```
+
+`cli`는 설치된 Tailscale CLI에 해당 설치의 실행 소켓과 인자를 전달해 실행합니다. 원본 출력과 대화형 동작을 유지하며 도구 자체의 실행 시간 제한은 없습니다. 주소 등 민감한 CLI 출력이 나올 수 있고, 장시간 실행하는 명령은 직접 제한해야 합니다. 스스로 로그인하거나 데몬을 기동하지는 않습니다.
+
+`doctor`는 읽기 전용입니다. 프로세스 기동·인증·파일 복구·프록시 설정 변경을 하지 않습니다. 민감한 값을 가린 로컬 점검 결과를 계층별로 표시하며 모든 앱이 준비됐다고 판정하지 않습니다. `degraded`여도 종료코드가 `0`일 수 있으므로 `overall`과 개별 결과를 읽으세요. `--target HOST:PORT`는 앱 HTTP·SOCKS listener가 아닌 로컬 Tailscale 데몬을 통해 제한 시간 안에서 TCP 연결도 확인하지만, 자격증명을 보내거나 TLS·API 인증·접근 권한까지 검증하지는 않습니다. 명시적인 네트워크 요청이므로 실제로 연결할 서비스를 지정하세요. 앱 검증과 확인 항목은 [비공개 HTTP API 연결 예시](private-http-api.ko.md)를 참고하세요.
+
+### 설정 저장과 적용은 별도 단계
+
+```bash
+/workspace/.dots-tailscale/dots-ts proxy show
+/workspace/.dots-tailscale/dots-ts proxy configure --socks-port 1080 --http-port 8080
+```
+
+이 명령은 `/workspace/.dots-tailscale/outbound-proxy.json`에 원하는 로컬 listener 설정을 저장합니다. 데몬을 재시작하거나 즉시 포트를 열지는 않습니다. SOCKS5·HTTP 프록시는 기본적으로 꺼져 있습니다. 두 listener에는 서로 다른 포트를 지정하세요. Tailscale 자체는 같은 포트 사용을 지원하지만 이번 구현은 처음에는 이를 거부합니다. 설정은 `/workspace`에 남지만 실행 소켓과 프로세스는 환경 교체 후 다시 만들어야 합니다.
+
+변경 적용에는 명시적인 데몬 재시작이 필요하며 Tailscale SSH가 끊길 수 있습니다. 먼저 독립적인 Dots GUI 터미널을 확보하고 현재 설정·접속 상태를 기록한 뒤 복구 방법을 준비하세요. 그 터미널에서 `/workspace/.dots-tailscale/dots-ts proxy apply`를 실행합니다. `SSH_CONNECTION` 또는 `SSH_CLIENT`가 설정된 환경에서는 변경 적용을 거부하며, 이미 적용된 설정이면 재시작하지 않습니다. 새 데몬 기동이 실패하고 복구가 성공하면 이전 데몬을 되살리고 원하는 설정은 적용 대기로 남깁니다. 기존 SSH 세션을 복구 경로로 간주하거나 로컬 기동 성공만으로 외부 접속도 된다고 판단하지 마세요. 데몬 상태·로컬 SSH·엄격한 키 검증을 유지한 외부 SSH·실제 앱을 재확인하고 실패하면 GUI 터미널에서 되돌립니다. `proxy configure`만으로 운영 환경에 프록시가 배포되지는 않습니다.
+
+```bash
+/workspace/.dots-tailscale/dots-ts proxy disable
+```
+
+`disable`은 비활성 설정을 저장합니다. 실행 중인 listener는 명시적으로 적용하기 전까지 남을 수 있습니다. 비활성화·적용은 노드 state·키·설치를 지우는 작업이 아닙니다.
+
+앱용 프록시는 명시적으로 설정한 로컬 클라이언트를 위해 loopback에서 수신합니다. 데몬용 TLS/WebSocket shim의 `127.0.0.1:18089`와 다르며, 이 shim을 앱 HTTP 프록시로 쓰면 안 됩니다. 개별 curl 요청이나 자식 프로세스에만 프록시를 지정하세요. 시스템 전체 환경·브라우저·MCP·ChatGPT 커넥터에 자동 적용되지 않습니다. loopback에 접근할 수 있는 로컬 프로세스도 프록시를 사용할 수 있으므로 네트워크 정책과 API 인증은 별도로 필요합니다.
+
+### Git 없이 개발 소스 준비
+
+v0.3 릴리스 전에는 추측한 v0.3 tag·릴리스 URL 대신 이번 변경을 포함한 검토한 전체 commit을 사용합니다. `<REVIEWED_COMMIT>`을 해당 40자리 SHA로 바꾸세요. 별도 staging 경로에 네 파일을 받고 하나라도 실패하면 중단합니다.
+
+```bash
+(
+  set -euo pipefail
+  mkdir -p /workspace/dots-tailscale-development
+  cd /workspace/dots-tailscale-development
+  DOTS_TS_REF='<REVIEWED_COMMIT>'
+  [[ "$DOTS_TS_REF" =~ ^[0-9a-fA-F]{40}$ ]]
+  for file in tailscale-setup.sh shim.py dots-ts dots_proxy.py; do
+    curl -fsSL --proxy http://browser-proxy:8889 --connect-timeout 5 --max-time 60 \
+      "https://raw.githubusercontent.com/abruption/dots-tailscale/${DOTS_TS_REF}/${file}" \
+      -o "$file"
+  done
+  sha256sum tailscale-setup.sh shim.py dots-ts dots_proxy.py
+)
+```
+
+새 설치 전 commit·파일·해시를 검토하세요. 기존 설치는 아래 업데이트 절차를 따릅니다. `install`은 내용이 다른 설치 파일을 덮어쓰지 않습니다.
+
+## 공개 v0.2.0을 Git 없이 설치
+
+`raw.githubusercontent.com`에서 설치 스크립트와 shim을 같은 디렉터리에 받으면 Git 없이 설치할 수 있습니다. 두 파일을 모두 내려받은 뒤 실행하세요. 아래 예시는 공개 릴리스 `v0.2.0`으로 고정하며 `dots-ts`나 앱용 프록시 도구가 없습니다. 개발판은 위의 네 파일 준비 절차를 사용하세요.
 
 ```bash
 mkdir -p /workspace/dots-tailscale-download
@@ -126,6 +186,13 @@ bash /workspace/.dots-tailscale/start.sh check
 
 shim 수정이 포함된 업데이트는 **setup.sh만 교체해서 완료되지 않습니다.** 다음 절차는 운영자가 별도로 수행할 배치·복구 절차이며 현재 자동 updater로 구현돼 있지 않습니다. 2026-10-14 shim 수정본의 실환경 배포 후 DERP ping과 엄격한 호스트 키 검증을 유지한 SSH 연결은 성공했습니다. 수정본 상태에서 이후 VM 교체를 거친 복구는 아직 관찰하지 않았습니다. 자세한 범위는 아래 [현재 확인한 범위](#current-validation)를 참고하세요.
 
+v0.3 개발판으로 업데이트할 때는 같은 commit의 `dots-ts`와 `dots_proxy.py`도 준비합니다. 아래 호환성 블록은 기존 setup·shim만 검증하므로 두 Python 도구는 실행하지 않고 추가 구문 검사하고 네 파일의 해시를 기록하세요. 배포·되돌리기에서도 `setup.sh`와 `shim/shim.py`에 더해 설치 루트의 `dots-ts`·`dots_proxy.py`를 권한 `700`으로 함께 관리합니다. `outbound-proxy.json`과 노드 신원 파일은 보존하세요. 문서나 코드 갱신 중 부수적인 단계로 프록시를 적용하거나 데몬을 재시작하지 마세요.
+
+```bash
+python3 -c 'from pathlib import Path; [compile(Path(p).read_text(), p, "exec") for p in ("dots-ts", "dots_proxy.py")]'
+sha256sum tailscale-setup.sh shim.py dots-ts dots_proxy.py
+```
+
 1. Tailscale과 독립적인 플랫폼 GUI 터미널을 확보합니다. 일시·시간대·소스 리비전·설치 setup/shim 해시·OS·Tailscale/클라이언트 버전·프록시 전제·공개 SSH 호스트 키 지문·probe 결과를 VM 밖 비공개 위치에 기록합니다.
 2. 설치 디렉터리 밖의 별도 staging 체크아웃에서 검토할 커밋을 준비합니다. 이동 후 리비전과 두 파일 해시를 다시 기록합니다. 아래 블록에서 `<REVIEWED_COMMIT>`은 검토한 전체 40자리 SHA로 바꾸세요. 브랜치와 detached HEAD 모두에서 반복 실행할 수 있습니다. 추적·스테이징·미추적 변경이 있으면 그대로 보존하고 중단합니다. fetch·리비전 확인·checkout·구문 검사 중 실패하면 서브셸이 중단되므로 블록 전체가 성공한 경우에만 배포를 계속하세요. 설치 파일이나 인증 state는 변경하지 않습니다. 필요하면 staging 경로를 바꾸세요. 프록시는 fetch에만 적용하며 인증서 검증은 유지합니다.
 
@@ -157,10 +224,10 @@ shim 수정이 포함된 업데이트는 **setup.sh만 교체해서 완료되지
 ```
 <!-- update-staging:end -->
 
-3. 기존 **setup/shim 코드 파일만** 별도 보관합니다. state·CA·SSH 개인키는 복제하거나 삭제하지 않습니다.
-4. GUI 터미널에서 실행 파일/명령행이 설치된 `shim/shim.py`와 일치하는 정확한 listener PID를 확인해 해당 프로세스만 종료합니다. 광범위한 `pkill python` 등은 사용하지 않습니다. 중복 shim이 없음을 확인한 뒤 `setup.sh`와 `shim/shim.py`에 검토한 파일을 모드 `700`으로 배치합니다. 이때 Tailscale 연결이 잠시 끊길 수 있습니다.
+3. 기존 **setup/shim 코드 파일만** 별도 보관합니다. 개발판은 기존 `dots-ts`·`dots_proxy.py`도 포함하고 업데이트 전 파일이 없었다면 그 사실을 기록합니다. state·CA·SSH 개인키는 복제하거나 삭제하지 않습니다.
+4. GUI 터미널에서 실행 파일/명령행이 설치된 `shim/shim.py`와 일치하는 정확한 listener PID를 확인해 해당 프로세스만 종료합니다. 광범위한 `pkill python` 등은 사용하지 않습니다. 중복 shim이 없음을 확인한 뒤 `setup.sh`와 `shim/shim.py`에 검토한 파일을 모드 `700`으로 배치합니다. 개발판은 검토한 `dots-ts`·`dots_proxy.py`도 설치 루트에 모드 `700`으로 배치합니다. 이때 Tailscale 연결이 잠시 끊길 수 있습니다.
 5. 독립 터미널에서 설치된 `start.sh`를 실행합니다. 연결에 의존하는 셸에서 계속할 수밖에 없는 경우에는 먼저 제한 시간과 로그 경로를 지정한 분리 실행 및 코드 롤백 계획을 준비하세요. 이 문서는 자동 롤백이 있다고 주장하지 않습니다.
-6. 설치된 두 파일의 SHA-256이 검토한 소스와 일치하는지 확인합니다. backend `Running`, 로컬 SSH 배너, 클라이언트의 tailnet ping, 엄격한 호스트 키 검증을 유지한 SSH 공개키 로그인·명령 실행을 각각 검사하고 종료코드·일시를 기록합니다.
+6. 설치된 코드 파일의 SHA-256이 검토한 소스와 일치하는지 확인합니다. 개발판은 네 파일을 모두 대조합니다. backend `Running`, 로컬 SSH 배너, 클라이언트의 tailnet ping, 엄격한 호스트 키 검증을 유지한 SSH 공개키 로그인·명령 실행을 각각 검사하고 종료코드·일시를 기록합니다.
 7. 실패 시 독립 터미널에서 이전 **코드만** 복원하고 필요한 프로세스를 다시 기동합니다. 실패·롤백 결과를 기록하며 인증 파일 초기화로 해결하지 않습니다.
 
 환경 교체 후에는 `start.sh`를 직접 실행해야 합니다. 자동 시작이나 Dots 자동화 등록 기능은 구현하지 않았으며, Dots 자동화로 기동하는 방식도 시험하지 않았습니다.
