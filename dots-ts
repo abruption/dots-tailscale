@@ -6,6 +6,7 @@ import os
 import pathlib
 import re
 import socket
+import stat
 import subprocess
 import sys
 
@@ -182,11 +183,25 @@ def probe_tcp(runtime, host, port):
         return "reachable" if re.match(br"HTTP/1\.[01] 101(?: |\r)", response) else "failed"
 
 
+def installed_file_status(path):
+    # Do not follow a leaf symlink: start_all refuses it even if its target is
+    # valid. Inspect metadata only; never read authentication/key contents.
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unknown"
+    if stat.S_ISLNK(mode):
+        return "unsafe_symlink"
+    return "present" if stat.S_ISREG(mode) else "not_regular"
+
+
 def doctor(directory, runtime, target=None):
     files = ("installed", "setup.sh", "start.sh", "dots-ts", "dots_proxy.py", "tailscale", "tailscaled", "shim/shim.py",
              "shim/ca.crt", "shim/ca.key", "shim/bundle.crt", "sshd/sshd_config",
              "sshd/ssh_host_ed25519_key", "sshd/authorized_keys")
-    checks = {"files": {name: "present" if (directory / name).is_file() else "missing" for name in files},
+    checks = {"files": {name: installed_file_status(directory / name) for name in files},
               "processes": process_checks(directory),
               "state": "present" if (directory / "state/tailscaled.state").is_file() else "missing",
               "socket": "present" if (runtime / "tailscaled.sock").is_socket() else "missing",
@@ -198,7 +213,7 @@ def doctor(directory, runtime, target=None):
                 checks["state"] = "empty"
         except OSError:
             checks["state"] = "unknown"
-    if checks["socket"] == "present":
+    if checks["socket"] == "present" and checks["files"]["tailscale"] == "present":
         try:
             result = run_cli(directory, runtime, ["status", "--json"])
             checks["socket_response"] = "responsive" if result.returncode == 0 else "unavailable"
@@ -242,7 +257,7 @@ def doctor(directory, runtime, target=None):
         # A broken/unsupported inspection is unknown, never echoed verbatim.
         checks["proxy"] = {"desired": "unknown", "running": "unknown", "restart_required": None,
                            "inspection": "unavailable"}
-    unhealthy = ("missing" in checks["files"].values() or checks["socket"] == "missing"
+    unhealthy = (any(value != "present" for value in checks["files"].values()) or checks["socket"] == "missing"
                  or "not_running" in checks["processes"].values()
                  or checks["backend"] in ("needs_login", "no_state", "stopped", "needs_approval", "unavailable", "timeout", "invalid_response")
                  or checks["state"] in ("missing", "empty")

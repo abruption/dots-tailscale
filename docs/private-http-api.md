@@ -58,6 +58,8 @@ These are loopback listeners for local processes, not authenticated gateways for
 
 ## Make one bounded authenticated request
 
+**curl 8.4.0 or newer is required.** Starting with this version, `--max-filesize` also limits responses with unknown sizes, including chunked responses. The example checks the version before prompting for a token or making an API request and stops if the version is unavailable or too old.
+
 Run this in the Dots terminal after the HTTP listener is applied. Replace the URL with your HTTPS service's hostname and port. The example uses Python's standard library to read a bearer token without echo and feed the header to curl on stdin. The token is not placed in command-line arguments, URLs, shell history, environment variables, or files. It remains in process memory until the request finishes. Do not enable HTTP traces or print the token.
 
 ```bash
@@ -65,11 +67,26 @@ python3 - <<'PY'
 import getpass
 import json
 import os
+import re
 import subprocess
 
 url = "https://api.example.internal:8443/health"
 proxy = "http://127.0.0.1:8080"
 ca_file = ""  # Optional trusted private CA file path; blank uses system trust.
+child_env = os.environ.copy()
+for name in ("NO_PROXY", "no_proxy", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR"):
+    child_env.pop(name, None)
+try:
+    version_result = subprocess.run(
+        ["curl", "--disable", "--version"],
+        text=True, capture_output=True, timeout=5, env=child_env,
+    )
+except (OSError, subprocess.TimeoutExpired, UnicodeError):
+    raise SystemExit("Could not verify curl version; curl 8.4.0 or newer is required")
+version_match = re.match(r"curl ([0-9]{1,5})\.([0-9]{1,5})\.([0-9]{1,5})(?:\s|$)", version_result.stdout)
+if (version_result.returncode != 0 or version_match is None
+        or tuple(map(int, version_match.groups())) < (8, 4, 0)):
+    raise SystemExit("curl 8.4.0 or newer is required for the response size limit")
 token = getpass.getpass("API bearer token: ")
 if not token or any(c in token for c in "\r\n"):
     raise SystemExit("Invalid token input")
@@ -81,9 +98,6 @@ command = [
 ]
 if ca_file:
     command.extend(["--cacert", ca_file])
-child_env = os.environ.copy()
-for name in ("NO_PROXY", "no_proxy"):
-    child_env.pop(name, None)
 try:
     result = subprocess.run(
         command, input="Authorization: Bearer " + token + "\n",
@@ -91,6 +105,8 @@ try:
     )
 except subprocess.TimeoutExpired:
     raise SystemExit("Request timed out")
+except (OSError, UnicodeError):
+    raise SystemExit("Could not execute curl or decode its response")
 finally:
     token = None
 if result.returncode:
@@ -113,7 +129,7 @@ PY
 
 The request does not follow redirects; verify the canonical endpoint rather than forwarding a credential to another location. HTTPS certificate and hostname verification stay enabled. The response is capped at 4 KiB and only its status and expected-shape result are printed; the sample server's response contract is intentionally nonprivate. Do not point this check at a response containing private records.
 
-To use SOCKS5 instead, change only `proxy` to `socks5h://127.0.0.1:1080` after enabling that listener. `--noproxy ''` prevents curl's bypass list from skipping the chosen proxy. Clearing `NO_PROXY`/`no_proxy` affects only the curl child process, not your shell or other applications. No system proxy, browser setting, MCP configuration, or ChatGPT plugin/connector setting is changed. A separate client must explicitly support and configure this proxy; arbitrary integrations are not automatically able to reach this API.
+To use SOCKS5 instead, change only `proxy` to `socks5h://127.0.0.1:1080` after enabling that listener. `--noproxy ''` prevents curl's bypass list from skipping the chosen proxy. Clearing `NO_PROXY`/`no_proxy` and inherited CA overrides (`CURL_CA_BUNDLE`, `SSL_CERT_FILE`, `SSL_CERT_DIR`) affects only the curl child process, not your shell or other applications. For a private CA, explicitly supply a reviewed `ca_file` through `--cacert`. No system proxy, browser setting, MCP configuration, or ChatGPT plugin/connector setting is changed. A separate client must explicitly support and configure this proxy; arbitrary integrations are not automatically able to reach this API.
 
 ## Verify each layer and the denied cases
 

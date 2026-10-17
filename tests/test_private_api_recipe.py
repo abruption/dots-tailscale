@@ -157,6 +157,10 @@ def audited_run(command, **kwargs):
     assert _dummy_token not in repr(command)
     assert all(_dummy_token not in str(v) for v in kwargs['env'].values())
     assert 'NO_PROXY' not in kwargs['env'] and 'no_proxy' not in kwargs['env']
+    assert all(name not in kwargs['env'] for name in ('CURL_CA_BUNDLE', 'SSL_CERT_FILE', 'SSL_CERT_DIR'))
+    if command == ['curl', '--disable', '--version']:
+        assert 'input' not in kwargs and kwargs['timeout'] == 5
+        return _real_run(command, **kwargs)
     assert command[command.index('--noproxy') + 1] == ''
     assert command[command.index('--header') + 1] == '@-'
     assert kwargs['input'] == 'Authorization: Bearer ' + _dummy_token + '\\n'

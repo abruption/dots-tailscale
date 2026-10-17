@@ -58,6 +58,8 @@ SOCKS5를 쓰려면 `socks5h://127.0.0.1:1080`을 사용할 수 있습니다. `h
 
 ## 제한 시간 있는 인증 요청 한 번 보내기
 
+**curl 8.4.0 이상이 필요합니다.** 이 버전부터 `--max-filesize`가 크기를 미리 알 수 없는 응답과 chunked 응답도 제한합니다. 예제는 토큰 입력과 API 요청 전에 버전을 확인하며, 확인할 수 없거나 구버전이면 중단합니다.
+
 HTTP listener를 적용한 뒤 Dots 터미널에서 실행합니다. URL은 실제 HTTPS 서비스 이름과 포트로 바꾸세요. Python 표준 라이브러리로 bearer token을 화면에 표시하지 않고 입력받아 curl의 표준 입력으로 헤더를 전달합니다. token은 명령행 인자·URL·셸 기록·환경변수·파일에 넣지 않습니다. 요청이 끝날 때까지 프로세스 메모리에는 남습니다. HTTP 추적을 켜거나 token을 출력하지 마세요.
 
 ```bash
@@ -65,11 +67,26 @@ python3 - <<'PY'
 import getpass
 import json
 import os
+import re
 import subprocess
 
 url = "https://api.example.internal:8443/health"
 proxy = "http://127.0.0.1:8080"
 ca_file = ""  # Optional trusted private CA file path; blank uses system trust.
+child_env = os.environ.copy()
+for name in ("NO_PROXY", "no_proxy", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR"):
+    child_env.pop(name, None)
+try:
+    version_result = subprocess.run(
+        ["curl", "--disable", "--version"],
+        text=True, capture_output=True, timeout=5, env=child_env,
+    )
+except (OSError, subprocess.TimeoutExpired, UnicodeError):
+    raise SystemExit("Could not verify curl version; curl 8.4.0 or newer is required")
+version_match = re.match(r"curl ([0-9]{1,5})\.([0-9]{1,5})\.([0-9]{1,5})(?:\s|$)", version_result.stdout)
+if (version_result.returncode != 0 or version_match is None
+        or tuple(map(int, version_match.groups())) < (8, 4, 0)):
+    raise SystemExit("curl 8.4.0 or newer is required for the response size limit")
 token = getpass.getpass("API bearer token: ")
 if not token or any(c in token for c in "\r\n"):
     raise SystemExit("Invalid token input")
@@ -81,9 +98,6 @@ command = [
 ]
 if ca_file:
     command.extend(["--cacert", ca_file])
-child_env = os.environ.copy()
-for name in ("NO_PROXY", "no_proxy"):
-    child_env.pop(name, None)
 try:
     result = subprocess.run(
         command, input="Authorization: Bearer " + token + "\n",
@@ -91,6 +105,8 @@ try:
     )
 except subprocess.TimeoutExpired:
     raise SystemExit("Request timed out")
+except (OSError, UnicodeError):
+    raise SystemExit("Could not execute curl or decode its response")
 finally:
     token = None
 if result.returncode:
@@ -113,7 +129,7 @@ PY
 
 리디렉션을 따라가지 않습니다. 자격증명을 다른 주소로 넘기기보다 정확한 최종 경로를 확인하세요. HTTPS 인증서·호스트명 검증은 유지합니다. `ca_file`이 비어 있으면 시스템 신뢰 저장소를 사용하고, 사설 CA가 필요하면 검토한 CA 파일 경로를 넣습니다. 응답은 4 KiB로 제한하고 HTTP 상태와 예상 형식 여부만 표시합니다. 예시 서버는 비공개 정보 없는 응답을 의도적으로 반환합니다. 개인 기록이 포함된 응답에 이 확인 명령을 사용하지 마세요.
 
-SOCKS5를 쓰려면 해당 listener를 활성화한 뒤 `proxy`만 `socks5h://127.0.0.1:1080`으로 바꾸세요. `--noproxy ''`는 curl의 우회 목록 때문에 프록시를 건너뛰는 것을 막습니다. `NO_PROXY`·`no_proxy` 제거는 curl 자식 프로세스에만 적용되며 셸이나 다른 앱에는 영향이 없습니다. 시스템 프록시·브라우저·MCP·ChatGPT 플러그인/커넥터 설정은 바꾸지 않습니다. 다른 클라이언트는 해당 프록시를 직접 지원하고 설정해야 하며 임의의 연동 서비스가 자동으로 이 API에 접근할 수 있는 것은 아닙니다.
+SOCKS5를 쓰려면 해당 listener를 활성화한 뒤 `proxy`만 `socks5h://127.0.0.1:1080`으로 바꾸세요. `--noproxy ''`는 curl의 우회 목록 때문에 프록시를 건너뛰는 것을 막습니다. `NO_PROXY`·`no_proxy`와 상속된 CA 설정인 `CURL_CA_BUNDLE`·`SSL_CERT_FILE`·`SSL_CERT_DIR`는 curl 자식 프로세스에서만 제거합니다. 셸이나 다른 앱에는 영향이 없습니다. 사설 CA는 검토한 `ca_file`을 `--cacert`로 명시적으로 전달합니다. 시스템 프록시·브라우저·MCP·ChatGPT 플러그인/커넥터 설정은 바꾸지 않습니다. 다른 클라이언트는 해당 프록시를 직접 지원하고 설정해야 하며 임의의 연동 서비스가 자동으로 이 API에 접근할 수 있는 것은 아닙니다.
 
 ## 계층별 확인과 거부 사례
 
