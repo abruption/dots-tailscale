@@ -135,11 +135,14 @@ class CliDoctorTests(unittest.TestCase):
                 return types.SimpleNamespace(read_bytes=lambda: b"python3\0" + str(self.directory / "shim/shim.py").encode() + b"\0")
             return "/proc/42/exe"
         entry.__truediv__.side_effect = component
+        real_readlink = os.readlink
+        def readlink_as(executable):
+            return lambda path, *a, **kw: executable if str(path) == "/proc/42/exe" else real_readlink(path, *a, **kw)
         with mock.patch.object(pathlib.Path, "iterdir", return_value=iter([entry])), \
-                mock.patch.object(os, "readlink", return_value="/usr/bin/vim"):
+                mock.patch.object(os, "readlink", side_effect=readlink_as("/usr/bin/vim")):
             self.assertEqual(tool.process_checks(self.directory)["shim"], "not_running")
         with mock.patch.object(pathlib.Path, "iterdir", return_value=iter([entry])), \
-                mock.patch.object(os, "readlink", return_value="/usr/bin/python3"):
+                mock.patch.object(os, "readlink", side_effect=readlink_as("/usr/bin/python3")):
             self.assertEqual(tool.process_checks(self.directory)["shim"], "running")
 
     def test_process_inspection_unavailable_is_unknown(self):
