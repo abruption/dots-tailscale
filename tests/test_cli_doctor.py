@@ -187,11 +187,14 @@ class CliDoctorTests(unittest.TestCase):
 
     def test_missing_companion_is_unhealthy_and_empty_state_is_distinct(self):
         self.populate()
-        original_is_file = pathlib.Path.is_file
+        original_lstat = pathlib.Path.lstat
         original_stat = pathlib.Path.stat
         for companion in ("dots-ts", "dots_proxy.py"):
-            with mock.patch.object(pathlib.Path, "is_file", lambda path:
-                                   False if path == self.directory / companion else original_is_file(path)):
+            def lstat(path, *args, **kwargs):
+                if path == self.directory / companion:
+                    raise FileNotFoundError()
+                return original_lstat(path, *args, **kwargs)
+            with mock.patch.object(pathlib.Path, "lstat", lstat):
                 report, code = self.diagnose()
             self.assertEqual(report["checks"]["files"][companion], "missing")
             self.assertEqual(code, 1)
