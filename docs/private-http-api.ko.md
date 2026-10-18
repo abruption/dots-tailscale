@@ -2,7 +2,7 @@
 
 [English](private-http-api.md) · [사용 가이드](usage.ko.md#development-helpers)
 
-다른 tailnet 장비의 HTTPS API를 Dots 터미널 프로세스에서 선택적 로컬 Tailscale 프록시로 호출하는 예시입니다. 검토한 v0.3 개발 체크아웃과 설치된 도구가 필요하며 v0.2.0에는 없습니다. 아직 v0.3 릴리스 파일도 없습니다. 병합 전에는 `main`에 기능이 있다고 가정하지 말고 검토한 PR commit을 사용하세요.
+다른 tailnet 장비의 HTTPS API를 Dots 터미널 프로세스에서 선택적 로컬 Tailscale 프록시로 호출하는 예시입니다. v0.3.0 도구를 함께 설치해야 하며 v0.2.0에는 없습니다.
 
 ## 연결 경로와 준비 사항
 
@@ -15,7 +15,7 @@ SOCKS5를 쓰려면 `socks5h://127.0.0.1:1080`을 사용할 수 있습니다. `h
 
 다음 항목을 별도로 준비하세요.
 
-- 원하는 tailnet에 로그인된 Dots 노드와 개발판 도구 설치.
+- 원하는 tailnet에 로그인된 Dots 노드와 v0.3.0 도구 설치.
 - tailnet에서 접근할 API 장비와 원하는 비공개/Tailscale 인터페이스·포트에서 수신하는 HTTPS 서버. API 장비의 `127.0.0.1`에서만 수신하면 Dots에서 접속할 수 없습니다. 편의상 공개 인터페이스에 노출하지 마세요.
 - 선택한 프록시를 통해 확인할 수 있고 API 인증서와 일치하는 목적지 이름. 신뢰하는 공개 CA를 사용하거나 클라이언트에 사설 CA 파일을 명시하세요. IP로 호출해도 인증서에 해당 IP가 포함돼야 합니다.
 - 필요한 출발 장비·도착 장비·TCP 포트만 허용하는 tailnet 정책과 서버의 bearer 인증·API 권한 검사. Tailscale 연결이 API 인증을 대신하지는 않습니다.
@@ -149,4 +149,6 @@ HTTP 401은 HTTP 서버가 응답했다는 뜻이며 네트워크 정책 거부�
 
 ## 검증 상태
 
-이 문서는 배포 예시이며 native 앱 프록시·API 서버·실제 tailnet 제한을 배포하고 확인했다는 증거가 아닙니다. 계획한 확인 순서는 격리된 도구·설정 테스트, 기존 설치를 대상으로 한 후보 CLI의 읽기 전용 진단, 별도 승인된 native 프록시 배포 후 위의 허용·거부 항목 검증입니다. 격리 테스트와 로컬 진단은 실제 프록시·인증된 API·정책 거부·VM 교체 검증을 대신하지 않습니다. 이번 문서 PR이 운영 환경 배포를 뜻하지는 않습니다.
+2026-10-18(KST) 실환경에서 SOCKS5·HTTP 프록시의 실제 통신, 두 listener 비활성화, 엄격한 호스트 키 검증을 유지한 SSH 재접속을 확인했습니다. 두 프록시에서 정상 인증(`200`), 토큰 누락·오류(`401`), 권한 없는 경로(`403`), 신뢰하지 않는 CA(TLS 실패)의 HTTPS 검사 10개가 모두 통과했습니다. 별도의 허용→차단→복원 비교로 tailnet 정책 차단도 확인했으며 원래 정책으로 복구했습니다. 임시 API 서버와 인증정보는 정리했습니다. [프록시 결과](https://github.com/abruption/dots-tailscale/pull/24#issuecomment-6243157252), [정책 결과](https://github.com/abruption/dots-tailscale/pull/24#issuecomment-6243247818), [HTTPS 결과](https://github.com/abruption/dots-tailscale/pull/24#issuecomment-6243275452)를 참고하세요.
+
+이 검증은 자연스러운 VM 교체 후 복구나 자동 시작까지 확인한 것은 아닙니다. 비교한 환경에서 Dots 직접 Bash는 `/workspace`를 읽기 전용으로 보았고 실행 소켓도 보지 못했습니다. GUI 터미널과 SSH는 쓰기 가능한 파일과 실행 중인 소켓을 공유했습니다. 프록시 변경은 독립적인 GUI 터미널에서 적용하고 직접 에이전트 실행으로 서비스를 재시작할 수 있다고 가정하지 마세요. 실행 환경과 복구에 관한 추가 조사는 [#20](https://github.com/abruption/dots-tailscale/issues/20#issuecomment-6243404537)에서 계속합니다.

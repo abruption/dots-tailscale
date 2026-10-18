@@ -26,7 +26,7 @@ Linux x86_64, Git, Python 3, OpenSSH와 사용자 계정의 22번 포트 바인�
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.3.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -35,9 +35,9 @@ bash /workspace/.dots-tailscale/start.sh login
 
 최초 로그인 URL을 승인한 뒤 SSH 공개키를 설치 경로의 `authorized_keys`에 등록하세요. 호스트 키 지문은 클라우드 컴퓨터의 GUI 터미널에서 확인한 후 SSH로 접속합니다. 환경이 교체되면 `bash /workspace/.dots-tailscale/start.sh`로 기존 설치를 수동 기동하세요.
 
-## v0.3 개발 기능: 진단과 비공개 HTTP 접속
+## v0.3.0: 진단과 비공개 HTTP 접속
 
-현재 공개 릴리스는 `v0.2.0`입니다. 아래 도구는 이번 변경이 포함된 검토한 v0.3 개발 체크아웃으로 설치해야 하며, 병합 후 `main`에서 사용할 수 있습니다. 아직 v0.3 릴리스 다운로드는 없습니다.
+아래 도구를 사용하려면 [v0.3.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.0)의 소스 파일 네 개를 함께 설치하세요.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts doctor
@@ -52,7 +52,7 @@ bash /workspace/.dots-tailscale/start.sh login
 | 경로 | 역할 |
 |---|---|
 | `tailscale-setup.sh`, `shim.py` | Tailscale·OpenSSH 점검, 설치, 기동 및 명시적 인증 |
-| `dots-ts`, `dots_proxy.py` | 개발용 CLI·진단과 프로세스별 외부 연결 프록시 설정 |
+| `dots-ts`, `dots_proxy.py` | CLI·진단과 프로세스별 외부 연결 프록시 설정 |
 | `home-persistence-probe.py` | HOME과 `/workspace` 식별자 관찰 |
 | `tests/` | 오프라인 회귀 테스트 |
 

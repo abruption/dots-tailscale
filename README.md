@@ -26,7 +26,7 @@ The clone command explicitly uses the Dots proxy because direct GitHub HTTPS fai
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.3.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -35,9 +35,9 @@ bash /workspace/.dots-tailscale/start.sh login
 
 The first login prints an approval URL. Add the client public key to the installed SSH `authorized_keys` file and verify the host-key fingerprint over the cloud computer's GUI terminal before connecting. After environment replacement, start the existing installation with `bash /workspace/.dots-tailscale/start.sh`. The scripts do not register automatic startup.
 
-## v0.3 development: diagnostics and private HTTP access
+## v0.3.0: diagnostics and private HTTP access
 
-`v0.2.0` remains the published release. The following helpers require the reviewed v0.3 development checkout containing this change; they become available from `main` after merge. There is no v0.3 release download yet.
+Install all four source files from [v0.3.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.0) to use these helpers.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts doctor
@@ -52,7 +52,7 @@ The first login prints an approval URL. Add the client public key to the install
 | Path | Purpose |
 |---|---|
 | `tailscale-setup.sh`, `shim.py` | Check, install, start, and explicitly authenticate Tailscale with local SSH |
-| `dots-ts`, `dots_proxy.py` | Development CLI, diagnostics, and optional per-process outbound proxy configuration |
+| `dots-ts`, `dots_proxy.py` | CLI, diagnostics, and optional per-process outbound proxy configuration |
 | `home-persistence-probe.py` | Record HOME and `/workspace` continuity markers |
 | `tests/` | Offline regression tests |
 

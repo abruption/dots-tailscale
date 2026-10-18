@@ -1,13 +1,17 @@
 # Changelog
 
-## v0.3.0 — unreleased
+## v0.3.0 — 2026-10-18
 
 - Add `dots-ts cli` for socket-aware Tailscale commands and a read-only `doctor` that reports installation, process, socket, backend, proxy and optional TCP reachability separately.
 - Add opt-in loopback SOCKS5/HTTP proxy configuration with explicit daemon apply, process/socket ownership checks, bounded readiness and rollback. Listeners remain disabled by default.
 - Add bilingual private HTTPS API instructions covering network grants, application authentication, TLS and per-process proxy use.
 - Source installation now requires `tailscale-setup.sh`, `shim.py`, `dots-ts` and `dots_proxy.py` together. Existing state and keys remain in the installation directory.
 
-Live proxy enable/disable, authenticated tailnet API and real policy-denial acceptance checks remain required before release; isolated tests are recorded in the implementation PR.
+- Reject symlinked required files in `doctor`. Require curl 8.4.0 or newer for the bounded HTTPS recipe and clear inherited CA overrides.
+
+Validation: 149 offline tests passed on Linux Python 3.11/3.13 and in Dots. Live native proxy enable/disable, ten authenticated HTTPS/TLS rejection checks through HTTP and SOCKS5, a separate network-policy denial experiment, and final strict-host-key SSH recovery passed. See [PR #24](https://github.com/abruption/dots-tailscale/pull/24) for dated evidence and scope.
+
+Startup after environment replacement remains manual. Direct Dots Bash and GUI/SSH may have different workspace/socket visibility; automatic recovery, natural VM replacement and long-duration fault recovery remain research in [#20](https://github.com/abruption/dots-tailscale/issues/20). Publishing the release does not upgrade existing installations.
 
 ## v0.2.0 — 2026-10-14
 

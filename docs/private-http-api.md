@@ -2,7 +2,7 @@
 
 [한국어](private-http-api.ko.md) · [Usage](usage.md#development-helpers)
 
-This recipe covers an HTTPS API on another tailnet device, called from a Dots terminal process through the optional local Tailscale proxy. It requires the reviewed v0.3 development checkout and installed helpers; release v0.2.0 does not contain them. There is no v0.3 release artifact yet. Before merge, use the reviewed PR commit rather than assuming `main` already includes these features.
+This recipe covers an HTTPS API on another tailnet device, called from a Dots terminal process through the optional local Tailscale proxy. It requires the v0.3.0 helpers installed together; release v0.2.0 does not contain them.
 
 ## Connection path and prerequisites
 
@@ -15,7 +15,7 @@ The optional SOCKS5 alternative is `socks5h://127.0.0.1:1080`; the `h` delegates
 
 Prepare these independently:
 
-- A Dots Tailscale node authenticated to the intended tailnet, with the development helpers installed.
+- A Dots Tailscale node authenticated to the intended tailnet, with the v0.3.0 helpers installed.
 - A private API device reachable in that tailnet, with an HTTPS listener bound to its intended private/Tailscale interface and port. A listener bound only to the API device's `127.0.0.1` is not reachable from Dots. Avoid exposing it on a public interface as a shortcut.
 - A destination name that resolves through the chosen proxy and matches the API certificate. Use a trusted public CA or explicitly provide your private CA file to the client; an IP address also needs a matching certificate identity.
 - Tailnet permission for only the required source, destination, and TCP port, plus server-side bearer authentication and API authorization. Tailscale connectivity does not replace API authentication.
@@ -149,4 +149,6 @@ An HTTP 401 means an HTTP server answered; it is not a network-policy denial. A 
 
 ## Validation status
 
-This is a deployment recipe, not evidence that native application proxies, an API server, or live tailnet restrictions have been deployed and verified. The planned checks are isolated helper/configuration tests, read-only candidate CLI diagnostics against an existing installation, and then a separately authorized native-proxy deployment with the positive and negative matrix above. Isolated tests and local diagnostics cannot substitute for the final live proxy, authenticated API, policy-denial, and VM-replacement checks. No production deployment is implied by this documentation PR.
+Live checks on 2026-10-18 (KST) confirmed native SOCKS5 and HTTP proxy traffic, disabling both listeners, and strict-host-key SSH reconnection. Across both proxies, all ten HTTPS checks passed: valid authentication (`200`), missing and incorrect tokens (`401`), a forbidden endpoint (`403`), and an untrusted CA (TLS failure). A separate before/block/restored check confirmed tailnet policy denial; the original policy was restored. Temporary API servers and credentials were removed. See the [proxy results](https://github.com/abruption/dots-tailscale/pull/24#issuecomment-6243157252), [policy results](https://github.com/abruption/dots-tailscale/pull/24#issuecomment-6243247818), and [HTTPS results](https://github.com/abruption/dots-tailscale/pull/24#issuecomment-6243275452).
+
+These checks do not establish recovery after a natural VM replacement or automatic startup. In the compared environment, Dots direct Bash saw `/workspace` read-only and could not see the runtime socket, while the GUI terminal and SSH shared writable files and the running socket. Use an independent GUI terminal for applying proxy changes; do not assume direct-agent execution can restart the service. Lifecycle research remains open in [#20](https://github.com/abruption/dots-tailscale/issues/20#issuecomment-6243404537).

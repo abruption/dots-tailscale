@@ -4,7 +4,7 @@
 
 `/workspace`가 환경 교체 후에도 유지되는 Dots 환경에서 실행합니다. 설치·인증 상태와 실행 중에만 필요한 파일을 다른 위치에 두어 재기동 시 기존 장치 신원을 이어 사용합니다.
 
-공개 저장소 주소는 `https://github.com/abruption/dots-tailscale`입니다. 최초 공개 시 실제 clone과 raw 다운로드를 확인했습니다. [v0.2.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.2.0)에 ZIP·tar.gz와 `tailscale-setup.sh`·`shim.py` 파일이 올라와 있습니다. `main`은 이후 변경될 수 있으므로 같은 소스로 다시 설치하려면 검토한 tag나 commit을 지정하세요.
+공개 저장소 주소는 `https://github.com/abruption/dots-tailscale`입니다. 최초 공개 시 실제 clone과 raw 다운로드를 확인했습니다. [v0.3.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.0)는 ZIP·tar.gz와 `tailscale-setup.sh`·`shim.py`·`dots-ts`·`dots_proxy.py` 개별 파일을 제공합니다. `main`은 이후 변경될 수 있으므로 같은 소스로 다시 설치하려면 검토한 tag나 commit을 지정하세요.
 
 <a id="download-proxy"></a>
 
@@ -45,12 +45,12 @@ Linux x86_64, Python 3, OpenSSH, `timeout`, `flock`, `openssl`, `ssh-keygen`, `c
 
 Git이 설치된 VM 터미널에서 HTTPS로 저장소를 clone한 뒤 설치 스크립트를 실행합니다. Git 네트워크 요청에만 프록시 환경변수를 적용합니다. 인증서 검증은 유지합니다.
 
-v0.3 개발판은 `tailscale-setup.sh`, `shim.py`, `dots-ts`, `dots_proxy.py` 네 파일을 함께 준비해야 합니다. 병합 전에는 이번 변경을 포함하는 검토한 체크아웃을 사용하세요. `main` clone으로 새 도구를 받는 것은 병합 후부터 가능합니다. 현재 공개된 v0.2.0은 기존 두 파일로 설치하며 새 도구가 포함되지 않습니다.
+v0.3.0은 `tailscale-setup.sh`, `shim.py`, `dots-ts`, `dots_proxy.py` 네 파일을 함께 준비해야 합니다. 이전 v0.2.0은 기존 두 파일로 설치하며 새 도구가 포함되지 않습니다.
 
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone 'https://github.com/abruption/dots-tailscale' dots-tailscale
+  git clone --branch v0.3.0 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -87,9 +87,9 @@ ssh -o StrictHostKeyChecking=ask -i /path/to/client_private_key 'agent@<TAILNET_
 
 <a id="development-helpers"></a>
 
-## 개발용 도구와 선택적 애플리케이션 프록시
+## v0.3.0 도구와 선택적 애플리케이션 프록시
 
-아래 명령은 v0.3 개발 파일을 함께 설치한 경우에만 사용할 수 있으며, v0.2.0에는 없습니다. `dots-ts`는 Python 3 표준 라이브러리를 사용하며 자기 위치에서 설치 경로를 찾습니다. 전역 `tailscale` 명령·소켓 심볼릭 링크·셸 프로필 변경은 필요하지 않습니다.
+아래 명령은 v0.3.0 파일을 함께 설치한 경우에만 사용할 수 있으며, v0.2.0에는 없습니다. `dots-ts`는 Python 3 표준 라이브러리를 사용하며 자기 위치에서 설치 경로를 찾습니다. 전역 `tailscale` 명령·소켓 심볼릭 링크·셸 프로필 변경은 필요하지 않습니다.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts cli status
@@ -121,55 +121,35 @@ ssh -o StrictHostKeyChecking=ask -i /path/to/client_private_key 'agent@<TAILNET_
 
 앱용 프록시는 명시적으로 설정한 로컬 클라이언트를 위해 loopback에서 수신합니다. 데몬용 TLS/WebSocket shim의 `127.0.0.1:18089`와 다르며, 이 shim을 앱 HTTP 프록시로 쓰면 안 됩니다. 개별 curl 요청이나 자식 프로세스에만 프록시를 지정하세요. 시스템 전체 환경·브라우저·MCP·ChatGPT 커넥터에 자동 적용되지 않습니다. loopback에 접근할 수 있는 로컬 프로세스도 프록시를 사용할 수 있으므로 네트워크 정책과 API 인증은 별도로 필요합니다.
 
-### Git 없이 개발 소스 준비
+### Git 없이 v0.3.0 설치
 
-v0.3 릴리스 전에는 추측한 v0.3 tag·릴리스 URL 대신 이번 변경을 포함한 검토한 전체 commit을 사용합니다. `<REVIEWED_COMMIT>`을 해당 40자리 SHA로 바꾸세요. 별도 staging 경로에 네 파일을 받고 하나라도 실패하면 중단합니다.
+별도 소스 디렉터리에 릴리스 파일 네 개를 받습니다. 하나라도 다운로드에 실패하면 중단하고 설치 전에 파일과 해시를 검토하세요.
 
 ```bash
 (
   set -euo pipefail
-  mkdir -p /workspace/dots-tailscale-development
-  cd /workspace/dots-tailscale-development
-  DOTS_TS_REF='<REVIEWED_COMMIT>'
-  [[ "$DOTS_TS_REF" =~ ^[0-9a-fA-F]{40}$ ]]
+  mkdir -p /workspace/dots-tailscale-v0.3.0
+  cd /workspace/dots-tailscale-v0.3.0
+  DOTS_TS_REF=v0.3.0
   for file in tailscale-setup.sh shim.py dots-ts dots_proxy.py; do
     curl -fsSL --proxy http://browser-proxy:8889 --connect-timeout 5 --max-time 60 \
-      "https://raw.githubusercontent.com/abruption/dots-tailscale/${DOTS_TS_REF}/${file}" \
+      "https://github.com/abruption/dots-tailscale/releases/download/${DOTS_TS_REF}/${file}" \
       -o "$file"
   done
   sha256sum tailscale-setup.sh shim.py dots-ts dots_proxy.py
 )
 ```
 
-새 설치 전 commit·파일·해시를 검토하세요. 기존 설치는 아래 업데이트 절차를 따릅니다. `install`은 내용이 다른 설치 파일을 덮어쓰지 않습니다.
-
-## 공개 v0.2.0을 Git 없이 설치
-
-`raw.githubusercontent.com`에서 설치 스크립트와 shim을 같은 디렉터리에 받으면 Git 없이 설치할 수 있습니다. 두 파일을 모두 내려받은 뒤 실행하세요. 아래 예시는 공개 릴리스 `v0.2.0`으로 고정하며 `dots-ts`나 앱용 프록시 도구가 없습니다. 개발판은 위의 네 파일 준비 절차를 사용하세요.
+모든 다운로드가 성공했고 파일 검토를 마쳤다면 새 설치에 다음 명령을 사용합니다.
 
 ```bash
-mkdir -p /workspace/dots-tailscale-download
-cd /workspace/dots-tailscale-download
-DOTS_TS_REF=v0.2.0
-curl -fsSL --proxy http://browser-proxy:8889 \
-  --connect-timeout 5 --max-time 60 \
-  "https://raw.githubusercontent.com/abruption/dots-tailscale/${DOTS_TS_REF}/tailscale-setup.sh" \
-  -o tailscale-setup.sh
-curl -fsSL --proxy http://browser-proxy:8889 \
-  --connect-timeout 5 --max-time 60 \
-  "https://raw.githubusercontent.com/abruption/dots-tailscale/${DOTS_TS_REF}/shim.py" \
-  -o shim.py
-```
-
-두 다운로드가 모두 성공했는지 확인하고 파일을 검토한 뒤 실행합니다.
-
-```bash
+cd /workspace/dots-tailscale-v0.3.0
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
 bash /workspace/.dots-tailscale/start.sh login
 ```
 
-기존 설치를 업데이트할 때는 설치 디렉터리 밖의 별도 소스 디렉터리에 두 파일을 내려받아 검토하고, 아래 [업데이트 절차](#restart-update)에 따라 코드 파일만 갱신하세요. `install`은 기존의 다른 파일을 덮어쓰는 업데이트 명령이 아닙니다. HOME 관찰 도구도 사용할 경우에는 전체 clone 방식이 편리합니다.
+설치 전에 네 파일을 같은 디렉터리에 두세요. 릴리스 파일 호스트에 연결할 수 없다면 같은 tag와 파일명으로 `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.3.0/`에서 받거나 신뢰하는 다른 장비에서 검토한 파일을 전송하세요. 기존 설치는 아래 [업데이트 절차](#restart-update)를 따릅니다. `install`은 내용이 다른 설치 파일을 덮어쓰지 않습니다. HOME 관찰 도구도 사용할 경우에는 전체 clone 방식이 편리합니다.
 
 <a id="restart-update"></a>
 
@@ -186,7 +166,7 @@ bash /workspace/.dots-tailscale/start.sh check
 
 shim 수정이 포함된 업데이트는 **setup.sh만 교체해서 완료되지 않습니다.** 다음 절차는 운영자가 별도로 수행할 배치·복구 절차이며 현재 자동 updater로 구현돼 있지 않습니다. 2026-10-14 shim 수정본의 실환경 배포 후 DERP ping과 엄격한 호스트 키 검증을 유지한 SSH 연결은 성공했습니다. 수정본 상태에서 이후 VM 교체를 거친 복구는 아직 관찰하지 않았습니다. 자세한 범위는 아래 [현재 확인한 범위](#current-validation)를 참고하세요.
 
-v0.3 개발판으로 업데이트할 때는 같은 commit의 `dots-ts`와 `dots_proxy.py`도 준비합니다. 아래 호환성 블록은 기존 setup·shim만 검증하므로 두 Python 도구는 실행하지 않고 추가 구문 검사하고 네 파일의 해시를 기록하세요. 배포·되돌리기에서도 `setup.sh`와 `shim/shim.py`에 더해 설치 루트의 `dots-ts`·`dots_proxy.py`를 권한 `700`으로 함께 관리합니다. `outbound-proxy.json`과 노드 신원 파일은 보존하세요. 문서나 코드 갱신 중 부수적인 단계로 프록시를 적용하거나 데몬을 재시작하지 마세요.
+v0.3.0으로 업데이트할 때는 같은 commit의 `dots-ts`와 `dots_proxy.py`도 준비합니다. 아래 호환성 블록은 기존 setup·shim만 검증하므로 두 Python 도구는 실행하지 않고 추가 구문 검사하고 네 파일의 해시를 기록하세요. 배포·되돌리기에서도 `setup.sh`와 `shim/shim.py`에 더해 설치 루트의 `dots-ts`·`dots_proxy.py`를 권한 `700`으로 함께 관리합니다. `outbound-proxy.json`과 노드 신원 파일은 보존하세요. 문서나 코드 갱신 중 부수적인 단계로 프록시를 적용하거나 데몬을 재시작하지 마세요.
 
 ```bash
 python3 -c 'from pathlib import Path; [compile(Path(p).read_text(), p, "exec") for p in ("dots-ts", "dots_proxy.py")]'
@@ -224,10 +204,10 @@ sha256sum tailscale-setup.sh shim.py dots-ts dots_proxy.py
 ```
 <!-- update-staging:end -->
 
-3. 기존 **setup/shim 코드 파일만** 별도 보관합니다. 개발판은 기존 `dots-ts`·`dots_proxy.py`도 포함하고 업데이트 전 파일이 없었다면 그 사실을 기록합니다. state·CA·SSH 개인키는 복제하거나 삭제하지 않습니다.
-4. GUI 터미널에서 실행 파일/명령행이 설치된 `shim/shim.py`와 일치하는 정확한 listener PID를 확인해 해당 프로세스만 종료합니다. 광범위한 `pkill python` 등은 사용하지 않습니다. 중복 shim이 없음을 확인한 뒤 `setup.sh`와 `shim/shim.py`에 검토한 파일을 모드 `700`으로 배치합니다. 개발판은 검토한 `dots-ts`·`dots_proxy.py`도 설치 루트에 모드 `700`으로 배치합니다. 이때 Tailscale 연결이 잠시 끊길 수 있습니다.
+3. 기존 **setup/shim 코드 파일만** 별도 보관합니다. v0.3.0은 기존 `dots-ts`·`dots_proxy.py`도 포함하고 업데이트 전 파일이 없었다면 그 사실을 기록합니다. state·CA·SSH 개인키는 복제하거나 삭제하지 않습니다.
+4. GUI 터미널에서 실행 파일/명령행이 설치된 `shim/shim.py`와 일치하는 정확한 listener PID를 확인해 해당 프로세스만 종료합니다. 광범위한 `pkill python` 등은 사용하지 않습니다. 중복 shim이 없음을 확인한 뒤 `setup.sh`와 `shim/shim.py`에 검토한 파일을 모드 `700`으로 배치합니다. v0.3.0은 검토한 `dots-ts`·`dots_proxy.py`도 설치 루트에 모드 `700`으로 배치합니다. 이때 Tailscale 연결이 잠시 끊길 수 있습니다.
 5. 독립 터미널에서 설치된 `start.sh`를 실행합니다. 연결에 의존하는 셸에서 계속할 수밖에 없는 경우에는 먼저 제한 시간과 로그 경로를 지정한 분리 실행 및 코드 롤백 계획을 준비하세요. 이 문서는 자동 롤백이 있다고 주장하지 않습니다.
-6. 설치된 코드 파일의 SHA-256이 검토한 소스와 일치하는지 확인합니다. 개발판은 네 파일을 모두 대조합니다. backend `Running`, 로컬 SSH 배너, 클라이언트의 tailnet ping, 엄격한 호스트 키 검증을 유지한 SSH 공개키 로그인·명령 실행을 각각 검사하고 종료코드·일시를 기록합니다.
+6. 설치된 코드 파일의 SHA-256이 검토한 소스와 일치하는지 확인합니다. v0.3.0은 네 파일을 모두 대조합니다. backend `Running`, 로컬 SSH 배너, 클라이언트의 tailnet ping, 엄격한 호스트 키 검증을 유지한 SSH 공개키 로그인·명령 실행을 각각 검사하고 종료코드·일시를 기록합니다.
 7. 실패 시 독립 터미널에서 이전 **코드만** 복원하고 필요한 프로세스를 다시 기동합니다. 실패·롤백 결과를 기록하며 인증 파일 초기화로 해결하지 않습니다.
 
 환경 교체 후에는 `start.sh`를 직접 실행해야 합니다. 자동 시작이나 Dots 자동화 등록 기능은 구현하지 않았으며, Dots 자동화로 기동하는 방식도 시험하지 않았습니다.
