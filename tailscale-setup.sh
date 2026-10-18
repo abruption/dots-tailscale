@@ -185,6 +185,7 @@ install_all() {
   local shim_source="$SOURCE/shim.py"
   [[ -f "$shim_source" ]] || shim_source="$SOURCE/shim/shim.py"
   [[ -f "$shim_source" ]] || fail "missing companion shim.py"
+  [[ -f "$SOURCE/dots-ts" && -f "$SOURCE/dots_proxy.py" ]] || fail 'missing companions: dots-ts and dots_proxy.py (download the complete source set)'
   local tmp tgz url want got
   tmp="$(mktemp -d "$R/install.XXXXXX")"
   trap 'rm -rf -- "$tmp"' RETURN
@@ -238,6 +239,8 @@ Subsystem sftp internal-sftp
 CFG
   place "$tmp/sshd_config" "$S/sshd_config" 600
   place "${BASH_SOURCE[0]}" "$D/setup.sh" 700
+  place "$SOURCE/dots-ts" "$D/dots-ts" 700
+  place "$SOURCE/dots_proxy.py" "$D/dots_proxy.py" 700
   cat > "$tmp/start.sh" <<'START'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -255,10 +258,11 @@ start_all() {
     fail 'previously authenticated state is missing; restore it or review identity replacement manually'
   fi
   local f
-  for f in "$D/tailscale" "$D/tailscaled" "$D/shim/shim.py" "$D/shim/ca.crt" "$D/shim/ca.key" "$D/shim/bundle.crt" "$S/sshd_config" "$S/ssh_host_ed25519_key" "$S/authorized_keys"; do
+  for f in "$D/tailscale" "$D/tailscaled" "$D/dots-ts" "$D/dots_proxy.py" "$D/shim/shim.py" "$D/shim/ca.crt" "$D/shim/ca.key" "$D/shim/bundle.crt" "$S/sshd_config" "$S/ssh_host_ed25519_key" "$S/authorized_keys"; do
     [[ -f "$f" && ! -L "$f" ]] || fail "missing or symlink file: $f"
   done
   private_dir "$D/shim"; private_dir "$D/state"; private_dir "$S"
+  python3 "$D/dots_proxy.py" validate "$D" "$R" || fail 'invalid outbound proxy configuration'
   chmod 600 "$S/authorized_keys" "$S/ssh_host_ed25519_key" "$D/shim/ca.key"
   /usr/sbin/sshd -t -f "$S/sshd_config"
   # The supplied shim uses UPSTREAM_HOST/PORT; derive them from the configured proxy.
@@ -284,8 +288,14 @@ PY
     if [[ -e "$SOCK" ]]; then
       fail "socket exists but daemon cannot be identified: $SOCK; inspect before removing it"
     fi
+    local proxy_flags flag
+    local -a outbound_args=()
+    proxy_flags="$(python3 "$D/dots_proxy.py" startup "$D" "$R")" || fail 'invalid outbound proxy configuration or occupied port'
+    if [[ -n "$proxy_flags" ]]; then
+      while IFS= read -r flag; do outbound_args+=("$flag"); done <<< "$proxy_flags"
+    fi
     rotate "$R/tailscaled.log"
-    nohup "$D/tailscaled" --tun=userspace-networking --statedir="$D/state" --socket="$SOCK" --port=0 >> "$R/tailscaled.log" 2>&1 9>&- &
+    nohup "$D/tailscaled" --tun=userspace-networking --statedir="$D/state" --socket="$SOCK" --port=0 "${outbound_args[@]}" >> "$R/tailscaled.log" 2>&1 9>&- &
   fi
   local ready=0
   for _ in {1..20}; do

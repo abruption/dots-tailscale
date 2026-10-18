@@ -35,11 +35,24 @@ bash /workspace/.dots-tailscale/start.sh login
 
 The first login prints an approval URL. Add the client public key to the installed SSH `authorized_keys` file and verify the host-key fingerprint over the cloud computer's GUI terminal before connecting. After environment replacement, start the existing installation with `bash /workspace/.dots-tailscale/start.sh`. The scripts do not register automatic startup.
 
+## v0.3 development: diagnostics and private HTTP access
+
+`v0.2.0` remains the published release. The following helpers require the reviewed v0.3 development checkout containing this change; they become available from `main` after merge. There is no v0.3 release download yet.
+
+```bash
+/workspace/.dots-tailscale/dots-ts doctor
+/workspace/.dots-tailscale/dots-ts cli status
+/workspace/.dots-tailscale/dots-ts proxy show
+```
+
+`doctor` reads local diagnostics without changing state. `cli` selects the installed Tailscale binary and socket. Optional loopback SOCKS5/HTTP proxies are disabled by default and require a separately reviewed daemon restart to enable. See the [usage guide](docs/usage.md#development-helpers) and [private HTTP API recipe](docs/private-http-api.md) for configuration, access policy, and validation limits. These proxies do not automatically configure ChatGPT connectors, MCP clients, or the Dots browser.
+
 ## Included
 
 | Path | Purpose |
 |---|---|
 | `tailscale-setup.sh`, `shim.py` | Check, install, start, and explicitly authenticate Tailscale with local SSH |
+| `dots-ts`, `dots_proxy.py` | Development CLI, diagnostics, and optional per-process outbound proxy configuration |
 | `home-persistence-probe.py` | Record HOME and `/workspace` continuity markers |
 | `tests/` | Offline regression tests |
 

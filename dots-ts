@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""Local Tailscale CLI forwarding and bounded, shareable diagnostics."""
+import argparse
+import json
+import os
+import pathlib
+import re
+import socket
+import stat
+import subprocess
+import sys
+
+sys.dont_write_bytecode = True
+MANAGEMENT_TIMEOUT = 5
+
+
+def directories():
+    directory = pathlib.Path(os.environ.get("DOTS_TS_DIR", str(pathlib.Path(__file__).resolve().parent)))
+    if not directory.is_absolute():
+        raise ValueError("invalid_directory")
+    return directory, pathlib.Path("/tmp/dots-tailscale-{}".format(os.getuid()))
+
+
+def canonical(path):
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return None
+
+
+def script_operand(args):
+    i = 1
+    while i < len(args):
+        arg = args[i]
+        if arg == "--":
+            return args[i + 1] if i + 1 < len(args) else None
+        if arg == "--check-hash-based-pycs":
+            i += 2
+            continue
+        if not arg.startswith("-"):
+            return arg
+        if not re.fullmatch(r"-[uBEIsSObdiPqRvx]+", arg):
+            # -W/-X consume their operand, including in combined flags.
+            match = re.fullmatch(r"-[uBEIsSObdiPqRvx]*[WX](.*)", arg)
+            if not match:
+                return None
+            if not match.group(1):
+                i += 1
+        i += 1
+    return None
+
+
+def ssh_config(args):
+    if args and args[0].startswith("sshd: "):
+        args = args[0][6:].split()
+        if "[listener]" not in args:
+            return None
+        args = args[:args.index("[listener]")]
+    config = None
+    i = 1
+    while i < len(args):
+        arg = args[i]
+        if not arg.startswith("-") or len(arg) == 1:
+            return None
+        j = 1
+        while j < len(arg):
+            option = arg[j]
+            if option in "tT":
+                return None
+            if option in "cEfghopuC":
+                value = arg[j + 1:]
+                if not value:
+                    i += 1
+                    if i >= len(args):
+                        return None
+                    value = args[i]
+                if option == "f":
+                    if config is not None:
+                        return None
+                    config = value
+                break
+            if option not in "Ddeiq46":
+                return None
+            j += 1
+        i += 1
+    return config
+
+
+def process_checks(directory):
+    names = ("shim", "tailscaled", "sshd")
+    found = set()
+    uncertain = False
+    try:
+        entries = list(pathlib.Path("/proc").iterdir())
+    except OSError:
+        return {name: "unknown" for name in names}
+    expected = {"shim": canonical(str(directory / "shim/shim.py")),
+                "tailscaled": canonical(str(directory / "tailscaled")),
+                "sshd": canonical(str(directory / "sshd/sshd_config"))}
+    def operand_path(entry, operand):
+        if not os.path.isabs(operand):
+            try:
+                operand = os.path.join(os.readlink(str(entry / "cwd")), operand)
+            except OSError:
+                return None
+        return canonical(operand)
+    for entry in entries:
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            if entry.stat().st_uid != os.getuid():
+                continue
+            args = (entry / "cmdline").read_bytes().rstrip(b"\0").decode("utf-8", "surrogateescape").split("\0")
+        except FileNotFoundError:
+            continue
+        except OSError:
+            uncertain = True
+            continue
+        try:
+            exe = os.readlink(str(entry / "exe"))
+            if exe.endswith(" (deleted)"):
+                exe = exe[:-10]
+        except FileNotFoundError:
+            continue
+        except OSError:
+            uncertain = True
+            continue
+        executable = canonical(exe)
+        if executable is not None and executable == expected["tailscaled"]:
+            found.add("tailscaled")
+        interpreter = pathlib.PurePath(exe).name
+        if re.fullmatch(r"(?:python(?:3(?:\.\d+)?)?|pypy3(?:\.\d+)?)", interpreter) or (executable is not None and executable == canonical(sys.executable)):
+            operand = script_operand(args)
+            if operand and operand_path(entry, operand) == expected["shim"]:
+                found.add("shim")
+        if interpreter == "sshd":
+            operand = ssh_config(args)
+            if operand and operand_path(entry, operand) == expected["sshd"]:
+                found.add("sshd")
+    return {name: "running" if name in found else "unknown" if uncertain else "not_running" for name in names}
+
+
+def run_cli(directory, runtime, args, timeout=MANAGEMENT_TIMEOUT):
+    return subprocess.run([str(directory / "tailscale"), "--socket=" + str(runtime / "tailscaled.sock")] + args,
+                          input=b"", stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+
+
+def target_parts(target):
+    if target.startswith("["):
+        match = re.fullmatch(r"\[([^\]]+)\]:(\d+)", target)
+    else:
+        match = re.fullmatch(r"([^:\s]+):(\d+)", target)
+    if (not match or not 1 <= int(match.group(2)) <= 65535
+            or not re.fullmatch(r"[A-Za-z0-9_.:%-]+", match.group(1)) or match.group(1).startswith("-")):
+        raise ValueError("invalid_target")
+    return match.group(1), match.group(2)
+
+
+def probe_tcp(runtime, host, port):
+    # This is the same local userspace DialTCP upgrade used by tailscale nc.
+    # HTTP goes only to the local Unix socket: no payload is sent to the peer.
+    import time
+    deadline = time.monotonic() + MANAGEMENT_TIMEOUT
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(MANAGEMENT_TIMEOUT)
+        connection.connect(str(runtime / "tailscaled.sock"))
+        request = ("POST /localapi/v0/dial HTTP/1.1\r\nHost: local-tailscaled.sock\r\n"
+                   "Connection: upgrade\r\nUpgrade: ts-dial\r\nDial-Network: tcp\r\n"
+                   "Dial-Host: {}\r\nDial-Port: {}\r\nContent-Length: 0\r\n\r\n").format(host, port)
+        connection.sendall(request.encode("ascii"))
+        response = b""
+        while b"\r\n\r\n" not in response and len(response) < 16384:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout()
+            connection.settimeout(remaining)
+            data = connection.recv(1024)
+            if not data:
+                break
+            response += data
+        if b"\r\n\r\n" not in response:
+            return "invalid_response"
+        return "reachable" if re.match(br"HTTP/1\.[01] 101(?: |\r)", response) else "failed"
+
+
+def installed_file_status(path):
+    # Do not follow a leaf symlink: start_all refuses it even if its target is
+    # valid. Inspect metadata only; never read authentication/key contents.
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unknown"
+    if stat.S_ISLNK(mode):
+        return "unsafe_symlink"
+    return "present" if stat.S_ISREG(mode) else "not_regular"
+
+
+def doctor(directory, runtime, target=None):
+    files = ("installed", "setup.sh", "start.sh", "dots-ts", "dots_proxy.py", "tailscale", "tailscaled", "shim/shim.py",
+             "shim/ca.crt", "shim/ca.key", "shim/bundle.crt", "sshd/sshd_config",
+             "sshd/ssh_host_ed25519_key", "sshd/authorized_keys")
+    checks = {"files": {name: installed_file_status(directory / name) for name in files},
+              "processes": process_checks(directory),
+              "state": "present" if (directory / "state/tailscaled.state").is_file() else "missing",
+              "socket": "present" if (runtime / "tailscaled.sock").is_socket() else "missing",
+              "socket_response": "skipped",
+              "backend": "skipped", "authentication": "unknown", "target_tcp": "skipped"}
+    if checks["state"] == "present":
+        try:
+            if (directory / "state/tailscaled.state").stat().st_size == 0:
+                checks["state"] = "empty"
+        except OSError:
+            checks["state"] = "unknown"
+    if checks["socket"] == "present" and checks["files"]["tailscale"] == "present":
+        try:
+            result = run_cli(directory, runtime, ["status", "--json"])
+            checks["socket_response"] = "responsive" if result.returncode == 0 else "unavailable"
+            if result.returncode:
+                checks["backend"] = "unavailable"
+            else:
+                state = json.loads(result.stdout).get("BackendState")
+                checks["backend"] = {"Running": "running", "NeedsLogin": "needs_login", "NoState": "no_state",
+                                     "Stopped": "stopped", "Starting": "starting", "NeedsMachineAuth": "needs_approval"}.get(state, "unknown")
+                checks["authentication"] = {"Running": "authenticated", "NeedsLogin": "needs_login",
+                                            "NoState": "no_state", "NeedsMachineAuth": "needs_approval"}.get(state, "unknown")
+        except subprocess.TimeoutExpired:
+            checks["backend"] = "timeout"
+            checks["socket_response"] = "timeout"
+        except OSError:
+            checks["backend"] = "unavailable"
+            checks["socket_response"] = "unavailable"
+        except (ValueError, TypeError, AttributeError):
+            checks["backend"] = "invalid_response"
+    if target is not None:
+        host, port = target_parts(target)
+        try:
+            checks["target_tcp"] = probe_tcp(runtime, host, port)
+        except socket.timeout:
+            checks["target_tcp"] = "timeout"
+        except OSError:
+            checks["target_tcp"] = "unavailable"
+    try:
+        import dots_proxy
+        proxy = dots_proxy.inspect_config(directory, runtime)
+        checks["proxy"] = {}
+        for key in ("desired", "running"):
+            ports = proxy.get(key)
+            checks["proxy"][key] = {name: value for name, value in ports.items()
+                                    if name in ("socks_port", "http_port") and (value is None or type(value) is int and 0 <= value <= 65535)} if isinstance(ports, dict) else "unknown"
+        for key in ("restart_required", "daemon_running"):
+            if type(proxy.get(key)) is bool:
+                checks["proxy"][key] = proxy[key]
+    except Exception:
+        # The optional proxy module also raises its own sanitized config error.
+        # A broken/unsupported inspection is unknown, never echoed verbatim.
+        checks["proxy"] = {"desired": "unknown", "running": "unknown", "restart_required": None,
+                           "inspection": "unavailable"}
+    unhealthy = (any(value != "present" for value in checks["files"].values()) or checks["socket"] == "missing"
+                 or "not_running" in checks["processes"].values()
+                 or checks["backend"] in ("needs_login", "no_state", "stopped", "needs_approval", "unavailable", "timeout", "invalid_response")
+                 or checks["state"] in ("missing", "empty")
+                 or checks["target_tcp"] in ("failed", "timeout", "unavailable", "invalid_response"))
+    degraded = ("unknown" in checks["processes"].values() or checks["backend"] in ("unknown", "starting")
+                or checks["state"] == "unknown" or checks["proxy"].get("desired") == "unknown"
+                or checks["proxy"].get("restart_required", False))
+    overall = "unhealthy" if unhealthy else "degraded" if degraded else "healthy"
+    return {"checks": checks, "healthy": overall == "healthy", "overall": overall, "target_scope": "tcp_only"}, int(unhealthy)
+
+
+class SafeParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError("invalid_arguments")
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        directory, runtime = directories()
+        if argv and argv[0] == "cli":
+            os.execv(str(directory / "tailscale"), [str(directory / "tailscale"), "--socket=" + str(runtime / "tailscaled.sock")] + argv[1:])
+        if argv and argv[0] == "proxy":
+            import dots_proxy
+            try:
+                return dots_proxy.main(argv[1:], directory, runtime)
+            except dots_proxy.ProxyError as error:
+                # ProxyError messages are fixed explanations owned by the
+                # companion module; never append OS exception text or paths.
+                print("dots-ts: " + str(error), file=sys.stderr)
+                return 1
+        parser = SafeParser(description="Local CLI forwarding and read-only diagnostics.")
+        commands = parser.add_subparsers(dest="command", required=True)
+        diagnostic = commands.add_parser("doctor", help="bounded read-only checks; target probes are TCP only")
+        diagnostic.add_argument("--json", action="store_true")
+        diagnostic.add_argument("--target")
+        options = parser.parse_args(argv)
+        if options.target is not None:
+            target_parts(options.target)
+        report, code = doctor(directory, runtime, options.target)
+        if options.json:
+            print(json.dumps(report, sort_keys=True))
+        else:
+            print("dots-ts doctor: " + report["overall"])
+            for category, value in report["checks"].items():
+                print(category + ": " + json.dumps(value, sort_keys=True))
+            print("target_scope: tcp_only")
+        return code
+    except (OSError, ValueError, ImportError):
+        print("dots-ts: invalid_arguments_or_unavailable", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
