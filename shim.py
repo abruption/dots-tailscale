@@ -65,10 +65,10 @@ def upstream_connect(target):
     try:
         set_deadline(s, deadline)
         s.sendall(f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
-        head, _ = read_head(s, deadline)
+        head, rest = read_head(s, deadline)
         if " 200 " not in head.split("\r\n")[0]:
             raise OSError(head.split("\r\n")[0])
-        return s
+        return s, rest
     except BaseException:
         close(s)
         raise
@@ -202,14 +202,33 @@ def _ws_bridge(c, u, req_head, host, initial_data=b""):
     wlock = threading.Lock()
     def up_to_client():
         pre = [rest]
+        fragmented = False
         try:
             while True:
                 b0, b1 = recv_exact(u, 2, pre)
-                op, n = b0 & 0x0F, b1 & 0x7F
-                if n == 126: n = struct.unpack(">H", recv_exact(u, 2, pre))[0]
-                elif n == 127: n = struct.unpack(">Q", recv_exact(u, 8, pre))[0]
+                final, op, n = bool(b0 & 0x80), b0 & 0x0F, b1 & 0x7F
+                # No extensions are negotiated. Servers must not mask frames;
+                # checking before reading payload also avoids leaking mask bytes.
+                if b0 & 0x70 or b1 & 0x80 or op not in (0, 1, 2, 8, 9, 10):
+                    raise OSError("invalid WebSocket frame flags or opcode")
+                if op >= 8 and (not final or n > 125):
+                    raise OSError("invalid WebSocket control frame")
+                if (op == 0 and not fragmented) or (op in (1, 2) and fragmented):
+                    raise OSError("invalid WebSocket continuation")
+                if n == 126:
+                    n = struct.unpack(">H", recv_exact(u, 2, pre))[0]
+                    if n < 126:
+                        raise OSError("nonminimal WebSocket frame length")
+                elif n == 127:
+                    n = struct.unpack(">Q", recv_exact(u, 8, pre))[0]
+                    if n < 65536 or n & (1 << 63):
+                        raise OSError("invalid WebSocket frame length")
+                if op == 8 and n == 1:
+                    raise OSError("invalid WebSocket close payload length")
                 payload = recv_exact(u, n, pre)
-                if op in (0, 1, 2): c.sendall(payload)
+                if op in (0, 1, 2):
+                    fragmented = not final
+                    c.sendall(payload)
                 elif op == 9:
                     with wlock: u.sendall(ws_frame(0xA, payload))
                 elif op == 8: break
@@ -244,7 +263,12 @@ def handle(c):
             c.sendall(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n")
             return
         host, port = target.rsplit(":", 1)
-        u = upstream_connect(target)
+        u, upstream_initial = upstream_connect(target)
+        if port == "443" and upstream_initial:
+            # An upstream TLS server cannot send handshake records until this
+            # client sends ClientHello. Reject unexpected pre-handshake bytes:
+            # wrap_socket cannot consume a CONNECT parser's detached prebuffer.
+            raise OSError("unexpected tunnel data before upstream TLS handshake")
         c.settimeout(SETUP_TIMEOUT)
         c.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
         if port == "443":
@@ -265,6 +289,10 @@ def handle(c):
         elif initial:
             u.settimeout(SETUP_TIMEOUT)
             u.sendall(initial)
+        if upstream_initial:
+            # This runs before the receive pump, preserving order and avoiding
+            # duplication regardless of CONNECT response/read boundaries.
+            c.sendall(upstream_initial)
         # Never change shared socket timeouts underneath the upload worker.
         # An in-flight recv/sendall retains its original timeout even if the
         # timeout is later cleared. The HTTP response stage uses shutdown on a

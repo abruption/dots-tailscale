@@ -106,7 +106,7 @@ class SetupTests(unittest.TestCase):
     def test_client_tls_stall_closes_both_sockets(self):
         client, owned = self.pair()
         server, upstream = self.pair()
-        with mock.patch.object(shim, "upstream_connect", return_value=upstream), \
+        with mock.patch.object(shim, "upstream_connect", return_value=(upstream, b"")), \
                 mock.patch.object(shim, "leaf", return_value=self.server_ctx):
             with self.worker(lambda: shim.handle(owned)) as (worker, errors):
                 client.sendall(b"CONNECT example.test:443 HTTP/1.1\r\n\r\n")
@@ -119,7 +119,7 @@ class SetupTests(unittest.TestCase):
     def test_upstream_tls_stall_closes_both_sockets(self):
         client, owned = self.pair()
         server, upstream = self.pair()
-        with mock.patch.object(shim, "upstream_connect", return_value=upstream), \
+        with mock.patch.object(shim, "upstream_connect", return_value=(upstream, b"")), \
                 mock.patch.object(shim, "leaf", return_value=self.server_ctx), \
                 mock.patch.object(shim, "up_ctx", self.client_ctx):
             with self.worker(lambda: shim.handle(owned)) as (worker, errors):
@@ -199,7 +199,7 @@ class SetupTests(unittest.TestCase):
             with self.subTest(stage=stage):
                 client, owned = self.pair()
                 server, upstream = self.pair()
-                with mock.patch.object(shim, "upstream_connect", return_value=upstream), \
+                with mock.patch.object(shim, "upstream_connect", return_value=(upstream, b"")), \
                         mock.patch.object(shim, "leaf", return_value=IdentityTLS()), \
                         mock.patch.object(shim, "up_ctx", IdentityTLS()):
                     with self.worker(lambda: shim.handle(owned)) as (worker, errors):
@@ -241,7 +241,7 @@ class SetupTests(unittest.TestCase):
         client, owned = self.pair()
         server, upstream = self.pair()
         client.sendall(b"CONNECT example.test:22 HTTP/1.1\r\n\r\n")
-        with mock.patch.object(shim, "upstream_connect", return_value=upstream), \
+        with mock.patch.object(shim, "upstream_connect", return_value=(upstream, b"")), \
                 mock.patch.object(threading.Thread, "start", side_effect=RuntimeError("no threads")), \
                 contextlib.redirect_stderr(io.StringIO()):
             shim.handle(owned)
@@ -253,7 +253,7 @@ class SetupTests(unittest.TestCase):
     def test_raw_tunnel_survives_setup_deadline_then_cleans_up(self):
         client, owned = self.pair()
         server, upstream = self.pair()
-        with mock.patch.object(shim, "upstream_connect", return_value=upstream):
+        with mock.patch.object(shim, "upstream_connect", return_value=(upstream, b"")):
             with self.worker(lambda: shim.handle(owned)) as (worker, errors):
                 client.sendall(b"CONNECT example.test:22 HTTP/1.1\r\n\r\ninitial")
                 self.assertIn(b"200", head(client))

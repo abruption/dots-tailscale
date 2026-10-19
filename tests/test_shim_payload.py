@@ -83,6 +83,44 @@ def decode_client_frames(data):
 
 
 class UpgradePayloadTests(unittest.TestCase):
+    def test_raw_connect_response_preserves_tunnel_bytes_through_handle(self):
+        banner = b"SSH-2.0-example-server\r\n"
+        response = b"HTTP/1.1 200 Connection established\r\n\r\n"
+        for prefix in (0, 5, len(banner)):
+            with self.subTest(coalesced_bytes=prefix):
+                client = ScriptedSocket([
+                    b"CONNECT example.test:22 HTTP/1.1\r\n\r\nclient-initial"
+                ], wait_at_eof=True)
+                upstream = ScriptedSocket([
+                    response + banner[:prefix], banner[prefix:] + b"later\x00data"
+                ])
+                with mock.patch.object(shim.socket, "create_connection", return_value=upstream), \
+                        contextlib.redirect_stderr(io.StringIO()) as errors:
+                    shim.handle(client)
+                self.assertEqual(errors.getvalue(), "")
+                self.assertEqual(b"".join(client.sent), response + banner + b"later\x00data")
+                self.assertEqual(b"".join(upstream.sent),
+                    b"CONNECT example.test:22 HTTP/1.1\r\nHost: example.test:22\r\n\r\nclient-initial")
+                self.assertTrue(client.closed.is_set())
+                self.assertTrue(upstream.closed.is_set())
+
+    def test_tls_connect_unexpected_prebuffer_fails_before_tls_or_success(self):
+        client = ScriptedSocket([b"CONNECT example.test:443 HTTP/1.1\r\n\r\n"])
+        upstream = ScriptedSocket([
+            b"HTTP/1.1 200 Connection established\r\n\r\nunexpected"
+        ])
+        with mock.patch.object(shim.socket, "create_connection", return_value=upstream), \
+                mock.patch.object(shim, "leaf") as leaf, \
+                mock.patch.object(shim, "up_ctx") as upstream_tls, \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            shim.handle(client)
+        self.assertIn("unexpected tunnel data before upstream TLS handshake", errors.getvalue())
+        self.assertEqual(client.sent, [])
+        leaf.assert_not_called()
+        upstream_tls.wrap_socket.assert_not_called()
+        self.assertTrue(client.closed.is_set())
+        self.assertTrue(upstream.closed.is_set())
+
     def run_bridge(self, upgrade, chunks, response=None, fail_initial_send=False):
         client = ScriptedSocket([
             b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test\r\n\r\n",
@@ -110,7 +148,7 @@ class UpgradePayloadTests(unittest.TestCase):
             threads.append(thread)
             return thread
 
-        with mock.patch.object(shim, "upstream_connect", return_value=upstream), \
+        with mock.patch.object(shim, "upstream_connect", return_value=(upstream, b"")), \
                 mock.patch.object(shim, "leaf", return_value=IdentityTLS()), \
                 mock.patch.object(shim, "up_ctx", IdentityTLS()), \
                 mock.patch.object(shim.threading, "Thread", side_effect=make_thread), \
