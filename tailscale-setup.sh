@@ -315,7 +315,6 @@ import json, subprocess, sys, time
 
 deadline = time.monotonic() + float(sys.argv[3])
 last_state = None
-query_failed = True
 while True:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -329,9 +328,8 @@ while True:
         if not isinstance(state, str):
             raise ValueError('invalid backend state')
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
-        query_failed = True
+        pass
     else:
-        query_failed = False
         last_state = state
         if state in ('Running', 'NeedsLogin', 'NeedsMachineAuth'):
             print(state)
@@ -343,7 +341,7 @@ while True:
     if remaining > 0:
         time.sleep(min(0.5, remaining))
 
-if query_failed:
+if last_state is None:
     print('query_failed: backend status unavailable within 30s; inspect dots-ts doctor and runtime logs', file=sys.stderr)
     sys.exit(12)
 print('readiness_timeout: BackendState=' + last_state + '; inspect dots-ts doctor before retrying start', file=sys.stderr)
