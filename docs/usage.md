@@ -128,8 +128,12 @@ Replace the example username if your cloud-computer user differs. Use the addres
 | --- | --- |
 | Running and local SSH ready | `0` |
 | Authentication required (`needs_auth`) | `10` |
-| Another backend state (`unavailable`) | `11` |
+| Backend readiness deadline or another unavailable state | `11` |
+| Status queries fail or remain invalid at the deadline | `12` |
+| Administrator machine approval required (`needs_machine_auth`) | `13` |
 | Setup or component failure | Nonzero, normally `1` |
+
+Backend readiness uses one 30-second monotonic deadline per phase, including retries and sleeps; each status query has at most three seconds and no more than the remaining budget. `NoState` and `Starting` are retried. Successful CLI communication alone is not readiness. The deadline covers the backend phase, not all component initialization or explicit authentication: `login` retains its separate 180-second command limit before the final readiness phase; `auth` can use a precheck phase, its separate 60-second authentication limit, and a final phase. A new-launch status probe is capped at three seconds.
 
 Ordinary `start` does not invoke login. Previously authenticated state disappearing causes a failure for manual review rather than silent identity replacement. Existing conflicting files, partial CA installations, and missing established host keys also require review. Do not delete the installation directory to update a script: it holds node state and private keys.
 
