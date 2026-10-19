@@ -161,9 +161,15 @@ class TransportTests(unittest.TestCase):
             else:
                 self.assertEqual(errors, [])
 
-    def assert_peer_eof(self, peer):
+    def assert_peer_eof(self, peer, allow_reset=False):
         try:
             data = peer.recv(1)
+        except ConnectionResetError:
+            # Linux may reset a socket closed with unread malformed input.
+            # Keep clean-close assertions strict outside protocol-error cases.
+            if allow_reset:
+                return
+            raise
         except socket.timeout:
             self.fail("bridge did not propagate EOF before the peer deadline")
         self.assertEqual(data, b"")
@@ -332,8 +338,8 @@ class TransportTests(unittest.TestCase):
                     # With no valid frames before the error, both peers must
                     # observe EOF directly: no data, mask bytes, or normal pong.
                     with self.bridge(first_frame=frame, split=split) as (client, server, threads, _):
-                        self.assert_peer_eof(client)
-                        self.assert_peer_eof(server)
+                        self.assert_peer_eof(client, allow_reset=True)
+                        self.assert_peer_eof(server, allow_reset=True)
                         self.assert_workers_exit(threads)
 
     def test_fragmented_data_with_interleaved_control_preserves_stream(self):
