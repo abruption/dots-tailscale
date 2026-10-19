@@ -352,7 +352,7 @@ READY
 }
 authenticate_with_key() {
   local state key_file
-  state="$(backend)"
+  state="$(backend 30)"
   [[ "$state" != Running ]] || return 0
   key_file="${DOTS_TS_AUTH_KEY_FILE:-}"
   [[ -n "$key_file" ]] || fail 'auth mode requires DOTS_TS_AUTH_KEY_FILE'
@@ -390,7 +390,7 @@ if [[ "$MODE" = login ]]; then
   timeout 180 "$D/tailscale" --socket="$SOCK" up --hostname="$NODE_HOSTNAME" --ssh=false
 fi
 if [[ "$MODE" = auth ]]; then authenticate_with_key; fi
-state="$(backend)"
+state="$(backend 30)"
 case "$state" in
   Running) : > "$D/authenticated"; printf 'running: Tailscale and local SSH ready\n';;
   NeedsLogin) printf 'needs_auth: run bash %s/setup.sh login\n' "$D"; exit 10;;
