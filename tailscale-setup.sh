@@ -310,7 +310,7 @@ PY
 backend() {
   # One deadline covers all status queries and retry sleeps in this phase.
   # Optional duration is for isolated tests; normal startup always uses 30s.
-  python3 - "$D/tailscale" "$SOCK" "${1:-30}" <<'READY'
+  python3 - "$D/tailscale" "$SOCK" "${1:-30}" "${2:-backend}" <<'READY'
 import json, subprocess, sys, time
 
 deadline = time.monotonic() + float(sys.argv[3])
@@ -331,7 +331,8 @@ while True:
         pass
     else:
         last_state = state
-        if state in ('Running', 'NeedsLogin', 'NeedsMachineAuth'):
+        if (state in ('Running', 'NeedsLogin', 'NeedsMachineAuth')
+                or sys.argv[4] == 'api' and state in ('NoState', 'Starting', 'Stopped')):
             print(state)
             sys.exit(0)
         if state not in ('NoState', 'Starting'):
@@ -350,8 +351,8 @@ READY
 }
 authenticate_with_key() {
   local state key_file
-  state="$(backend 30)"
-  [[ "$state" != Running ]] || return 0
+  state="$(backend 30 api)"
+  [[ "$state" != Running && "$state" != NeedsMachineAuth ]] || return 0
   key_file="${DOTS_TS_AUTH_KEY_FILE:-}"
   [[ -n "$key_file" ]] || fail 'auth mode requires DOTS_TS_AUTH_KEY_FILE'
   python3 - "$key_file" <<'AUTH'
@@ -365,7 +366,7 @@ if stat.S_IMODE(st.st_mode) not in (0o600, 0o400): sys.exit('Auth key permission
 if not st.st_size: sys.exit('Auth key file is empty')
 AUTH
   timeout 60 "$D/tailscale" --socket="$SOCK" up --auth-key="file:$key_file" \
-    --hostname="$NODE_HOSTNAME" --ssh=false --timeout=45s
+    --hostname="$NODE_HOSTNAME" --ssh=false --timeout=45s || AUTH_COMMAND_STATUS=$?
 }
 case "$MODE" in check|install|start|login|auth) ;; *) fail 'usage: tailscale-setup.sh [check|install|start|login|auth]';; esac
 if [[ "$MODE" = check ]]; then
@@ -382,15 +383,25 @@ private_dir "$D"; private_dir "$R"
 exec 9> "$D/.operation.lock"
 flock -n 9 || fail 'another operation is running'
 if [[ "$MODE" = install ]]; then install_all; exit 0; fi
+AUTH_COMMAND_STATUS=0
 start_all
 if [[ "$MODE" = login ]]; then
-  # Explicit interactive action only; no auth key, no forced reauthentication.
-  timeout 180 "$D/tailscale" --socket="$SOCK" up --hostname="$NODE_HOSTNAME" --ssh=false
+  # Wait for the daemon's local API before starting an interactive command.
+  # NeedsLogin is ready for explicit up; machine approval needs no new login.
+  state="$(backend 30 api)"
+  if [[ "$state" != NeedsMachineAuth ]]; then
+    timeout 180 "$D/tailscale" --socket="$SOCK" up --hostname="$NODE_HOSTNAME" --ssh=false || AUTH_COMMAND_STATUS=$?
+  fi
 fi
 if [[ "$MODE" = auth ]]; then authenticate_with_key; fi
 state="$(backend 30)"
 case "$state" in
-  Running) : > "$D/authenticated"; printf 'running: Tailscale and local SSH ready\n';;
+  Running)
+    if [[ "${AUTH_COMMAND_STATUS:-0}" != 0 ]]; then
+      printf 'authentication_command_failed: backend is running but the explicit authentication command failed\n' >&2
+      exit "$AUTH_COMMAND_STATUS"
+    fi
+    : > "$D/authenticated"; printf 'running: Tailscale and local SSH ready\n';;
   NeedsLogin) printf 'needs_auth: run bash %s/setup.sh login\n' "$D"; exit 10;;
   NeedsMachineAuth) printf 'needs_machine_auth: approve this existing device in the Tailscale admin console\n'; exit 13;;
   *) printf 'unavailable: BackendState=%s\n' "$state"; exit 11;;
