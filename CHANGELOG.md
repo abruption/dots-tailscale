@@ -1,10 +1,16 @@
 # Changelog
 
-## v0.3.1 — unreleased
+## v0.3.1 — 2026-10-19
 
+- Wait for transient startup backend states within a bounded readiness deadline and distinguish authentication, approval and query failures (#25).
+- Explain read-only installation/runtime access and socket visibility in the current execution context, with safe GUI-terminal guidance (#26).
 - Validate and retain the proxy apply log descriptor before stopping the current daemon, including rollback launches (#32).
 - Preserve upstream CONNECT response remainder bytes in raw tunnels (#33).
 - Reject malformed upstream WebSocket frames before forwarding payloads or sending pong responses (#34).
+
+These fixes were merged in [PR #35](https://github.com/abruption/dots-tailscale/pull/35). The final combined candidate passed all 178 offline tests on Linux Python 3.11/3.13; focused proxy, shim, CLI and readiness suites also passed on actual Python 3.8/3.13. The candidate has not been deployed to Dots. Startup-readiness [PR #36](https://github.com/abruption/dots-tailscale/pull/36) and execution-context diagnostics [PR #37](https://github.com/abruption/dots-tailscale/pull/37) are merged and included in this release.
+
+See the [release preparation notes](docs/releases/v0.3.1.md).
 
 ## v0.3.0 — 2026-10-18
 
