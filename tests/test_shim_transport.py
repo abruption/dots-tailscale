@@ -308,6 +308,58 @@ class TransportTests(unittest.TestCase):
             self.assert_peer_eof(client)
             self.assert_workers_exit(threads)
 
+    def test_invalid_frames_fail_before_payload_or_pong_and_clean_up(self):
+        malformed = {
+            "masked-server": b"\x82\x83maskABC",
+            "rsv1": b"\xc2\x03ABC",
+            "rsv2": b"\xa2\x03ABC",
+            "rsv3": b"\x92\x03ABC",
+            "fragmented-ping": b"\x09\x03ABC",
+            "fragmented-close": b"\x08\x00",
+            "fragmented-pong": b"\x0a\x00",
+            "oversized-control": b"\x89\x7e\x00\x7e" + b"x" * 126,
+            "reserved-data-opcode": b"\x83\x03ABC",
+            "reserved-control-opcode": b"\x8b\x03ABC",
+            "orphan-continuation": b"\x80\x03ABC",
+            "nonminimal-16bit": b"\x82\x7e\x00\x03ABC",
+            "nonminimal-64bit": b"\x82\x7f" + (3).to_bytes(8, "big") + b"ABC",
+            "negative-64bit": b"\x82\x7f" + (1 << 63).to_bytes(8, "big"),
+            "one-byte-close": b"\x88\x01x",
+        }
+        for name, frame in malformed.items():
+            for split in (False, True):
+                with self.subTest(name=name, split=split):
+                    # With no valid frames before the error, both peers must
+                    # observe EOF directly: no data, mask bytes, or normal pong.
+                    with self.bridge(first_frame=frame, split=split) as (client, server, threads, _):
+                        self.assert_peer_eof(client)
+                        self.assert_peer_eof(server)
+                        self.assert_workers_exit(threads)
+
+    def test_fragmented_data_with_interleaved_control_preserves_stream(self):
+        with self.bridge(split=True) as (client, server, threads, _):
+            server.sendall(b"\x02\x01A" + server_frame(9, b"alive") +
+                           b"\x00\x01B" + server_frame(10, b"ignored") +
+                           b"\x80\x01C")
+            self.assertEqual(exact(client, 3), b"ABC")
+            self.assertEqual(client_frame(server), (10, b"alive"))
+            server.sendall(server_frame(2, b"next") + server_frame(8, b""))
+            self.assertEqual(exact(client, 4), b"next")
+            self.assert_peer_eof(client)
+            self.assert_peer_eof(server)
+            self.assert_workers_exit(threads)
+
+    def test_new_data_frame_during_fragmented_message_is_rejected(self):
+        for opcode in (1, 2):
+            with self.subTest(opcode=opcode):
+                with self.bridge() as (client, server, threads, _):
+                    server.sendall(b"\x02\x01A")
+                    self.assertEqual(exact(client, 1), b"A")
+                    server.sendall(server_frame(opcode, b"must-not-release"))
+                    self.assert_peer_eof(client)
+                    self.assert_peer_eof(server)
+                    self.assert_workers_exit(threads)
+
     def test_truncated_frame_terminates_both_workers(self):
         for incomplete in (b"\x82", b"\x82\x7e\x00", b"\x82\x05ab"):
             with self.subTest(incomplete=incomplete):

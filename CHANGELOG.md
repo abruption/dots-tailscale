@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.1 — unreleased
+
+- Validate and retain the proxy apply log descriptor before stopping the current daemon, including rollback launches (#32).
+- Preserve upstream CONNECT response remainder bytes in raw tunnels (#33).
+- Reject malformed upstream WebSocket frames before forwarding payloads or sending pong responses (#34).
+
 ## v0.3.0 — 2026-10-18
 
 - Add `dots-ts cli` for socket-aware Tailscale commands and a read-only `doctor` that reports installation, process, socket, backend, proxy and optional TCP reachability separately.

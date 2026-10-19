@@ -338,19 +338,32 @@ def _replace_flags(argv, config):
     return result + _flags(config)
 
 
-def _launch(argv, environment, r):
+@contextlib.contextmanager
+def _apply_log(r):
+    """Acquire one validated log before stopping a daemon, including rollback.
+
+    Keep its descriptor open across both launches: a changed pathname must not
+    invalidate recovery or redirect output into an unvalidated replacement.
+    """
     path = Path(r) / "proxy-apply.log"
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    except OSError as error:
+        raise ProxyError("cannot safely open proxy apply log; no daemon was stopped") from error
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
             raise ProxyError("unsafe proxy apply log")
         if info.st_size >= 1024 * 1024:
             os.ftruncate(fd, 0)
-        return subprocess.Popen(argv, env=environment, stdin=subprocess.DEVNULL, stdout=fd, stderr=fd,
-                                close_fds=True, start_new_session=True)
+        yield fd
     finally:
         os.close(fd)
+
+
+def _launch(argv, environment, log_fd):
+    return subprocess.Popen(argv, env=environment, stdin=subprocess.DEVNULL, stdout=log_fd, stderr=log_fd,
+                            close_fds=True, start_new_session=True)
 
 
 def _backend_running(d, r):
@@ -402,12 +415,12 @@ def _defer_signals():
             signal.signal(signum, handler)
 
 
-def _restart(d, r, desired, old, previous, environment, old_socket_identity):
+def _restart(d, r, desired, old, previous, environment, old_socket_identity, log_fd):
     _stop(old)
     child = None
     try:
         _remove_socket(d, r, old, old_socket_identity)
-        child = _launch(_replace_flags(old["argv"], desired), environment, r)
+        child = _launch(_replace_flags(old["argv"], desired), environment, log_fd)
         _ready(d, r, desired, child)
     except Exception as failure:
         if child is not None:
@@ -428,7 +441,7 @@ def _restart(d, r, desired, old, previous, environment, old_socket_identity):
             raise ProxyError("another daemon appeared; refusing rollback duplicate") from failure
         if _socket_identity(r) is not None:
             raise ProxyError("unknown socket remains; refusing rollback; use platform terminal recovery") from failure
-        restored = _launch(old["argv"], environment, r)
+        restored = _launch(old["argv"], environment, log_fd)
         try:
             _ready(d, r, previous, restored)
         except Exception as rollback:
@@ -470,8 +483,8 @@ def apply(d, r):
             raise ProxyError("daemon is not Running; no daemon was stopped")
         # Take the old process identity before any signal. Never kill by name.
         old_socket_identity = _socket_identity(r)
-        with _defer_signals() as interrupted:
-            _restart(d, r, desired, old, previous, environment, old_socket_identity)
+        with _apply_log(r) as log_fd, _defer_signals() as interrupted:
+            _restart(d, r, desired, old, previous, environment, old_socket_identity, log_fd)
             result = inspect_config(d, r)
             if interrupted:
                 result["interrupted_signal"] = interrupted[0]

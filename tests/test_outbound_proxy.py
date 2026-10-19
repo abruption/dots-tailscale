@@ -221,6 +221,11 @@ class OutboundProxyTests(unittest.TestCase):
             self.daemon.side_effect = [old, None, None]
             with self.assertRaisesRegex(proxy.ProxyError, "platform terminal recovery"):
                 proxy.apply(self.d, self.r)
+            descriptors = [call.args[2] for call in launch.call_args_list]
+            self.assertEqual(len(descriptors), 2)
+            self.assertEqual(descriptors[0], descriptors[1])
+            with self.assertRaises(OSError):
+                os.fstat(descriptors[0])
 
     def test_other_state_directory_is_rejected_before_stopping(self):
         with self.application() as (old, remove, stop, launch, ready):
@@ -343,9 +348,124 @@ class OutboundProxyTests(unittest.TestCase):
         path = self.r / "proxy-apply.log"
         path.write_bytes(b"x" * (1024 * 1024))
         path.chmod(0o600)
-        with mock.patch.object(proxy.subprocess, "Popen"):
-            proxy._launch(["unused"], {}, self.r)
+        with proxy._apply_log(self.r) as log_fd:
+            with mock.patch.object(proxy.subprocess, "Popen") as popen:
+                proxy._launch(["unused"], {}, log_fd)
+                self.assertEqual(popen.call_args.kwargs["stdout"], log_fd)
+                self.assertEqual(popen.call_args.kwargs["stderr"], log_fd)
         self.assertEqual(path.stat().st_size, 0)
+
+    def test_unsafe_or_unopenable_log_never_stops_daemon(self):
+        path = self.r / "proxy-apply.log"
+        target = self.r / "unrelated"
+        target.write_bytes(b"unchanged")
+        target.chmod(0o600)
+        real_open = os.open
+        for kind in ("mode", "symlink", "directory", "open-error"):
+            with self.subTest(kind=kind), self.application() as (old, remove, stop, launch, ready):
+                if kind == "mode":
+                    path.write_bytes(b"unchanged")
+                    path.chmod(0o644)
+                elif kind == "symlink":
+                    path.symlink_to(target)
+                elif kind == "directory":
+                    path.mkdir(mode=0o700)
+                def open_log(name, *args, **kwargs):
+                    if str(name) == str(path) and kind == "open-error":
+                        raise PermissionError("denied")
+                    return real_open(name, *args, **kwargs)
+                opened = []
+                real_fstat = os.fstat
+                def stat_fd(fd):
+                    info = real_fstat(fd)
+                    if kind == "mode" and info.st_mode & 0o777 == 0o644:
+                        opened.append(fd)
+                    return info
+                with mock.patch.object(proxy.os, "open", side_effect=open_log), \
+                        mock.patch.object(proxy.os, "fstat", side_effect=stat_fd):
+                    with self.assertRaises(proxy.ProxyError):
+                        proxy.apply(self.d, self.r)
+                stop.assert_not_called()
+                remove.assert_not_called()
+                launch.assert_not_called()
+                ready.assert_not_called()
+                self.assertTrue((self.r / "tailscaled.sock").is_socket())
+                for fd in opened:
+                    with self.assertRaises(OSError):
+                        real_fstat(fd)
+                self.assertEqual(target.read_bytes(), b"unchanged")
+                if kind == "directory":
+                    path.rmdir()
+                elif path.is_symlink() or path.exists():
+                    path.unlink()
+                (self.r / "tailscaled.sock").unlink()
+
+    def test_log_descriptor_closed_after_success_and_stop_failure(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail), self.application() as (old, remove, stop, launch, ready):
+                descriptors = []
+                def stopping(process):
+                    self.assertEqual((self.r / "proxy-apply.log").stat().st_mode & 0o777, 0o600)
+                    if fail:
+                        raise proxy.ProxyError("stop failed")
+                stop.side_effect = stopping
+                real_apply_log = proxy._apply_log
+                @contextlib.contextmanager
+                def capture_log(r):
+                    with real_apply_log(r) as fd:
+                        descriptors.append(fd)
+                        yield fd
+                with mock.patch.object(proxy, "_apply_log", side_effect=capture_log):
+                    if fail:
+                        with self.assertRaisesRegex(proxy.ProxyError, "stop failed"):
+                            proxy.apply(self.d, self.r)
+                    else:
+                        proxy.apply(self.d, self.r)
+                self.assertEqual(len(descriptors), 1)
+                with self.assertRaises(OSError):
+                    os.fstat(descriptors[0])
+                (self.r / "tailscaled.sock").unlink(missing_ok=True)
+
+    def test_replaced_log_path_keeps_same_descriptor_for_launch_and_rollback(self):
+        path = self.r / "proxy-apply.log"
+        original = self.r / "original-log"
+        victim = self.r / "unrelated"
+        victim.write_bytes(b"must not change")
+        victim.chmod(0o600)
+        real_launch = proxy._launch
+        for fail_at in ("launch", "ready"):
+            with self.subTest(fail_at=fail_at), self.application() as (old, remove, stop, launch, ready):
+                stop.side_effect = lambda process: (path.rename(original), path.symlink_to(victim))
+                descriptors = []
+                def popen(argv, **kwargs):
+                    fd = kwargs["stdout"]
+                    descriptors.append(fd)
+                    self.assertEqual(kwargs["stderr"], fd)
+                    self.assertEqual(os.fstat(fd).st_ino, original.stat().st_ino)
+                    os.write(fd, b"launch\n")
+                    if len(descriptors) == 1 and fail_at == "launch":
+                        raise OSError("exec failed")
+                    child = mock.Mock(pid=5678)
+                    child.poll.return_value = 1
+                    return child
+                launch.side_effect = real_launch
+                if fail_at == "ready":
+                    ready.side_effect = [proxy.ProxyError("candidate failed"), None]
+                    self.daemon.side_effect = [old, None, None]
+                else:
+                    self.daemon.side_effect = [old, None]
+                with mock.patch.object(proxy.subprocess, "Popen", side_effect=popen):
+                    with self.assertRaisesRegex(proxy.ProxyError, "previous daemon restored"):
+                        proxy.apply(self.d, self.r)
+                self.assertEqual(len(descriptors), 2)
+                self.assertEqual(descriptors[0], descriptors[1])
+                self.assertEqual(original.read_bytes(), b"launch\nlaunch\n")
+                self.assertEqual(victim.read_bytes(), b"must not change")
+                with self.assertRaises(OSError):
+                    os.fstat(descriptors[0])
+                self.daemon.side_effect = None
+                path.unlink()
+                original.unlink()
 
     def test_unrelated_unreadable_proc_executable_is_skipped(self):
         entry = mock.MagicMock()
