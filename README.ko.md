@@ -26,7 +26,7 @@ Linux x86_64, Git, Python 3, OpenSSH와 사용자 계정의 22번 포트 바인�
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.3.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.3.1 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -35,9 +35,9 @@ bash /workspace/.dots-tailscale/start.sh login
 
 최초 로그인 URL을 승인한 뒤 SSH 공개키를 설치 경로의 `authorized_keys`에 등록하세요. 호스트 키 지문은 클라우드 컴퓨터의 GUI 터미널에서 확인한 후 SSH로 접속합니다. 환경이 교체되면 `bash /workspace/.dots-tailscale/start.sh`로 기존 설치를 수동 기동하세요.
 
-## v0.3.0: 진단과 비공개 HTTP 접속
+## v0.3.1: 진단과 비공개 HTTP 접속
 
-아래 도구를 사용하려면 [v0.3.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.0)의 소스 파일 네 개를 함께 설치하세요.
+아래 도구를 사용하려면 [v0.3.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.1)의 소스 파일 네 개를 함께 설치하세요.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts doctor
