@@ -104,10 +104,11 @@ else:
                 self.assertLess(result.elapsed, 1.7)
 
     def test_slow_query_uses_remaining_total_budget(self):
-        result = self.run_backend(['NoState', 'hang'], seconds=0.8)
+        result = self.run_backend(['NoState', 'hang'], seconds=2)
         self.assertEqual(result.returncode, 12)
         self.assertIn('query_failed:', result.stderr)
-        self.assertLess(result.elapsed, 1.8)
+        self.assertLess(result.elapsed, 3)
+        self.assertEqual((self.directory / 'calls').read_text(), '2')
 
     def test_query_failure_and_invalid_json_have_query_error_code(self):
         for state in ('error', 'invalid', None):
