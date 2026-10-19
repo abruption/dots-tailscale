@@ -159,6 +159,14 @@ These commands require the v0.3.0 files installed together; they are not availab
 
 `doctor` is read-only: it does not start processes, authenticate, repair files, or change proxy settings. It reports redacted local checks by layer rather than declaring every application ready. Read `overall` and the individual results: `degraded` can still have exit code `0`. `--target HOST:PORT` additionally performs a bounded TCP reachability check through the local Tailscale daemon, not the application HTTP/SOCKS listener; it does not send credentials or prove TLS, API authentication, or authorization. A target name is still an explicit network request, so choose a service you intend to contact. See the [private HTTP API recipe](private-http-api.md) for application checks and the validation matrix.
 
+### Execution-context diagnostics
+
+`doctor` describes only the current execution context and its visible processes. Its additive JSON `context` object reports installation/runtime visibility, metadata-based read/write access, and filesystem `read_only`/`read_write`/`unknown` state. These are metadata and access checks; no write is attempted. `advice` contains fixed guidance IDs and `skipped_checks` identifies checks not performed; the human output expands the guidance.
+
+A missing socket can mean that it is invisible in this context while the daemon is running elsewhere. It remains `unhealthy` with exit `1` for the current context; a permission-denied or unresponsive socket is also a failure. Unknown inspection results and a read-only installation with otherwise healthy services are `degraded` with exit `0`; `healthy` is true only for `overall=healthy`. Inspect the individual fields rather than using exit `0` alone as proof of readiness. Socket metadata and connection results distinguish missing, access-denied and unavailable states.
+
+If the installation/runtime is read-only or inaccessible, or the socket is missing/unresponsive, open the cloud computer's independent GUI terminal and run `doctor` there. Do not infer that reinstalling, logging in, changing permissions, or resetting state is required. Equal user IDs do not prove equal filesystem or socket visibility. This diagnostic does not enter another namespace or change mounts.
+
 ### Configure and apply proxies separately
 
 ```bash

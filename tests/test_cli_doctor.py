@@ -95,7 +95,8 @@ class CliDoctorTests(unittest.TestCase):
         proxy = types.SimpleNamespace(inspect_config=lambda d, r: {"desired": {"socks_port": 0, "http_port": 0},
                 "running": {"socks_port": 0, "http_port": 0}, "restart_required": False, "daemon_running": True})
         with mock.patch.object(tool, "process_checks", return_value=processes or self.processes), \
-                mock.patch.object(pathlib.Path, "is_socket", return_value=True), \
+                mock.patch.object(tool, "socket_status", return_value="present"), \
+                mock.patch.object(tool, "socket_connection", return_value="connectable"), \
                 mock.patch.object(tool, "run_cli", return_value=result, side_effect=error), \
                 mock.patch.dict(sys.modules, {"dots_proxy": proxy}):
             return tool.doctor(self.directory, self.runtime, target)
@@ -175,7 +176,8 @@ class CliDoctorTests(unittest.TestCase):
             # once using the complete fixture and a failing optional inspection.
             self.populate()
             with mock.patch.object(tool, "process_checks", return_value=self.processes), \
-                    mock.patch.object(pathlib.Path, "is_socket", return_value=True), \
+                    mock.patch.object(tool, "socket_status", return_value="present"), \
+                mock.patch.object(tool, "socket_connection", return_value="connectable"), \
                     mock.patch.object(tool, "run_cli", return_value=types.SimpleNamespace(
                         returncode=0, stdout=b'{"BackendState":"Running"}')):
                 report, code = tool.doctor(self.directory, self.runtime)
@@ -213,6 +215,101 @@ class CliDoctorTests(unittest.TestCase):
         with mock.patch.object(pathlib.Path, "read_bytes", side_effect=AssertionError("secret file read")), \
                 mock.patch.object(pathlib.Path, "read_text", side_effect=AssertionError("secret file read")):
             self.diagnose()
+
+    def test_readonly_mount_overrides_optimistic_access_and_gives_context_advice(self):
+        with mock.patch.object(os, "statvfs", return_value=types.SimpleNamespace(f_flag=os.ST_RDONLY)), \
+                mock.patch.object(os, "access", return_value=True):
+            report, code = self.diagnose()
+        self.assertEqual(report["context"]["installation"]["filesystem"], "read_only")
+        self.assertEqual(report["context"]["installation"]["writable"], "denied")
+        self.assertEqual(report["overall"], "degraded")
+        self.assertEqual(code, 0)
+        self.assertIn("independent_gui_terminal", report["advice"])
+        self.assertEqual(report["context"]["scope"], "current_execution_context")
+        self.assertEqual(report["context"]["process_scope"], "visible_processes_only")
+
+    def test_directory_permission_denial_and_unknown_mount_are_distinct(self):
+        with mock.patch.object(pathlib.Path, "stat", side_effect=PermissionError("PRIVATE-PATH")):
+            result = tool.directory_context(self.directory)
+        self.assertEqual(result["visibility"], "access_denied")
+        self.assertEqual(result["filesystem"], "unknown")
+        with mock.patch.object(os, "statvfs", side_effect=PermissionError("PRIVATE-MOUNT")), \
+                mock.patch.object(os, "access", return_value=False):
+            result = tool.directory_context(self.directory)
+        self.assertEqual(result["visibility"], "present")
+        self.assertEqual(result["filesystem"], "unknown")
+        self.assertEqual(result["readable"], "denied")
+        self.assertEqual(result["writable"], "denied")
+        self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_socket_missing_denied_and_wrong_type_are_distinct(self):
+        path = self.runtime / "tailscaled.sock"
+        self.assertEqual(tool.socket_status(path), "missing")
+        path.write_text("not a socket")
+        self.assertEqual(tool.socket_status(path), "not_socket")
+        with mock.patch.object(pathlib.Path, "lstat", side_effect=PermissionError("PRIVATE")):
+            self.assertEqual(tool.socket_status(path), "access_denied")
+        with mock.patch.object(pathlib.Path, "lstat", side_effect=OSError("PRIVATE")):
+            self.assertEqual(tool.socket_status(path), "unknown")
+
+    def test_local_socket_connection_distinguishes_permission_and_unresponsive(self):
+        for error, expected in ((PermissionError("PRIVATE"), "access_denied"),
+                                (ConnectionRefusedError("PRIVATE"), "unavailable"),
+                                (socket.timeout("PRIVATE"), "timeout"),
+                                (FileNotFoundError("PRIVATE"), "missing")):
+            connection = mock.MagicMock()
+            connection.__enter__.return_value = connection
+            connection.connect.side_effect = error
+            with mock.patch.object(tool.socket, "socket", return_value=connection):
+                self.assertEqual(tool.socket_connection(self.runtime), expected)
+
+    def test_invisible_socket_is_unhealthy_here_and_skips_backend(self):
+        self.populate()
+        for visibility in ("missing", "access_denied", "unknown"):
+            with mock.patch.object(tool, "process_checks", return_value=self.processes), \
+                    mock.patch.object(tool, "socket_status", return_value=visibility), \
+                    mock.patch.object(tool, "socket_connection", side_effect=AssertionError("no connect")), \
+                    mock.patch.object(tool, "run_cli", side_effect=AssertionError("no CLI")), \
+                    mock.patch.dict(sys.modules, {"dots_proxy": types.SimpleNamespace(inspect_config=lambda d, r: {})}):
+                report, code = tool.doctor(self.directory, self.runtime)
+            self.assertEqual(report["checks"]["socket"], visibility)
+            self.assertEqual(report["checks"]["backend"], "skipped")
+            self.assertIn("backend", report["skipped_checks"])
+            self.assertIn("independent_gui_terminal", report["advice"])
+            self.assertEqual(code, 0 if visibility == "unknown" else 1)
+            self.assertFalse(report["healthy"])
+            self.assertNotIn(str(self.directory), json.dumps(report))
+
+    def test_unresponsive_socket_does_not_run_cli_and_gives_safe_human_advice(self):
+        self.populate()
+        for result in ("access_denied", "unavailable", "timeout"):
+            stream = io.StringIO()
+            with mock.patch.object(tool, "directories", return_value=(self.directory, self.runtime)), \
+                    mock.patch.object(tool, "process_checks", return_value=self.processes), \
+                    mock.patch.object(tool, "socket_status", return_value="present"), \
+                    mock.patch.object(tool, "socket_connection", return_value=result), \
+                    mock.patch.object(tool, "run_cli", side_effect=AssertionError("no CLI")), \
+                    mock.patch.dict(sys.modules, {"dots_proxy": types.SimpleNamespace(inspect_config=lambda d, r: {})}), \
+                    contextlib.redirect_stdout(stream):
+                code = tool.main(["doctor"])
+            self.assertEqual(code, 1)
+            output = stream.getvalue()
+            self.assertIn(result, output)
+            self.assertIn("independent GUI terminal", output)
+            self.assertIn("only this execution context", output)
+            for private in (str(self.directory), "PRIVATE", "sudo", "chmod", "reinstall"):
+                self.assertNotIn(private, output)
+
+    def test_healthy_context_has_no_peer_probes_or_recovery_advice(self):
+        with mock.patch.object(os, "statvfs", return_value=types.SimpleNamespace(f_flag=0)), \
+                mock.patch.object(os, "access", return_value=True), \
+                mock.patch.object(tool, "probe_tcp", side_effect=AssertionError("no peer probe")):
+            report, code = self.diagnose()
+        self.assertEqual(report["overall"], "healthy")
+        self.assertEqual(code, 0)
+        self.assertEqual(report["skipped_checks"], ["target_tcp"])
+        self.assertNotIn("independent_gui_terminal", report["advice"])
+        self.assertEqual(report["context"]["access_method"], "metadata_and_access_only")
 
     def test_proxy_command_delegates_with_directory_contract(self):
         proxy_main = mock.Mock(return_value=0)

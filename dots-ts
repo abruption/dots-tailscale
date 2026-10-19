@@ -197,23 +197,104 @@ def installed_file_status(path):
     return "present" if stat.S_ISREG(mode) else "not_regular"
 
 
+def directory_context(path):
+    """Metadata/access observations only; a positive access check is no write test."""
+    result = {"visibility": "unknown", "readable": "unknown", "writable": "unknown",
+              "filesystem": "unknown"}
+    try:
+        mode = path.stat().st_mode
+    except FileNotFoundError:
+        result["visibility"] = "missing"
+        return result
+    except PermissionError:
+        result["visibility"] = "access_denied"
+        return result
+    except OSError:
+        return result
+    if not stat.S_ISDIR(mode):
+        result["visibility"] = "not_directory"
+        return result
+    result["visibility"] = "present"
+    try:
+        flags = os.statvfs(str(path)).f_flag
+        readonly_flag = getattr(os, "ST_RDONLY", None)
+        if readonly_flag is not None:
+            result["filesystem"] = "read_only" if flags & readonly_flag else "read_write"
+    except OSError:
+        pass
+    try:
+        result["readable"] = "allowed" if os.access(str(path), os.R_OK | os.X_OK) else "denied"
+        result["writable"] = "allowed" if os.access(str(path), os.W_OK | os.X_OK) else "denied"
+    except OSError:
+        pass
+    if result["filesystem"] == "read_only":
+        result["writable"] = "denied"
+    return result
+
+
+def socket_status(path):
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return "missing"
+    except PermissionError:
+        return "access_denied"
+    except OSError:
+        return "unknown"
+    if stat.S_ISLNK(mode):
+        return "unsafe_symlink"
+    return "present" if stat.S_ISSOCK(mode) else "not_socket"
+
+
+def socket_connection(runtime):
+    """Check local connect permission independently of CLI execution failures."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(MANAGEMENT_TIMEOUT)
+            connection.connect(str(runtime / "tailscaled.sock"))
+        return "connectable"
+    except PermissionError:
+        return "access_denied"
+    except socket.timeout:
+        return "timeout"
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unavailable"
+
+
+ADVICE = {
+    "independent_gui_terminal": "Open the Dots cloud computer's independent GUI terminal and run dots-ts doctor there.",
+    "current_context_only": "These results describe only this execution context; an invisible daemon may be running elsewhere.",
+    "access_checks_only": "Directory access checks use metadata and access permissions; no write was attempted.",
+    "inspect_unknown_checks": "Some checks could not be completed; inspect them from the independent GUI terminal."
+}
+
+
 def doctor(directory, runtime, target=None):
     files = ("installed", "setup.sh", "start.sh", "dots-ts", "dots_proxy.py", "tailscale", "tailscaled", "shim/shim.py",
              "shim/ca.crt", "shim/ca.key", "shim/bundle.crt", "sshd/sshd_config",
              "sshd/ssh_host_ed25519_key", "sshd/authorized_keys")
     checks = {"files": {name: installed_file_status(directory / name) for name in files},
               "processes": process_checks(directory),
-              "state": "present" if (directory / "state/tailscaled.state").is_file() else "missing",
-              "socket": "present" if (runtime / "tailscaled.sock").is_socket() else "missing",
+              "state": installed_file_status(directory / "state/tailscaled.state"),
+              "socket": socket_status(runtime / "tailscaled.sock"),
               "socket_response": "skipped",
               "backend": "skipped", "authentication": "unknown", "target_tcp": "skipped"}
+    context = {"scope": "current_execution_context", "process_scope": "visible_processes_only",
+               "access_method": "metadata_and_access_only",
+               "installation": directory_context(directory), "runtime": directory_context(runtime)}
     if checks["state"] == "present":
         try:
             if (directory / "state/tailscaled.state").stat().st_size == 0:
                 checks["state"] = "empty"
         except OSError:
             checks["state"] = "unknown"
-    if checks["socket"] == "present" and checks["files"]["tailscale"] == "present":
+    connection = socket_connection(runtime) if checks["socket"] == "present" else "skipped"
+    if connection not in ("connectable", "skipped"):
+        checks["socket_response"] = connection
+        checks["backend"] = "unavailable"
+    if connection == "connectable" and checks["files"]["tailscale"] == "present":
         try:
             result = run_cli(directory, runtime, ["status", "--json"])
             checks["socket_response"] = "responsive" if result.returncode == 0 else "unavailable"
@@ -257,16 +338,29 @@ def doctor(directory, runtime, target=None):
         # A broken/unsupported inspection is unknown, never echoed verbatim.
         checks["proxy"] = {"desired": "unknown", "running": "unknown", "restart_required": None,
                            "inspection": "unavailable"}
-    unhealthy = (any(value != "present" for value in checks["files"].values()) or checks["socket"] == "missing"
+    unhealthy = (any(value != "present" for value in checks["files"].values()) or checks["socket"] in ("missing", "access_denied", "unsafe_symlink", "not_socket")
                  or "not_running" in checks["processes"].values()
                  or checks["backend"] in ("needs_login", "no_state", "stopped", "needs_approval", "unavailable", "timeout", "invalid_response")
-                 or checks["state"] in ("missing", "empty")
+                 or checks["state"] in ("missing", "empty", "unsafe_symlink", "not_regular")
                  or checks["target_tcp"] in ("failed", "timeout", "unavailable", "invalid_response"))
-    degraded = ("unknown" in checks["processes"].values() or checks["backend"] in ("unknown", "starting")
+    context_restricted = any(item["filesystem"] == "read_only" or item["readable"] == "denied"
+                             or item["writable"] == "denied" or item["visibility"] != "present"
+                             for item in (context["installation"], context["runtime"]))
+    context_unknown = any("unknown" in item.values() for item in (context["installation"], context["runtime"]))
+    degraded = (context_restricted or context_unknown or checks["socket"] == "unknown"
+                or "unknown" in checks["processes"].values() or checks["backend"] in ("unknown", "starting")
                 or checks["state"] == "unknown" or checks["proxy"].get("desired") == "unknown"
                 or checks["proxy"].get("restart_required", False))
     overall = "unhealthy" if unhealthy else "degraded" if degraded else "healthy"
-    return {"checks": checks, "healthy": overall == "healthy", "overall": overall, "target_scope": "tcp_only"}, int(unhealthy)
+    advice = ["current_context_only", "access_checks_only"]
+    if (context_restricted or checks["socket"] != "present" or connection not in ("connectable", "skipped")
+            or checks["socket_response"] in ("unavailable", "timeout", "access_denied")):
+        advice.append("independent_gui_terminal")
+    if context_unknown or checks["socket"] == "unknown" or "unknown" in checks["processes"].values():
+        advice.append("inspect_unknown_checks")
+    skipped = [name for name in ("socket_response", "backend", "target_tcp") if checks[name] == "skipped"]
+    return {"checks": checks, "healthy": overall == "healthy", "overall": overall, "target_scope": "tcp_only",
+            "context": context, "advice": advice, "skipped_checks": skipped}, int(unhealthy)
 
 
 class SafeParser(argparse.ArgumentParser):
@@ -305,6 +399,10 @@ def main(argv=None):
             for category, value in report["checks"].items():
                 print(category + ": " + json.dumps(value, sort_keys=True))
             print("target_scope: tcp_only")
+            print("context: " + json.dumps(report["context"], sort_keys=True))
+            print("skipped_checks: " + json.dumps(report["skipped_checks"]))
+            for advice in report["advice"]:
+                print("advice: " + ADVICE[advice])
         return code
     except (OSError, ValueError, ImportError):
         print("dots-ts: invalid_arguments_or_unavailable", file=sys.stderr)
