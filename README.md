@@ -1,6 +1,6 @@
 <h1 align="center">dots-tailscale</h1>
 
-<p align="center">English · <a href="README.ko.md">한국어</a></p>
+<p align="center">English · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a></p>
 
 Run Tailscale with user-level OpenSSH in a Dots cloud computer. Installation files, node state, and SSH identity live in `/workspace`; runtime sockets, PIDs, and logs are recreated in `/tmp`.
 
@@ -56,4 +56,4 @@ Install all four source files from [v0.3.1](https://github.com/abruption/dots-ta
 | `home-persistence-probe.py` | Record HOME and `/workspace` continuity markers |
 | `tests/` | Offline regression tests |
 
-See the [English usage guide](docs/usage.md), [Korean usage guide](docs/usage.ko.md), and [MIT License](LICENSE).
+See the [English usage guide](docs/usage.md), [Korean usage guide](docs/usage.ko.md), [Simplified Chinese usage guide](docs/usage.zh-CN.md), [Japanese usage guide](docs/usage.ja.md), and [MIT License](LICENSE).

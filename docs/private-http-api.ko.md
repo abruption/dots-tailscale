@@ -1,6 +1,6 @@
 # Dots에서 비공개 HTTP API에 접속하기
 
-[English](private-http-api.md) · [사용 가이드](usage.ko.md#development-helpers)
+[English](private-http-api.md) · 한국어 · [简体中文](private-http-api.zh-CN.md) · [日本語](private-http-api.ja.md) · [사용 가이드](usage.ko.md#development-helpers)
 
 다른 tailnet 장비의 HTTPS API를 Dots 터미널 프로세스에서 선택적 로컬 Tailscale 프록시로 호출하는 예시입니다. v0.3.0 도구를 함께 설치해야 하며 v0.2.0에는 없습니다.
 

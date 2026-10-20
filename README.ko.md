@@ -1,6 +1,6 @@
 <h1 align="center">dots-tailscale</h1>
 
-<p align="center"><a href="README.md">English</a> · 한국어</p>
+<p align="center"><a href="README.md">English</a> · 한국어 · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a></p>
 
 Dots 클라우드 컴퓨터에서 사용자 권한으로 Tailscale과 OpenSSH를 실행합니다. 설치 파일·장치 state·SSH identity는 `/workspace`, 실행 socket·PID·로그는 `/tmp`에 둡니다.
 
@@ -56,4 +56,4 @@ bash /workspace/.dots-tailscale/start.sh login
 | `home-persistence-probe.py` | HOME과 `/workspace` 식별자 관찰 |
 | `tests/` | 오프라인 회귀 테스트 |
 
-[English guide](docs/usage.md) · [MIT License](LICENSE)
+[English guide](docs/usage.md) · [한국어 사용 가이드](docs/usage.ko.md) · [简体中文使用指南](docs/usage.zh-CN.md) · [日本語の使い方](docs/usage.ja.md) · [MIT License](LICENSE)

@@ -1,6 +1,6 @@
 # Usage
 
-[English README](../README.md) · [한국어 사용법](usage.ko.md)
+English · [한국어](usage.ko.md) · [简体中文](usage.zh-CN.md) · [日本語](usage.ja.md) · [Project overview](../README.md)
 
 These instructions target a user-level installation in an environment that preserves `/workspace` across environment replacements. The recovery path reuses saved installation files, authentication state, and SSH host keys, without a new login while saved credentials remain valid. Installation does not register a startup hook; run the start command in each new environment.
 
@@ -250,6 +250,8 @@ The first run creates a random marker in `$HOME/.dots-home-persistence-marker.js
 Marker loss is evidence of marker loss, not proof that the entire HOME directory was reset. Hostname, boot ID, and PID 1 start ticks provide context; boot ID alone cannot distinguish a container replacement from a host reboot. If the workspace baseline disappears too, the next run creates a new baseline, so retain a result outside the VM for comparison.
 
 Custom paths are available through `--home` and `--probe-root`. No periodic execution is registered for this probe.
+
+<a id="restart-update"></a>
 
 ## Update installed scripts
 

@@ -1,6 +1,6 @@
 # 사용 가이드
 
-[English](usage.md) · [프로젝트 소개](../README.ko.md)
+[English](usage.md) · 한국어 · [简体中文](usage.zh-CN.md) · [日本語](usage.ja.md) · [프로젝트 소개](../README.ko.md)
 
 `/workspace`가 환경 교체 후에도 유지되는 Dots 환경에서 실행합니다. 설치·인증 상태와 실행 중에만 필요한 파일을 다른 위치에 두어 재기동 시 기존 장치 신원을 이어 사용합니다.
 

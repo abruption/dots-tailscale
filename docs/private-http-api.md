@@ -1,6 +1,6 @@
 # Access a private HTTP API from Dots
 
-[한국어](private-http-api.ko.md) · [Usage](usage.md#development-helpers)
+English · [한국어](private-http-api.ko.md) · [简体中文](private-http-api.zh-CN.md) · [日本語](private-http-api.ja.md) · [Usage guide](usage.md#development-helpers)
 
 This recipe covers an HTTPS API on another tailnet device, called from a Dots terminal process through the optional local Tailscale proxy. It requires the v0.3.0 helpers installed together; release v0.2.0 does not contain them.
 
@@ -146,6 +146,8 @@ To use SOCKS5 instead, change only `proxy` to `socks5h://127.0.0.1:1080` after e
 | Configuration disabled and applied | Local listener is unavailable; `disable` alone records desired state and is not proof the active listener stopped |
 
 An HTTP 401 means an HTTP server answered; it is not a network-policy denial. A timeout alone cannot identify ACL, firewall, routing, or DNS as the cause. Use the smallest useful check and avoid recording tokens or private response bodies.
+
+<a id="current-validation"></a>
 
 ## Validation status
 
