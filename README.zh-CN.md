@@ -10,7 +10,7 @@
 
 ![Dots 终端中的安装检查以及 Tailscale 版本 1.102.4 截图](docs/assets/dots-tailscale-ssh-verification.png)
 
-这是维护者提供的 Dots 桌面终端截图，显示了已有安装的检查结果和状态，以及 Tailscale 版本 1.102.4。截图使用了原始图片，没有重新安装。
+这是维护者提供的 Dots 桌面终端截图，显示了已有安装的检查结果和状态，以及 Tailscale 版本 1.102.4。截图使用了原始图片，并未展示新安装或 VM 替换。
 
 ```bash
 bash /workspace/.dots-tailscale/start.sh check
@@ -51,7 +51,7 @@ bash /workspace/.dots-tailscale/start.sh login
 
 | 路径 | 用途 |
 |---|---|
-| `tailscale-setup.sh`, `shim.py` | 检查、安装和启动 Tailscale 及本地 SSH；Tailscale 身份验证需明确执行 |
+| `tailscale-setup.sh`, `shim.py` | 检查、安装和启动 Tailscale；配置本地 OpenSSH；Tailscale 身份验证需明确执行 |
 | `dots-ts`, `dots_proxy.py` | CLI、诊断，以及可选的按进程配置出站代理 |
 | `home-persistence-probe.py` | 记录 HOME 和 `/workspace` 的连续性标记 |
 | `tests/` | 离线回归测试 |

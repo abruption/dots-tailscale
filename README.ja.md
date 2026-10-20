@@ -10,7 +10,7 @@ Dots のクラウドコンピューターで、ユーザー権限の OpenSSH と
 
 ![Dots ターミナルでインストール状況と Tailscale バージョン 1.102.4 を確認する画面](docs/assets/dots-tailscale-ssh-verification.png)
 
-Dots デスクトップのターミナルで撮影された、メンテナー提供のスクリーンショットです。既存のインストール状況とステータス、および Tailscale 1.102.4 のバージョンが表示されています。提供された画像をそのまま使用しており、このスクリーンショットのために新たなインストールは行っていません。
+Dots デスクトップのターミナルで撮影された、メンテナー提供のスクリーンショットです。既存のインストール状況とステータス、および Tailscale 1.102.4 のバージョンが表示されています。提供された画像をそのまま使用しており、新規インストールや VM の入れ替えを示すものではありません。
 
 ```bash
 bash /workspace/.dots-tailscale/start.sh check
@@ -51,7 +51,7 @@ bash /workspace/.dots-tailscale/start.sh login
 
 | パス | 用途 |
 |---|---|
-| `tailscale-setup.sh`, `shim.py` | Tailscale とローカル SSH の確認・インストール・起動、および Tailscale の明示的な認証 |
+| `tailscale-setup.sh`, `shim.py` | Tailscale の確認・インストール・起動、ローカル OpenSSH の設定、Tailscale の明示的な認証 |
 | `dots-ts`, `dots_proxy.py` | CLI、診断、およびプロセスごとの任意の外向きプロキシ設定 |
 | `home-persistence-probe.py` | HOME と `/workspace` の継続性を示すマーカーを記録 |
 | `tests/` | オフライン回帰テスト |

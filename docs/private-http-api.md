@@ -2,7 +2,7 @@
 
 English · [한국어](private-http-api.ko.md) · [简体中文](private-http-api.zh-CN.md) · [日本語](private-http-api.ja.md) · [Usage guide](usage.md#development-helpers)
 
-This recipe covers an HTTPS API on another tailnet device, called from a Dots terminal process through the optional local Tailscale proxy. It requires the v0.3.0 helpers installed together; release v0.2.0 does not contain them.
+This recipe covers an HTTPS API on another tailnet device, called from a Dots terminal process through the optional local Tailscale proxy. This recipe requires all helper files from v0.3.0 or newer; v0.2.0 and earlier do not include them.
 
 ## Connection path and prerequisites
 
@@ -15,11 +15,11 @@ The optional SOCKS5 alternative is `socks5h://127.0.0.1:1080`; the `h` delegates
 
 Prepare these independently:
 
-- A Dots Tailscale node authenticated to the intended tailnet, with the v0.3.0 helpers installed.
+- A Dots Tailscale node authenticated to the intended tailnet, with the complete helper set from v0.3.0 or newer installed.
 - A private API device reachable in that tailnet, with an HTTPS listener bound to its intended private/Tailscale interface and port. A listener bound only to the API device's `127.0.0.1` is not reachable from Dots. Avoid exposing it on a public interface as a shortcut.
 - A destination name that resolves through the chosen proxy and matches the API certificate. Use a trusted public CA or explicitly provide your private CA file to the client; an IP address also needs a matching certificate identity.
 - Tailnet permission for only the required source, destination, and TCP port, plus server-side bearer authentication and API authorization. Tailscale connectivity does not replace API authentication.
-- A read-only authenticated `/health` endpoint that deliberately returns only a small nonprivate response, for example `{"status":"ok"}`. Replace the sample endpoint with your server's equivalent, not a data-export or mutation endpoint.
+- An authenticated, read-only `/health` endpoint that returns only a small response without sensitive information, for example `{"status":"ok"}`. Replace the sample endpoint with your server's equivalent, not a data-export or mutation endpoint.
 
 ## Limit network access
 
@@ -127,7 +127,7 @@ print("Expected read-only health response received")
 PY
 ```
 
-The request does not follow redirects; verify the canonical endpoint rather than forwarding a credential to another location. HTTPS certificate and hostname verification stay enabled. The response is capped at 4 KiB and only its status and expected-shape result are printed; the sample server's response contract is intentionally nonprivate. Do not point this check at a response containing private records.
+The request does not follow redirects; verify the canonical endpoint rather than forwarding a credential to another location. HTTPS certificate and hostname verification stay enabled. The response is capped at 4 KiB and only its status and expected-shape result are printed; the sample server returns no sensitive information. Do not point this check at a response containing private records.
 
 To use SOCKS5 instead, change only `proxy` to `socks5h://127.0.0.1:1080` after enabling that listener. `--noproxy ''` prevents curl's bypass list from skipping the chosen proxy. Clearing `NO_PROXY`/`no_proxy` and inherited CA overrides (`CURL_CA_BUNDLE`, `SSL_CERT_FILE`, `SSL_CERT_DIR`) affects only the curl child process, not your shell or other applications. For a private CA, explicitly supply a reviewed `ca_file` through `--cacert`. No system proxy, browser setting, MCP configuration, or ChatGPT plugin/connector setting is changed. A separate client must explicitly support and configure this proxy; arbitrary integrations are not automatically able to reach this API.
 
@@ -138,7 +138,7 @@ To use SOCKS5 instead, change only `proxy` to `socks5h://127.0.0.1:1080` after e
 | Check | Expected result and interpretation |
 | --- | --- |
 | Local installation, socket, daemon, and proxy configuration | `doctor` and `proxy show` distinguish saved configuration from running state; inspect their layer results |
-| Allowed source to intended host and port | TCP succeeds; authenticated read-only health check returns HTTP 200 and the agreed nonprivate response |
+| Allowed source to intended host and port | TCP succeeds; the authenticated, read-only health check returns HTTP 200 and the agreed response without sensitive information |
 | Missing or deliberately invalid API token | Server rejects the request, normally HTTP 401; some services use 403. No sensitive body should be returned |
 | Device or destination port outside the allowed policy | Connection is denied or times out before an API response; verify policy tests and absence of broader permits |
 | Untrusted CA or hostname mismatch | TLS verification fails; fix the certificate or trust configuration, never disable verification |

@@ -1,16 +1,12 @@
 # 使用指南
 
-[英文使用指南](usage.md) · [韩语使用指南](usage.ko.md) · 简体中文使用指南 · [日语使用指南](usage.ja.md) · [项目介绍](../README.zh-CN.md)
+[English](usage.md) · [한국어](usage.ko.md) · 简体中文 · [日本語](usage.ja.md) · [项目介绍](../README.zh-CN.md)
 
 本指南适用于用户级安装，前提是环境替换后 `/workspace` 仍会保留。恢复时会复用已保存的安装文件、身份验证状态和 SSH 主机密钥；只要已保存的凭据仍有效，就无需重新登录。安装过程不会注册启动钩子；每次进入新环境时都要运行启动命令。
 
-## 已发布版本与验证
+## 已发布版本
 
 首次公开仓库的克隆与原始文件下载已与准备好的源文件核对确认。[版本 v0.3.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.1)包含 ZIP 和 tar.gz 压缩包，也提供 `tailscale-setup.sh`、`shim.py`、`dots-ts` 和 `dots_proxy.py` 四个单独的资源文件。安装示例将源版本固定为 `v0.3.1`。捆绑的 Tailscale 版本仍为 `1.102.4`。
-
-![Dots 桌面终端中的安装检查和 Tailscale 版本截图](assets/dots-tailscale-ssh-verification.png)
-
-这张由维护者提供的截图展示了 Dots 桌面终端中的 `start.sh check` 和 Tailscale 版本 `1.102.4`。提供的图片未经修改。截图记录的是现有安装的文件、状态和 CLI 版本，并非新安装或 VM 替换后的情况。
 
 <a id="download-proxy"></a>
 
@@ -76,7 +72,7 @@ bash /workspace/.dots-tailscale/start.sh login
 bash /workspace/.dots-tailscale/start.sh
 ```
 
-如需检查状态或显式进行身份验证，可向已安装的包装脚本传入 `check` 或 `login`。安装会在安装目录中生成 `start.sh`，并将 `tailscale-setup.sh` 复制为 `setup.sh`。生成的包装脚本会根据自身位置确定该目录，并调用同级的 `setup.sh`。
+如需检查状态或显式进行身份验证，可向已安装的包装脚本传入 `check` 或 `login`。安装会在安装目录中生成 `start.sh`，并将 `tailscale-setup.sh` 复制为 `setup.sh`。生成的包装脚本会根据自身位置确定该目录，并调用同级的 `setup.sh`。更新现有安装时，请按照下文的[更新步骤](#restart-update)操作。
 
 | 设置 | 默认值 |
 | --- | --- |
@@ -84,7 +80,7 @@ bash /workspace/.dots-tailscale/start.sh
 | `UPSTREAM_PROXY` | `http://browser-proxy:8889` |
 | `NODE_HOSTNAME` | `dots-sandbox` |
 
-备用的 `DOTS_TS_DIR` 必须是绝对路径，且不能包含空白字符。安装和之后每次启动都应使用一致的设置。当前 shim 监听端口 18089，SSH 监听端口 22；此配置仅支持单个安装实例。
+备用的 `DOTS_TS_DIR` 必须是绝对路径，且不能包含空白字符。`UPSTREAM_PROXY` 必须使用不含身份验证信息的 HTTP 代理 URL。安装和之后每次启动都应使用一致的设置。当前 shim 监听端口 18089，SSH 监听端口 22；此配置仅支持单个安装实例。
 
 ### SSH 密钥与就绪状态
 
@@ -247,9 +243,15 @@ python3 /workspace/dots-tailscale/home-persistence-probe.py
 | `home_marker_changed_workspace_intact` | HOME 标记发生变化或已消失，但 workspace 标记仍然完好 |
 | `marker_continuity_changed` | 其他标记连续性发生变化 |
 
-标记丢失只能证明标记丢失，不能证明整个 HOME 目录已被重置。主机名、启动 ID 和 PID 1 的启动时刻可提供上下文；仅凭启动 ID 无法区分容器替换和主机重启。如果 workspace 基线也消失，下次运行会创建新基线，因此请在 VM 之外保留探测结果以供比较。
+标记丢失只能证明标记丢失，不能证明整个 HOME 目录已被重置。主机名、启动 ID 和 PID 1 的启动时刻可提供上下文；仅凭启动 ID 无法区分容器替换和主机重启。如果 workspace 基线也消失，下次运行会创建新基线，因此请在 VM 外部保留结果以便比较。
 
-可使用 `--home` 和 `--probe-root` 指定自定义路径。此探测程序不会注册定期运行。
+你可以通过 SSH 运行探测程序，并将结果保存在 VM 外的客户端以便比较：
+
+```bash
+ssh agent@dots-sandbox 'python3 /workspace/dots-tailscale/home-persistence-probe.py' > observation.json
+```
+
+请根据自己的设置调整 SSH 密钥文件和主机别名。结果包含主机名和标记 ID，公开分享前请先匿名化。可使用 `--home` 和 `--probe-root` 指定自定义路径。此探测程序不会注册定期运行。
 
 <a id="restart-update"></a>
 
@@ -306,10 +308,49 @@ shim 发生变化时，请按以下步骤部署：
 
 受控重启成功只能证明该环境中的进程恢复能力，不能证明 VM 替换后的持久性。连续性探测仅用于观察：等待环境自然变化，在外部保留结果，并单独评估已通过身份验证的连续性。连续性探测无需强制重置或重启。
 
+## 文件存储位置与 SSH 权限
+
+| 路径 | 内容 |
+|---|---|
+| `/workspace/.dots-tailscale/state` | Tailscale 身份验证状态 |
+| `/workspace/.dots-tailscale/shim` | shim、CA、私钥和证书 |
+| `/workspace/.dots-tailscale/sshd` | SSH 配置、主机密钥和 `authorized_keys` |
+| `/tmp/dots-tailscale-$(id -u)` | 每用户的套接字、PID 和运行日志 |
+
+如果已认证安装的 state 文件丢失，脚本会停止，不会自动生成另一个设备身份。不要将同一个 Tailscale 节点的 state 复制到多个同时运行的 VM。`/workspace` 并非自动私密的位置；只能使用你能控制访问权限的目录。SSH 服务器使用 `StrictModes no`，因为 `/workspace` 上级目录的权限可能导致 OpenSSH 拒绝公钥身份验证。存储目录权限会限制为 `700`；SSH 密钥、`authorized_keys` 和 CA 私钥的权限会限制为 `600`。启动时只检查 Tailscale CLI 和本地 SSH banner；不会在每次启动时测试远程公钥登录。重启时，超过 1 MiB 的日志会轮换并只保留一代。进程持续运行期间，日志大小没有上限。
+
+探测进程时即使无法访问 `/proc` 中的部分条目，脚本也会继续；如果 CLI 能够响应，则会复用现有的 tailscaled。对于无法识别的守护进程套接字，脚本不会自动删除。
+
 ## 保护生成的文件
 
 不要将 Tailscale 状态、主机和客户端私钥、shim CA 私钥、身份验证密钥文件、生成的备份或运行时日志提交到 Git。不要将一个 Tailscale 节点的状态复制到多个同时运行的 VM。`/workspace` 并非自动私密的位置；只能使用你能控制访问权限的目录。
 
+<a id="current-validation"></a>
+
+## 当前验证情况
+
+![Dots 桌面终端中显示安装文件、状态和 Tailscale 版本的截图](assets/dots-tailscale-ssh-verification.png)
+
+这张由维护者提供的截图展示了 Dots 桌面终端中现有安装的文件和状态，以及 Tailscale 版本 `1.102.4`。截图并未展示新安装或 VM 替换。
+
+```bash
+bash /workspace/.dots-tailscale/start.sh check
+/workspace/.dots-tailscale/tailscale version
+```
+
+- 维护者此前观察到安装连续运行超过 24 小时。环境替换后，`/workspace` 中的安装文件仍被保留，并通过手动运行 `start.sh` 成功重启。
+- 2026-10-14，修订版 shim 完成了实时 DERP ping，以及在严格主机密钥验证下的 SSH 公钥登录和命令检查。该修订版之后是否经历过 VM 替换并成功恢复，尚未得到观察。
+- `check` 会报告文件和本地状态。`running: Tailscale and local SSH ready` 表示 backend 为 Running，且本地 SSH banner 有响应；这并不能验证远程公钥登录。
+- Auth Key 注册和通过 Dots 自动化启动尚未经过测试。
+
 ## 离线回归检查
 
 在仓库检出目录中运行 `python3 -m unittest discover -s tests -v` 和 `bash -n tailscale-setup.sh`。入门测试需要 Git、Bash、Python 3，以及 OpenSSH 客户端和服务器工具。测试会使用一次性仓库、密钥、`known_hosts`、模拟的 Tailscale CLI 和隔离的 Unix 套接字。SSH 通过本地 stdio 运行，不会开启监听器；这些测试不会向 tailnet 进行身份验证、测试实时代理，也不会验证 VM 替换。
+
+## 故障排查
+
+- `cannot inspect process`（旧版本）或 `process inspection failed`（当前版本）：当前脚本会跳过无法访问的部分 `/proc` 条目。请按照上文的[更新步骤](#restart-update)，用经过审查的代码更新已安装的 `setup.sh`。
+- `Permission denied (publickey)`：检查 `sshd/authorized_keys` 中公钥的指纹，并按需添加客户端公钥。`running` 消息并不能确认远程公钥身份验证成功。
+- `existing file differs`：已安装文件与源文件不一致。检查配置和密钥，然后只更新需要更新的文件。不要删除整个安装目录，其中还保存着 state 和主机密钥。
+- `socket exists but daemon cannot be identified`：检查现有守护进程和套接字。脚本不会自动删除无法识别的套接字。
+- 粘贴后出现 `^[[200~` 等终端控制文本：取消命令，然后逐行输入。继续前请检查命令内容和主机密钥指纹。

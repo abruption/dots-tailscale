@@ -2,15 +2,11 @@
 
 [English](usage.md) · [한국어](usage.ko.md) · [简体中文](usage.zh-CN.md) · 日本語 · [プロジェクト概要](../README.ja.md)
 
-この手順は、環境の入れ替え後も `/workspace` が保持される環境で、ユーザー権限でインストールする場合を対象とします。保存済みの認証情報が有効な間は、新たにログインせず、保存済みのインストールファイル、認証状態、SSH ホスト鍵を使って復旧できます。インストール時に自動起動フックは登録されません。新しい環境ごとに start コマンドを実行してください。
+この手順は、環境の入れ替え後も `/workspace` が保持される環境で、ユーザー権限でインストールする場合を対象とします。保存済みの認証情報が有効な間は、保存済みのインストールファイル、認証状態、SSH ホスト鍵を再利用し、新たにログインせずに復旧できます。インストール時に自動起動フックは登録されないため、新しい環境ごとに start コマンドを実行してください。
 
-## 公開バージョンと検証
+## 公開リリース
 
 公開リポジトリの初回 clone と raw ファイルのダウンロードは、準備済みのソースと照合して検証しました。[Release v0.3.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.1) には ZIP と tar.gz のアーカイブに加えて、`tailscale-setup.sh`、`shim.py`、`dots-ts`、`dots_proxy.py` が個別のアセットとして含まれています。インストール例ではソースを `v0.3.1` に固定しています。同梱される Tailscale のバージョンは引き続き `1.102.4` です。
-
-![Dots デスクトップターミナルでインストール状況と Tailscale のバージョンを確認するスクリーンショット](assets/dots-tailscale-ssh-verification.png)
-
-メンテナー提供のこのスクリーンショットには、Dots デスクトップターミナルで実行した `start.sh check` と Tailscale のバージョン `1.102.4` が写っています。提供された画像をそのまま使用しています。新規インストールや VM の入れ替えではなく、既存インストールのファイル、状態、CLI バージョンを示すものです。
 
 <a id="download-proxy"></a>
 
@@ -76,7 +72,7 @@ bash /workspace/.dots-tailscale/start.sh login
 bash /workspace/.dots-tailscale/start.sh
 ```
 
-確認や明示的な認証を行うには、インストール済みラッパーに `check` または `login` を渡します。インストール時にインストールディレクトリへ `start.sh` が生成され、`tailscale-setup.sh` は `setup.sh` としてコピーされます。生成されたラッパーは自身の場所からディレクトリを特定し、同じ場所にある `setup.sh` を実行します。
+確認や明示的な認証を行うには、インストール済みラッパーに `check` または `login` を渡します。インストール時にインストールディレクトリへ `start.sh` が生成され、`tailscale-setup.sh` は `setup.sh` としてコピーされます。生成されたラッパーは自身の場所からディレクトリを特定し、同じ場所にある `setup.sh` を実行します。既存のインストールを更新する場合は、下記の[更新手順](#restart-update)を使ってください。
 
 | 設定 | 既定値 |
 | --- | --- |
@@ -84,7 +80,7 @@ bash /workspace/.dots-tailscale/start.sh
 | `UPSTREAM_PROXY` | `http://browser-proxy:8889` |
 | `NODE_HOSTNAME` | `dots-sandbox` |
 
-別の `DOTS_TS_DIR` を指定する場合は、空白を含まない絶対パスにしてください。インストール時とその後の起動時で同じ設定を使います。shim は現在ポート 18089、SSH はポート 22 で待ち受けます。この構成ではインストールは 1 つだけです。
+別の `DOTS_TS_DIR` を指定する場合は、空白を含まない絶対パスにしてください。`UPSTREAM_PROXY` には認証情報を含まない HTTP プロキシ URL を指定します。インストール時とその後の起動時で同じ設定を使います。shim は現在ポート 18089、SSH はポート 22 で待ち受けるため、この構成で同時に実行できるインストールは 1 つだけです。
 
 ### SSH 鍵と接続準備
 
@@ -247,7 +243,13 @@ python3 /workspace/dots-tailscale/home-persistence-probe.py
 | `home_marker_changed_workspace_intact` | workspace マーカーはそのままで、HOME マーカーが変化または消失 |
 | `marker_continuity_changed` | その他のマーカー継続性の変化 |
 
-マーカーが失われたことはマーカーの消失を示しますが、HOME ディレクトリ全体がリセットされた証拠ではありません。hostname、boot ID、PID 1 の開始時刻は状況判断の材料になります。boot ID だけではコンテナーの入れ替えとホストの再起動を区別できません。workspace の baseline も消失した場合、次回実行時に新しい baseline が作られるため、比較用の結果を VM の外にも保存してください。
+マーカーが失われたことはマーカーの消失を示しますが、HOME ディレクトリ全体がリセットされた証拠ではありません。hostname、boot ID、PID 1 の開始時刻は状況判断の材料になります。boot ID だけではコンテナーの入れ替えとホストの再起動を区別できません。workspace の baseline も消失した場合、次回実行時に新しい baseline が作られるため、比較用の結果を VM の外にも保存してください。probe を SSH 経由で実行し、結果をクライアント側に保存することもできます。
+
+```bash
+ssh agent@dots-sandbox 'python3 /workspace/dots-tailscale/home-persistence-probe.py' > observation.json
+```
+
+SSH キーとホスト別名は自分の設定に合わせてください。結果には hostname とマーカー ID が含まれるため、公開前に匿名化してください。
 
 カスタムパスは `--home` と `--probe-root` で指定できます。この probe の定期実行は登録されません。
 
@@ -306,10 +308,49 @@ shim を変更する場合は、次の手順で展開します。
 
 制御された再起動の成功で確認できるのは、その環境でプロセスが復旧することです。VM の入れ替え後も保持されることの確認にはなりません。継続性 probe は観測用です。自然な環境変更を待ち、結果を外部に保存して、認証状態が継続したかを別途評価してください。この probe のために強制リセットや再起動を行う必要はありません。
 
+## ファイルの保存場所と SSH の権限
+
+| パス | 内容 |
+| --- | --- |
+| `/workspace/.dots-tailscale/state` | Tailscale の認証 state |
+| `/workspace/.dots-tailscale/shim` | shim、CA、秘密鍵、証明書 |
+| `/workspace/.dots-tailscale/sshd` | SSH 設定、ホスト鍵、`authorized_keys` |
+| `/tmp/dots-tailscale-$(id -u)` | ユーザーごとのソケット、PID、実行ログ |
+
+同じ Tailscale ノードの state を、同時に稼働する複数の VM にコピーしないでください。`/workspace` は自動的に非公開になる場所ではありません。アクセスを管理できるディレクトリだけを使ってください。SSH サーバーは、親ディレクトリ `/workspace` の権限によって OpenSSH が公開鍵認証を拒否することがあるため、`StrictModes no` を使用します。セットアップは保存ディレクトリをモード `700`、SSH キー、`authorized_keys`、CA 秘密鍵をモード `600` に制限します。起動時の確認対象は Tailscale CLI とローカル SSH バナーまでで、リモートからの公開鍵ログインを毎回試すことはありません。再起動時には 1 MiB を超えるログを1世代だけローテーションします。プロセスが動き続けている間、ログサイズに上限はありません。
+
+`/proc` 内でアクセスできないプロセスがあっても探索を続け、CLI に応答する既存の tailscaled を再利用します。識別できないデーモンのソケットは自動削除しません。
+
 ## 生成ファイルを保護する
 
-Tailscale state、ホストとクライアントの秘密鍵、shim の CA 秘密鍵、auth key ファイル、生成したバックアップ、ランタイムログを Git に含めないでください。1つの Tailscale ノードの state を、同時に稼働する複数の VM にコピーしないでください。`/workspace` が自動的に非公開の場所になるわけではありません。アクセスを管理できるディレクトリだけを使ってください。
+Tailscale state、ホストとクライアントの秘密鍵、shim の CA 秘密鍵、auth key ファイル、生成したバックアップ、ランタイムログを Git に含めないでください。
+
+<a id="current-validation"></a>
+
+## 現在の検証状況
+
+![Dots デスクトップターミナルでインストールファイル、状態、Tailscale のバージョンを示すスクリーンショット](assets/dots-tailscale-ssh-verification.png)
+
+メンテナー提供のこのスクリーンショットには、Dots デスクトップターミナルの既存インストールファイルと状態、および Tailscale `1.102.4` が写っています。新規インストールや VM の入れ替えを示すものではありません。
+
+```bash
+bash /workspace/.dots-tailscale/start.sh check
+/workspace/.dots-tailscale/tailscale version
+```
+
+- 以前のバージョンでは、インストールが24時間を超えて稼働することを確認しています。環境の入れ替え後も `/workspace` のインストールファイルが保持され、`start.sh` による手動再起動に成功しました。
+- 2026-10-14、修正版 shim は実環境の DERP ping と、厳格なホスト鍵確認を用いた SSH 公開鍵ログインおよびコマンド実行に成功しました。この版で、その後の VM 入れ替え後の復旧はまだ確認されていません。
+- `check` はファイルとローカル状態を報告します。`running: Tailscale and local SSH ready` は backend が Running で、ローカル SSH バナーが応答することを意味します。リモートの公開鍵ログインは確認しません。
+- Auth Key による登録と、Dots オートメーション経由の起動は未検証です。
 
 ## オフライン回帰チェック
 
 リポジトリ checkout から `python3 -m unittest discover -s tests -v` と `bash -n tailscale-setup.sh` を実行します。オンボーディングテストには Git、Bash、Python 3、OpenSSH のクライアント／サーバーツールが必要です。テストでは使い捨てのリポジトリ、鍵、`known_hosts`、モックした Tailscale CLI、分離した Unix ソケットを使います。SSH はリスナーなしでローカル stdio 経由で実行します。これらのテストでは tailnet 認証、実際のプロキシ接続、VM の入れ替えは検証しません。
+
+## トラブルシューティング
+
+- `cannot inspect process` または `process inspection failed`: 現在のスクリプトはアクセスできない `/proc` の項目をスキップします。既存インストールの `setup.sh` は、上記の[更新手順](#restart-update)に従って確認済みのコードに更新してください。
+- `Permission denied (publickey)`: `sshd/authorized_keys` にある公開鍵のフィンガープリントを確認し、必要に応じてクライアントの公開鍵を追加してください。`running` の表示はリモートの公開鍵認証成功を意味しません。
+- `existing file differs`: インストール済みファイルがソースと異なります。設定と鍵を確認し、必要なファイルだけを更新してください。インストールディレクトリ全体を削除しないでください。state とホスト鍵も含まれています。
+- `socket exists but daemon cannot be identified`: 既存のデーモンとソケットを確認してください。スクリプトは識別できないソケットを自動削除しません。
+- 貼り付け後に `^[[200~` などの端末制御文字が表示される場合: コマンドを中止し、1行ずつ入力してください。続行前に、実際に実行するコマンドとホスト鍵のフィンガープリントを確認してください。

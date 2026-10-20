@@ -2,7 +2,7 @@
 
 [English](private-http-api.md) · [한국어](private-http-api.ko.md) · 简体中文 · [日本語](private-http-api.ja.md) · [使用指南](usage.zh-CN.md#development-helpers)
 
-本指南介绍如何在 Dots 终端进程中，通过可选的本地 Tailscale 代理调用 tailnet 上另一台设备的 HTTPS API。使用此功能需要一并安装 v0.3.0 辅助工具；v0.2.0 版不包含这些工具。
+本指南介绍如何在 Dots 终端进程中，通过可选的本地 Tailscale 代理调用 tailnet 上另一台设备的 HTTPS API。所需辅助工具从 v0.3.0 起提供；请安装 v0.3.0 或更新版本中的完整辅助工具集。v0.2.0 及更早版本不包含这些工具。
 
 ## 连接路径与前置条件
 
@@ -15,7 +15,7 @@ Dots curl process -> 127.0.0.1:8080 HTTP CONNECT proxy
 
 请分别准备以下各项：
 
-- 已通过身份验证并加入目标 tailnet 的 Dots Tailscale 节点，且已安装 v0.3.0 辅助工具。
+- 已通过身份验证并加入目标 tailnet 的 Dots Tailscale 节点，且已安装 v0.3.0 或更新版本中的完整辅助工具集。
 - tailnet 中可访问的私有 API 设备，并且 HTTPS 监听器绑定到预期的私有/Tailscale 接口和端口。若监听器只绑定到 API 设备的 `127.0.0.1`，Dots 将无法访问。不要为了省事而将它暴露到公网接口。
 - 一个能通过所选代理解析、且与 API 证书匹配的目标名称。请使用受信任的公共 CA，或明确向客户端提供私有 CA 文件；如果使用 IP 地址，证书身份也必须与该 IP 匹配。
 - 仅允许所需源设备、目标设备和 TCP 端口的 tailnet 权限，并配置服务器端 bearer 身份验证和 API 授权。Tailscale 连通性不能代替 API 身份验证。
