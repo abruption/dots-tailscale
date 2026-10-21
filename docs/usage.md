@@ -159,6 +159,72 @@ JSON separates `package.declared_version`, `package.source_revision`, `package.i
 
 For maintainers: after intentional source changes, run `python3 scripts/source_manifest.py`, review the resulting diff, then run `python3 scripts/source_manifest.py --check`. CI runs the check without rewriting files. Regenerate only in the reviewed source checkout, not in an installed directory. A release must distribute the matching manifest alongside the four source assets; the existing v0.3.1 release does not contain it.
 
+<a id="update-management"></a>
+
+## Release checks and local notifications (development)
+
+These commands are being developed for v0.4.0. They require the new helpers; publishing a release does not update an existing installation. Release checks accept only stable releases from `abruption/dots-tailscale` with the four source files and a matching `source-manifest.json`. Older releases without this manifest, including v0.3.1, are reported as unsupported rather than treated as verified update bundles.
+
+```bash
+/workspace/.dots-tailscale/dots-ts update check --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.4.0 --proxy http://browser-proxy:8889 --json
+```
+
+The second example selects a specific stable version; it works only after that release exists. Without `--proxy`, the check uses direct HTTPS and does not inherit proxy credentials from the shell. Pass the platform download proxy explicitly when needed. This is separate from the shim and application SOCKS/HTTP proxies. HTTPS certificate verification remains enabled. No GitHub token is needed.
+
+`update check` changes no installed code, node state, configuration or processes. The JSON `status` is `update_available`, `current`, `local_newer`, `not_comparable`, or `check_failed`; `selection` identifies latest versus pinned selection. The exit code is 0 for a valid comparison, 1 when the local installation cannot be compared, and 2 for a lookup failure. Check the status rather than assuming exit 0 means an update exists. Unknown, modified or mixed local sources do not become a trusted version merely because a remote release was found.
+
+Notifications are opt-in and local. They do not install updates, register a timer or send external messages:
+
+```bash
+/workspace/.dots-tailscale/dots-ts update notifications configure --enable --interval-hours 24
+/workspace/.dots-tailscale/dots-ts update notifications refresh --proxy http://browser-proxy:8889
+/workspace/.dots-tailscale/dots-ts update notifications show
+/workspace/.dots-tailscale/dots-ts update notifications notify
+/workspace/.dots-tailscale/dots-ts update notifications configure --disable
+```
+
+`refresh` performs the bounded network check and saves a local result. It reuses a fresh result within the configured interval; `--force` explicitly refreshes early. `notify` reads the cache only, respects expiry and suppresses repeated notices for the same version. Successful interactive startup can display a cached notice on stderr within a short time limit; failed notification checks never change the startup result. Raw `cli` forwarding and JSON output do not gain notice text. Read-only storage or failed refreshes do not turn old data into a new successful check. Use `show` to inspect the recorded time and stale/error state. A separate, explicitly configured caller is needed for periodic refresh, and no VM-local command runs while the VM is absent.
+
+### Verified manual updates
+
+Run from an environment where the installation, its runtime socket and Linux process information are visible. `update apply` requires Linux with Python 3.9 or newer and pidfd support. Before starting, open the cloud computer's independent terminal and make sure you can control it. `--confirm-recovery-terminal` records your acknowledgement; it cannot check that terminal for you. SSH initiation is supported because the transaction worker detaches from the calling session, but the SSH connection itself is not a recovery path.
+
+Choose a fixed stable release after checking it:
+
+```bash
+/workspace/.dots-tailscale/dots-ts update apply --tag v0.4.1 --proxy http://browser-proxy:8889 --confirm-recovery-terminal --json
+/workspace/.dots-tailscale/dots-ts update status --id TRANSACTION_ID --json
+```
+
+These are examples, not an announcement that v0.4.1 exists. Replace `TRANSACTION_ID` with the ID returned by apply. A reviewed local source bundle can be used when release downloads are blocked or when explicitly testing an unreleased candidate:
+
+```bash
+/workspace/.dots-tailscale/dots-ts update apply --bundle /workspace/reviewed-bundle --confirm-recovery-terminal --json
+```
+
+The bundle must contain the four source files and their matching original manifest. Local selection can contain a development version; it is not presented as a published GitHub release. The updater validates hashes and syntax before replacing files. A matching checksum proves consistency with the selected bundle, not independent trust in its author.
+
+`started` means the detached worker has accepted the operation, not that the update succeeded. Poll `update status` after reconnecting. Terminal outcomes distinguish `applied`, `failed_rolled_back`, and `rollback_failed_manual_required`. Local readiness and version verification do not prove external SSH access: after `applied` or a successful rollback, open a new SSH connection with strict host-key checking and test the intended connection separately.
+
+The worker backs up and replaces only the four source files and their manifest, while holding the same operation lock used by setup and proxy apply. It restarts only the identified shim process; tailscaled and sshd stay running. Node state, login credentials, private keys, SSH configuration and proxy settings are not copied or reset. Releases that change the bundled Tailscale binary version are outside this updater's scope and are refused. No unknown process is killed and no socket is removed.
+
+A matching installed manifest is required. For older installations without metadata, first compare all four installed files against an independently obtained, reviewed release. Do not generate expected checksums from the installed files themselves. If provenance cannot be established or files are mixed, stop for manual review. A source checkout used for a deliberate migration must also match its own manifest before its updater can run against an existing installation.
+
+A prior incomplete transaction blocks new updates. After a killed worker or VM replacement, inspect status and the code-only backup from the independent terminal; do not delete the journal to force a retry or assume the next step is safe. If rollback cannot establish readiness, keep the evidence and recover manually from the verified backup. The updater is not an automatic VM recovery service.
+
+Transaction records live under `.update-transactions/TRANSACTION_ID/`: `journal.json` records the phase, `stage/` contains the selected bundle, `backup/` contains only the previous source bundle, and `supervisor/` holds the updater code snapshot. Keep these records until you have checked external connectivity. `update status` returns exit 0 for a running or applied transaction and 1 for a rejected, rolled-back, interrupted or manual-recovery result. Exit 0 for a running transaction is not completion.
+
+`applied` means the selected code matches its manifest and local readiness checks passed. It does not test the shim's end-to-end CONNECT/WebSocket path. The restarted shim keeps its upstream host/port and absolute SSL certificate-path settings; unrelated shell environment and debug settings are not inherited. Its stdout/stderr are discarded, so use the transaction's fixed error codes and separate connectivity checks rather than expecting new output in the old `shim.log`.
+
+After an interrupted transaction, a manual recovery can be concluded without deleting evidence:
+
+1. In the independent terminal, positively establish that the worker has exited. An inaccessible PID or an uncertain `status` result is not proof of exit.
+2. Restore a reviewed code bundle if needed, start it and verify its manifest, local readiness and a new external strict-host-key SSH connection. A legacy helper may require a separately reviewed source runner to inspect its manifest.
+3. With the installation's `.operation.lock` held and no active worker, move the entire reviewed transaction directory to an owned, mode-700 `.update-recovery-archive/` directory outside `.update-transactions/`. Preserve the journal and backups together. This manual archive removes it from the pending-update scan; never archive an active or unreviewed transaction just to unblock apply.
+
+The reviewed development candidate was tested in Dots on 2026-10-21. See the [dated update validation report](validation/v0.4.0-update-trial.md) for normal apply, intentional failure/rollback, external SSH evidence and limits.
+
 <a id="development-helpers"></a>
 
 ## v0.3.1 helpers and optional application proxies

@@ -159,6 +159,72 @@ JSON 将 `package.declared_version`、`package.source_revision`、`package.integ
 
 维护时，在确认源码修改后运行 `python3 scripts/source_manifest.py`，检查生成的差异，再运行 `python3 scripts/source_manifest.py --check`。CI 只检查，不重写文件。请只在已审核的源码检出目录中生成清单，不要在安装目录中生成。发布时需要将匹配的清单与四个源文件一起提供；现有 v0.3.1 发布包不包含此清单。
 
+<a id="update-management"></a>
+
+## 发布检查与本地通知（开发中）
+
+这些命令正在为 v0.4.0 开发，需要新版辅助工具；发布新版本不会自动更新已有安装。发布检查只接受来自 `abruption/dots-tailscale` 的稳定版，且必须包含四个源文件和匹配的 `source-manifest.json`。不含此清单的旧版（包括 v0.3.1）会报告为不受支持，不会被当作已验证的更新包。
+
+```bash
+/workspace/.dots-tailscale/dots-ts update check --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.4.0 --proxy http://browser-proxy:8889 --json
+```
+
+第二个示例会选择指定的稳定版本；只有该版本发布后才能使用。未指定 `--proxy` 时，检查会直接通过 HTTPS 连接，不会继承 shell 中的代理凭据。需要时请显式指定平台下载代理。这与 shim 代理以及应用 SOCKS/HTTP 代理相互独立。HTTPS 证书验证始终保持启用。无需 GitHub token。
+
+`update check` 不会更改已安装代码、节点状态、配置或进程。JSON 中的 `status` 可为 `update_available`、`current`、`local_newer`、`not_comparable` 或 `check_failed`；`selection` 用于区分选择最新版本还是固定版本。有效比较的退出码为 `0`，本地安装无法比较时为 `1`，查询失败时为 `2`。请根据状态判断，不要假定退出码为 `0` 就表示存在更新。即使找到了远程发布版，未知、已修改或混杂的本地源文件也不会因此成为可信版本。
+
+通知为可选的本地功能，不会安装更新、注册定时器或发送外部消息：
+
+```bash
+/workspace/.dots-tailscale/dots-ts update notifications configure --enable --interval-hours 24
+/workspace/.dots-tailscale/dots-ts update notifications refresh --proxy http://browser-proxy:8889
+/workspace/.dots-tailscale/dots-ts update notifications show
+/workspace/.dots-tailscale/dots-ts update notifications notify
+/workspace/.dots-tailscale/dots-ts update notifications configure --disable
+```
+
+`refresh` 会执行有时限的网络检查并保存本地结果。`notify` 只读取缓存，遵守过期时间，并抑制同一版本的重复通知。交互式启动成功时，可在短时限内将缓存通知输出到 `stderr`；通知检查失败不会改变启动结果。原样转发的 `cli` 输出和 JSON 输出不会增加通知文字。存储只读或刷新失败时，不会把旧数据当作一次新的成功检查。使用 `show` 查看记录时间以及结果是否过期或出错。定期刷新需要另行显式配置调用方；VM 不运行时，VM 内不会执行任何命令。默认情况下，`refresh` 遵守已配置的间隔；传入 `--force` 可提前刷新。
+
+### 经验证的手动更新
+
+请在能够访问安装目录、运行时套接字和 Linux 进程信息的环境中运行。`update apply` 要求使用支持 pidfd 的 Linux，并且 Python 版本为 3.9 或更高。开始前，请打开云电脑上的独立终端并确认可以操作该终端。`--confirm-recovery-terminal` 只记录你已确认；它无法替你检查该终端。支持通过 SSH 发起更新，因为事务工作进程会与调用会话脱离；但 SSH 连接本身不能作为恢复途径。
+
+先检查并选定一个固定的稳定版本：
+
+```bash
+/workspace/.dots-tailscale/dots-ts update apply --tag v0.4.1 --proxy http://browser-proxy:8889 --confirm-recovery-terminal --json
+/workspace/.dots-tailscale/dots-ts update status --id TRANSACTION_ID --json
+```
+
+以上仅为示例，并不表示 v0.4.1 已经发布。请将 `TRANSACTION_ID` 替换为 `apply` 返回的 ID。如果发布下载受阻，或需要明确测试尚未发布的候选版本，也可以使用经过审查的本地源文件包：
+
+```bash
+/workspace/.dots-tailscale/dots-ts update apply --bundle /workspace/reviewed-bundle --confirm-recovery-terminal --json
+```
+
+源文件包必须包含四个源文件和与之匹配的原始清单。本地选择可以是开发版本，但不会被标记为已发布的 GitHub 版本。更新器会在替换文件前验证哈希和语法。校验和匹配只能证明文件与所选源文件包一致，不能独立证明发布者可信。
+
+`started` 表示已脱离会话运行的工作进程接受了操作，不表示更新成功。重新连接后，请轮询 `update status`。最终状态包括 `applied`、`failed_rolled_back` 和 `rollback_failed_manual_required`。本地就绪状态和版本验证不能证明外部 SSH 可用：更新成功或成功回滚后，请使用严格主机密钥验证新建 SSH 连接，并单独测试所需连接。
+
+工作进程会在与 setup 和 proxy apply 共用的操作锁保护下，仅备份和替换四个源文件及其清单。它只会重启已识别的 shim 进程；tailscaled 和 sshd 会继续运行。节点状态、登录凭据、私钥、SSH 配置和代理设置不会被复制或重置。若发布版本会更改捆绑的 Tailscale 二进制版本，此更新器会拒绝操作；该类更新不在其适用范围内。更新器不会终止无法识别的进程，也不会删除套接字。
+
+必须有匹配的已安装清单。对于没有元数据的旧安装，先将全部四个已安装文件与独立获取并经过审查的发布版本逐一比对。不要根据已安装文件本身生成预期校验值。如果无法确认来源，或文件版本混杂，请停止并进行人工审查。若要用源码检出执行有意的迁移，该检出也必须先与自身清单匹配，更新器才能用于现有安装。
+
+之前未完成的事务会阻止新更新。工作进程被终止或 VM 被替换后，请在独立终端检查状态和仅包含代码的备份；不要为了强行重试而删除事务记录，也不要假定下一步一定安全。如果回滚无法恢复就绪状态，请保留证据，并根据已验证的备份手动恢复。此更新器不是自动 VM 恢复服务。
+
+事务记录保存在 `.update-transactions/TRANSACTION_ID/` 下：`journal.json` 记录阶段，`stage/` 保存选定的文件包，`backup/` 只保存之前的源码包，`supervisor/` 保存更新器代码快照。在确认外部连接正常前，请保留这些记录。`update status` 对运行中或已应用的事务返回退出码 0；对拒绝、已回滚、中断或需要手动恢复的结果返回 1。运行中的退出码 0 不代表已经完成。
+
+`applied` 表示所选代码与清单一致，并通过了本地就绪检查，不代表已经验证 shim 的端到端 CONNECT/WebSocket 通信。重启的 shim 保留上游主机、端口和使用绝对路径的 SSL 证书设置，但不继承其他 shell 环境或调试设置。其 stdout/stderr 会被丢弃，因此应查看事务中的固定错误码并单独检查连接，而不要期待旧 `shim.log` 出现新的输出。
+
+中断后，可以在保留证据的前提下完成手动恢复：
+
+1. 在独立终端中明确确认 worker 已退出。PID 无法访问或 status 不确定，都不能作为退出的证据。
+2. 必要时恢复经过审核的代码包并启动，验证清单、本地就绪状态以及一次新的外部严格主机密钥 SSH 连接。旧版工具可能需要单独审核的源码运行器来检查清单。
+3. 确认没有活动 worker，并持有安装目录的 `.operation.lock` 后，将整个已审核的事务目录移动到 `.update-transactions/` 之外、属于当前用户且权限为 700 的 `.update-recovery-archive/`。日志和备份应一并保留。归档后，该事务不再阻止新更新；不要为了绕过限制而归档仍在运行或未经审核的事务。
+
+已于 2026-10-21 在 Dots 中测试经过审核的开发候选版本。正常应用、故意启动失败后的回滚、外部 SSH 验证及其范围，请参阅[更新验证记录](validation/v0.4.0-update-trial.md)。
+
 <a id="development-helpers"></a>
 
 ## v0.3.1 辅助工具与可选应用代理

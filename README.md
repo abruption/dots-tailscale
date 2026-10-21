@@ -51,6 +51,8 @@ Install all four source files from [v0.3.1](https://github.com/abruption/dots-ta
 
 The development build adds `dots-ts version` and `dots-ts version --json` to show the dots-tailscale package version separately from the Tailscale binary version. These commands are not included in v0.3.1. See [package version and file verification](docs/usage.md#package-version).
 
+The development build also adds stable-release checks, opt-in cached notifications and verified manual updates with code-only rollback. See [update management](docs/usage.md#update-management) for requirements, recovery-terminal confirmation and the separate external SSH check.
+
 ## Included
 
 | Path | Purpose |

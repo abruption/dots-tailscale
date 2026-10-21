@@ -6,7 +6,12 @@
 - Require a matching source manifest for new installations; preserve unknown metadata for legacy installations instead of guessing a version.
 - Add package integrity to `doctor` and document the development feature in all four languages.
 
-This development work has not been deployed to Dots. Release checks, notifications and verified updates remain separate work in #28–#30.
+- Add bounded stable-release checks with explicit download proxy selection and validated release manifests (#28).
+- Add opt-in, cached local notifications with expiry, deduplication and no network work during startup (#29).
+
+- Add detached manual updates from fixed releases or explicitly reviewed local bundles, with code-only backups, a persistent transaction journal and bounded shim rollback (#30).
+
+The reviewed `0.4.0-dev` candidate passed normal update, intentional startup-failure rollback, checksum-refusal and fresh external SSH/ping checks in Dots. See the [dated validation report](docs/validation/v0.4.0-update-trial.md) for the independent review, CI evidence and limits. This is not a published v0.4.0 release.
 
 ## v0.3.1 — 2026-10-19
 

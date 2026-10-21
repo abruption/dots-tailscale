@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Local Tailscale CLI forwarding and bounded, shareable diagnostics."""
 import argparse
+import base64
+import contextlib
+import fcntl
+import ssl
+import urllib.error
+import urllib.parse
+import urllib.request
 import hashlib
 import selectors
 import time
@@ -129,6 +136,974 @@ def tailscale_version(directory):
                 process.kill()
             process.wait()
             process.stdout.close()
+
+
+# All update requests are unauthenticated and confined to this repository.
+UPDATE_REPOSITORY = "abruption/dots-tailscale"
+UPDATE_API = "https://api.github.com/repos/" + UPDATE_REPOSITORY + "/releases"
+UPDATE_WEB = "https://github.com/" + UPDATE_REPOSITORY
+UPDATE_TIMEOUT = 12
+UPDATE_ERRORS = {"invalid_version", "invalid_proxy", "invalid_url", "redirect_host", "timeout", "offline",
+                 "tls_error", "rate_limited", "not_found", "http_error", "response_too_large",
+                 "invalid_response", "invalid_metadata", "unsupported_release", "no_stable_release"}
+
+
+class UpdateError(Exception):
+    def __init__(self, code):
+        self.code = code if isinstance(code, str) and code in UPDATE_ERRORS else "invalid_response"
+        super().__init__(self.code)
+
+
+def stable_version(text):
+    if not isinstance(text, str) or not re.fullmatch(r"(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})", text):
+        raise UpdateError("invalid_version")
+    return tuple(int(part) for part in text.split("."))
+
+
+def validate_proxy(proxy):
+    if proxy is None:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(proxy)
+        if (len(proxy) > 512 or parsed.scheme != "http" or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.path not in ("", "/") or parsed.query or parsed.fragment
+                or parsed.port is None or any(ord(c) < 33 or ord(c) > 126 for c in proxy)):
+            raise ValueError("invalid_proxy")
+    except (ValueError, TypeError):
+        raise UpdateError("invalid_proxy")
+    return proxy
+
+
+def validate_update_url(url, redirect=False):
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if (not isinstance(url, str) or len(url) > 8192 or parsed.scheme != "https"
+                or parsed.username is not None or parsed.password is not None
+                or parsed.port not in (None, 443) or parsed.fragment
+                or any(ord(c) < 33 or ord(c) > 126 for c in url)):
+            raise ValueError("invalid_url")
+        if redirect:
+            valid = parsed.hostname in ("release-assets.githubusercontent.com", "objects.githubusercontent.com")
+        else:
+            api_path = "/repos/" + UPDATE_REPOSITORY + "/releases/"
+            asset_path = "/" + UPDATE_REPOSITORY + "/releases/download/"
+            valid = (not parsed.query and (
+                parsed.hostname == "api.github.com" and (parsed.path == api_path + "latest"
+                    or re.fullmatch(re.escape(api_path) + r"tags/v[0-9]+\.[0-9]+\.[0-9]+", parsed.path))
+                or parsed.hostname == "github.com" and re.fullmatch(re.escape(asset_path)
+                    + r"v[0-9]+\.[0-9]+\.[0-9]+/(?:tailscale-setup\.sh|shim\.py|dots-ts|dots_proxy\.py|source-manifest\.json)", parsed.path)))
+        if not valid:
+            raise ValueError("invalid_url")
+    except (ValueError, TypeError):
+        raise UpdateError("redirect_host" if redirect else "invalid_url")
+    return url
+
+
+def _network_fetch(url, proxy, limit):
+    """Runs in a supervised child, so DNS and slow response bodies have a total limit."""
+    validate_update_url(url)
+    validate_proxy(proxy)
+    class ReleaseRedirect(urllib.request.HTTPRedirectHandler):
+        max_redirections = 3
+        max_repeats = 1
+        def redirect_request(self, request, fp, code, message, headers, newurl):
+            # API requests never redirect; only release asset downloads may do so.
+            if urllib.parse.urlsplit(url).hostname != "github.com":
+                raise UpdateError("redirect_host")
+            validate_update_url(newurl, redirect=True)
+            return super().redirect_request(request, fp, code, message, headers, newurl)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {}),
+                                         urllib.request.HTTPSHandler(context=ssl.create_default_context()), ReleaseRedirect())
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json" if url.startswith(UPDATE_API) else "application/octet-stream",
+                                                  "User-Agent": "dots-ts-update", "Accept-Encoding": "identity"})
+    try:
+        with opener.open(request, timeout=UPDATE_TIMEOUT) as response:
+            if response.status != 200:
+                raise UpdateError("http_error")
+            length = response.headers.get("Content-Length")
+            if length is not None and (not length.isdigit() or int(length) > limit):
+                raise UpdateError("response_too_large")
+            raw = response.read(limit + 1)
+            if len(raw) > limit:
+                raise UpdateError("response_too_large")
+            return raw
+    except urllib.error.HTTPError as error:
+        code = ("rate_limited" if error.code == 429 or error.code == 403 and
+                (error.headers.get("X-RateLimit-Remaining") == "0" or error.headers.get("Retry-After"))
+                else "not_found" if error.code == 404 else "http_error")
+        error.close()
+        raise UpdateError(code)
+    except urllib.error.URLError as error:
+        if isinstance(error.reason, ssl.SSLError):
+            raise UpdateError("tls_error")
+        if isinstance(error.reason, (TimeoutError, socket.timeout)):
+            raise UpdateError("timeout")
+        raise UpdateError("offline")
+    except ssl.SSLError:
+        raise UpdateError("tls_error")
+    except (TimeoutError, socket.timeout):
+        raise UpdateError("timeout")
+    except OSError:
+        raise UpdateError("offline")
+
+
+def fetch_bytes(url, proxy=None, limit=2097152, deadline=None):
+    validate_update_url(url)
+    validate_proxy(proxy)
+    remaining = (deadline if deadline is not None else time.monotonic() + UPDATE_TIMEOUT) - time.monotonic()
+    if remaining <= 0:
+        raise UpdateError("timeout")
+    try:
+        result = subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve()), "_fetch-update"],
+                                input=json.dumps({"url": url, "proxy": proxy, "limit": limit}).encode(),
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=remaining, check=False)
+        reply = json.loads(result.stdout)
+        if not isinstance(reply, dict) or result.returncode:
+            raise UpdateError("invalid_response")
+        if "error" in reply:
+            raise UpdateError(reply["error"])
+        raw = base64.b64decode(reply["data"], validate=True)
+        if len(raw) > limit:
+            raise UpdateError("response_too_large")
+        return raw
+    except subprocess.TimeoutExpired:
+        raise UpdateError("timeout")
+    except (OSError, ValueError, TypeError, KeyError):
+        raise UpdateError("invalid_response")
+
+
+def parse_release_json(raw):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate_key")
+            result[key] = value
+        return result
+    try:
+        return json.loads(raw, object_pairs_hook=unique)
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        raise UpdateError("invalid_response")
+
+
+def release_metadata(metadata, tag=None):
+    if not isinstance(metadata, dict):
+        raise UpdateError("invalid_metadata")
+    version_tag = metadata.get("tag_name")
+    if not isinstance(version_tag, str) or not version_tag.startswith("v"):
+        raise UpdateError("invalid_metadata")
+    stable_version(version_tag[1:])
+    if (tag is not None and version_tag != tag or metadata.get("draft") is not False
+            or metadata.get("prerelease") is not False
+            or metadata.get("html_url") != UPDATE_WEB + "/releases/tag/" + version_tag
+            or type(metadata.get("id")) is not int or metadata["id"] <= 0
+            or metadata.get("url") != UPDATE_API + "/" + str(metadata["id"])):
+        raise UpdateError("invalid_metadata")
+    assets = metadata.get("assets")
+    if not isinstance(assets, list) or len(assets) > 100:
+        raise UpdateError("invalid_metadata")
+    selected = {}
+    for asset in assets:
+        if not isinstance(asset, dict):
+            raise UpdateError("invalid_metadata")
+        name = asset.get("name")
+        if name not in tuple(CORE_FILES) + (MANIFEST,):
+            continue
+        if name in selected:
+            raise UpdateError("invalid_metadata")
+        size_limit = 16384 if name == MANIFEST else 8 * 1024 * 1024
+        expected = UPDATE_WEB + "/releases/download/" + version_tag + "/" + name
+        if (asset.get("browser_download_url") != expected or asset.get("state") != "uploaded"
+                or type(asset.get("size")) is not int or not 0 < asset["size"] <= size_limit):
+            raise UpdateError("invalid_metadata")
+        selected[name] = {"url": expected, "size": asset["size"]}
+    if set(selected) != set(CORE_FILES) | {MANIFEST}:
+        raise UpdateError("unsupported_release")
+    return {"tag": version_tag, "version": version_tag[1:], "assets": selected}
+
+
+def download_release_asset(release, name, proxy=None, deadline=None):
+    if name not in tuple(CORE_FILES) + (MANIFEST,):
+        raise UpdateError("invalid_metadata")
+    stable_version(release["version"])
+    if release["tag"] != "v" + release["version"]:
+        raise UpdateError("invalid_metadata")
+    asset = release["assets"][name]
+    expected = UPDATE_WEB + "/releases/download/" + release["tag"] + "/" + name
+    if asset["url"] != expected:
+        raise UpdateError("invalid_metadata")
+    raw = fetch_bytes(expected, proxy, 16384 if name == MANIFEST else 8 * 1024 * 1024, deadline)
+    if len(raw) != asset["size"]:
+        raise UpdateError("invalid_metadata")
+    return raw
+
+
+def fetch_release(tag=None, proxy=None, timeout=UPDATE_TIMEOUT):
+    validate_proxy(proxy)
+    deadline = time.monotonic() + timeout
+    if tag is not None:
+        if not isinstance(tag, str) or not tag.startswith("v"):
+            raise UpdateError("invalid_version")
+        stable_version(tag[1:])
+        raw = fetch_bytes(UPDATE_API + "/tags/" + tag, proxy, deadline=deadline)
+        release = release_metadata(parse_release_json(raw), tag)
+    else:
+        # GitHub's latest endpoint excludes draft/prerelease entries server-side.
+        raw = fetch_bytes(UPDATE_API + "/latest", proxy, deadline=deadline)
+        release = release_metadata(parse_release_json(raw))
+    raw_manifest = download_release_asset(release, MANIFEST, proxy, deadline)
+    manifest = parse_release_json(raw_manifest)
+    if (not isinstance(manifest, dict) or set(manifest) != {"schema_version", "package_version", "files"}
+            or type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1
+            or manifest["package_version"] != release["version"] or not isinstance(manifest["files"], dict)
+            or set(manifest["files"]) != set(CORE_FILES)
+            or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                   for value in manifest["files"].values())):
+        raise UpdateError("invalid_metadata")
+    release["manifest"] = manifest
+    release["manifest_bytes"] = raw_manifest
+    return release
+
+
+def update_check(directory, tag=None, proxy=None):
+    package = package_report(directory)
+    report = {"status": "check_failed", "selection": "pinned" if tag else "latest", "package": package,
+              "release": None, "error": None}
+    try:
+        release = fetch_release(tag, proxy)
+        report["release"] = {"tag": release["tag"], "version": release["version"]}
+        if package["integrity"] != "match":
+            report["status"] = "not_comparable"
+        else:
+            try:
+                installed = stable_version(package["declared_version"])
+            except UpdateError:
+                report["status"] = "not_comparable"
+            else:
+                candidate = stable_version(release["version"])
+                report["status"] = "update_available" if candidate > installed else "local_newer" if candidate < installed else "current"
+    except UpdateError as error:
+        report["error"] = error.code
+    return report
+
+
+def update_check_exit(report):
+    return 2 if report["status"] == "check_failed" else 1 if report["status"] == "not_comparable" else 0
+
+
+NOTICE_DIRECTORY = ".update-notifications"
+
+
+class NoticeError(Exception):
+    def __init__(self, code):
+        self.code = code if code in ("storage_unavailable", "invalid_settings", "invalid_cache") else "storage_unavailable"
+        super().__init__(self.code)
+
+
+@contextlib.contextmanager
+def notice_store(directory, create=False):
+    """Owned private storage, nonblocking lock, and fixed file names only."""
+    root = folder = lock = None
+    try:
+        root = os.open(str(directory), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        info = os.fstat(root)
+        if info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise NoticeError("storage_unavailable")
+        if create:
+            try:
+                os.mkdir(NOTICE_DIRECTORY, 0o700, dir_fd=root)
+            except FileExistsError:
+                pass
+        try:
+            folder = os.open(NOTICE_DIRECTORY, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+        except FileNotFoundError:
+            yield None
+            return
+        info = os.fstat(folder)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise NoticeError("storage_unavailable")
+        lock = os.open(".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=folder)
+        info = os.fstat(lock)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+            raise NoticeError("storage_unavailable")
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield folder
+    except OSError:
+        raise NoticeError("storage_unavailable")
+    finally:
+        for descriptor in (lock, folder, root):
+            if descriptor is not None:
+                os.close(descriptor)
+
+
+def notice_read(folder, name):
+    if folder is None:
+        return None
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+            raise NoticeError("storage_unavailable")
+        raw = stream.read(16385)
+    if len(raw) > 16384:
+        raise NoticeError("invalid_settings" if name == "settings.json" else "invalid_cache")
+    try:
+        return parse_release_json(raw)
+    except UpdateError:
+        raise NoticeError("invalid_settings" if name == "settings.json" else "invalid_cache")
+
+
+def notice_write(folder, name, data):
+    # Check existing files before replacing them; never follow a link or share an inode.
+    notice_read(folder, name)
+    temporary = ".write-" + os.urandom(8).hex()
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write((json.dumps(data, sort_keys=True) + "\n").encode())
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, name, src_dir_fd=folder, dst_dir_fd=folder)
+        os.fsync(folder)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=folder)
+        except FileNotFoundError:
+            pass
+
+
+def notice_settings(folder):
+    settings = notice_read(folder, "settings.json")
+    if settings is None:
+        return {"enabled": False, "interval_hours": 24}
+    if (not isinstance(settings, dict) or set(settings) != {"enabled", "interval_hours"}
+            or type(settings["enabled"]) is not bool or type(settings["interval_hours"]) is not int
+            or not 1 <= settings["interval_hours"] <= 720):
+        raise NoticeError("invalid_settings")
+    return settings
+
+
+def notice_cache(folder, now):
+    cache = notice_read(folder, "cache.json")
+    if cache is None:
+        return {"checked_at": None, "last_attempt_at": None, "last_error": None,
+                "release": None, "last_notified": None}
+    if not isinstance(cache, dict) or set(cache) != {"checked_at", "last_attempt_at", "last_error", "release", "last_notified"}:
+        raise NoticeError("invalid_cache")
+    for name in ("checked_at", "last_attempt_at"):
+        value = cache[name]
+        if value is not None and (type(value) is not int or not 0 <= value <= now + 300):
+            raise NoticeError("invalid_cache")
+    if cache["last_error"] is not None and (not isinstance(cache["last_error"], str) or cache["last_error"] not in UPDATE_ERRORS):
+        raise NoticeError("invalid_cache")
+    release = cache["release"]
+    try:
+        if release is not None:
+            if not isinstance(release, dict) or set(release) != {"tag", "version"}:
+                raise NoticeError("invalid_cache")
+            stable_version(release["version"])
+            if release["tag"] != "v" + release["version"] or cache["checked_at"] is None:
+                raise NoticeError("invalid_cache")
+        if cache["last_notified"] is not None:
+            if not isinstance(cache["last_notified"], str) or not cache["last_notified"].startswith("v"):
+                raise NoticeError("invalid_cache")
+            stable_version(cache["last_notified"][1:])
+    except UpdateError:
+        raise NoticeError("invalid_cache")
+    return cache
+
+
+def notice_summary(settings, cache, now):
+    return dict(settings, **cache, stale=(cache["checked_at"] is None or cache["last_error"] is not None
+                                         or now - cache["checked_at"] >= settings["interval_hours"] * 3600))
+
+
+def notification_configure(directory, enabled=None, interval_hours=None):
+    if enabled is None and interval_hours is None:
+        raise NoticeError("invalid_settings")
+    if interval_hours is not None and (type(interval_hours) is not int or not 1 <= interval_hours <= 720):
+        raise NoticeError("invalid_settings")
+    with notice_store(directory, create=True) as folder:
+        settings = notice_settings(folder)
+        if enabled is not None:
+            settings["enabled"] = enabled
+        if interval_hours is not None:
+            settings["interval_hours"] = interval_hours
+        notice_write(folder, "settings.json", settings)
+        return settings
+
+
+def notification_show(directory):
+    with notice_store(directory) as folder:
+        now = int(time.time())
+        return notice_summary(notice_settings(folder), notice_cache(folder, now), now)
+
+
+def notification_refresh(directory, proxy=None, force=False):
+    # Explicit only; the startup hook never calls this or any network operation.
+    with notice_store(directory) as folder:
+        now = int(time.time())
+        settings, cache = notice_settings(folder), notice_cache(folder, now)
+        report = notice_summary(settings, cache, now)
+        if not settings["enabled"]:
+            return dict(report, status="disabled")
+        if not force and not report["stale"]:
+            return dict(report, status="cached")
+        try:
+            release = fetch_release(proxy=proxy)
+            cache.update(checked_at=int(time.time()), last_attempt_at=int(time.time()), last_error=None,
+                         release={"tag": release["tag"], "version": release["version"]})
+            status = "refreshed"
+        except UpdateError as error:
+            cache.update(last_attempt_at=int(time.time()), last_error=error.code)
+            status = "refresh_failed"
+        notice_write(folder, "cache.json", cache)
+        return dict(notice_summary(settings, cache, int(time.time())), status=status)
+
+
+def notification_notify(directory):
+    """Best-effort, cache-only local stderr notice; never changes a command result."""
+    if not sys.stderr.isatty():
+        return
+    try:
+        with notice_store(directory) as folder:
+            now = int(time.time())
+            settings, cache = notice_settings(folder), notice_cache(folder, now)
+            summary = notice_summary(settings, cache, now)
+            if not settings["enabled"] or summary["stale"] or cache["release"] is None:
+                return
+            release = cache["release"]
+            if cache["last_notified"] == release["tag"]:
+                return
+            package = package_report(directory)
+            if package["integrity"] != "match" or stable_version(package["declared_version"]) >= stable_version(release["version"]):
+                return
+            cache["last_notified"] = release["tag"]
+            notice_write(folder, "cache.json", cache)
+            print("dots-ts: stable release " + release["tag"] + " is available; run dots-ts update check before updating.", file=sys.stderr)
+    except Exception:
+        # A best-effort interactive notice must not print a traceback or affect start.
+        return
+
+
+# Manual updates deliberately restart only the transport shim. Tailscale binaries,
+# authentication state and SSH configuration are outside this transaction.
+APPLY_DIRECTORY = '.update-transactions'
+APPLY_TERMINAL = {'applied', 'failed_rolled_back', 'rollback_failed_manual_required', 'rejected'}
+
+
+class ApplyError(Exception):
+    def __init__(self, code, transaction_id=None):
+        super().__init__(code)
+        self.transaction_id = transaction_id
+
+
+def apply_error_report(error):
+    if isinstance(error, ApplyError): code = str(error)
+    elif isinstance(error, UpdateError): code = error.code
+    else:
+        try:
+            import dots_proxy as proxy
+            proxy_error = isinstance(error, proxy.ProxyError)
+        except ImportError: proxy_error = False
+        if proxy_error: code = 'operation_busy_or_unsafe'
+        elif isinstance(error, OSError): code = 'filesystem_or_process_error'
+        elif isinstance(error, (ValueError, TypeError, KeyError, RecursionError)): code = 'invalid_apply_data'
+        else: code = 'apply_internal_error'
+    report = {'error': code}
+    identifier = getattr(error, 'transaction_id', None)
+    if identifier: report['transaction_id'] = identifier
+    return report
+
+
+
+def apply_private(path, create=False):
+    path = pathlib.Path(path)
+    for parent in (path,) + tuple(path.parents):
+        if parent.is_symlink():
+            raise ApplyError('unsafe_directory')
+    if create:
+        path.mkdir(mode=0o700, exist_ok=True)
+        parent_fd = os.open(str(path.parent), os.O_RDONLY | os.O_DIRECTORY)
+        try: os.fsync(parent_fd)
+        finally: os.close(parent_fd)
+    info = path.stat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ApplyError('unsafe_directory')
+    return path
+
+
+def apply_write(path, data, mode=0o600):
+    temporary = path.with_name(path.name + '.new')
+    fd = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        fd = os.open(str(path.parent), os.O_RDONLY | os.O_DIRECTORY)
+        try: os.fsync(fd)
+        finally: os.close(fd)
+    finally:
+        if temporary.exists(): temporary.unlink()
+
+
+def apply_journal(transaction, journal, **changes):
+    journal.update(changes, updated_at=int(time.time()))
+    apply_write(transaction / 'journal.json', json.dumps(journal, sort_keys=True).encode())
+
+
+def apply_journal_best_effort(transaction, journal, **changes):
+    journal.update(changes)
+    try:
+        apply_journal(transaction, journal, **changes)
+        return True
+    except Exception:
+        journal['journal_persistence_failed'] = True
+        return False
+
+
+def apply_outcome(transaction, journal, state, **changes):
+    if apply_journal_best_effort(transaction, journal, state=state, **changes): return
+    # One bounded static marker per outcome; never append raw exception text.
+    try:
+        fd = os.open(str(transaction / 'worker.log'), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        try:
+            info = os.fstat(fd)
+            if (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                    and stat.S_IMODE(info.st_mode) == 0o600 and info.st_size < 4096):
+                os.write(fd, ('update_outcome=' + state + ' journal_persisted=false\n').encode())
+                os.fsync(fd)
+        finally: os.close(fd)
+    except Exception: pass
+
+
+def apply_read_journal(transaction):
+    try:
+        value = parse_release_json(bounded_code_read(transaction, 'journal.json', 65536))
+        states = APPLY_TERMINAL | {'prepared', 'running'}
+        if (not isinstance(value, dict) or type(value.get('schema')) is not int or value['schema'] != 1
+                or not isinstance(value.get('state'), str) or value['state'] not in states):
+            raise ValueError()
+        for field in ('phase', 'boot_id', 'error'):
+            if field in value and (not isinstance(value[field], str) or len(value[field]) > 512): raise ValueError()
+        worker = value.get('worker')
+        if worker is not None:
+            if (not isinstance(worker, dict) or set(worker) != {'pid', 'ticks', 'uid', 'exe'}
+                    or type(worker['pid']) is not int or worker['pid'] <= 0
+                    or type(worker['uid']) is not int or worker['uid'] != os.getuid()
+                    or not isinstance(worker['ticks'], str) or not re.fullmatch('[0-9]{1,30}', worker['ticks'])
+                    or not isinstance(worker['exe'], str) or not worker['exe'].startswith('/') or len(worker['exe']) > 4096):
+                raise ValueError()
+        return value
+    except (OSError, ValueError, TypeError, UpdateError):
+        raise ApplyError('invalid_journal')
+
+
+def apply_identity(pid):
+    """None means definitely exited; inaccessible /proc remains an error."""
+    p = pathlib.Path('/proc') / str(pid)
+    try:
+        fields = (p / 'stat').read_text().rsplit(')', 1)[1].split()
+        if fields[0] == 'Z': return None
+        return {'pid': int(pid), 'ticks': fields[19], 'uid': p.stat().st_uid,
+                'exe': os.readlink(p / 'exe')}
+    except FileNotFoundError:
+        # A process can become a zombie between stat and exe: exe disappears
+        # before its /proc directory. Re-read state; ENOENT alone is not exit.
+        try:
+            fields = (p / 'stat').read_text().rsplit(')', 1)[1].split()
+            if fields[0] == 'Z': return None
+        except FileNotFoundError:
+            try: p.stat()
+            except FileNotFoundError: return None
+            except OSError: raise ApplyError('process_identity_unknown')
+        except (OSError, IndexError, ValueError):
+            raise ApplyError('process_identity_unknown')
+        raise ApplyError('process_identity_unknown')
+    except (OSError, IndexError, ValueError):
+        raise ApplyError('process_identity_unknown')
+
+
+def apply_boot():
+    return pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+
+
+def apply_status(directory, identifier):
+    if not re.fullmatch('[0-9a-f]{32}', identifier): raise ApplyError('invalid_transaction_id')
+    root = apply_private(directory / APPLY_DIRECTORY)
+    transaction = apply_private(root / identifier)
+    journal = apply_read_journal(transaction)
+    try:
+        log = bounded_code_read(transaction, 'worker.log', 8192)
+    except FileNotFoundError: log = b''
+    except (OSError, ValueError): log = b''
+    markers = re.findall(rb'^update_outcome=(applied|failed_rolled_back|rollback_failed_manual_required|rejected) journal_persisted=false$', log, re.M)
+    if markers:
+        journal = dict(journal, state='interrupted_manual_required', journal_persistence_failed=True,
+                       observed_outcome=markers[-1].decode('ascii'))
+    if journal.get('state') not in APPLY_TERMINAL and not markers:
+        worker = journal.get('worker')
+        try:
+            alive = journal.get('boot_id') == apply_boot() and worker and apply_identity(worker['pid']) == worker
+        except (OSError, ApplyError, KeyError): alive = False
+        if not alive:
+            journal = dict(journal, state='interrupted_manual_required')
+    return dict(journal, transaction_id=identifier, backup_directory=str(transaction / 'backup'),
+                external_ssh='pending', recovery='Use the independent recovery terminal; inspect this journal and code-only backup. Do not rerun an interrupted update blindly.')
+
+
+def apply_bundle(directory, layout='source'):
+    report = package_report(directory, layout)
+    if report['integrity'] != 'match': raise ApplyError('untrusted_or_mixed_package')
+    payload = {name: bounded_code_read(directory, name if layout == 'source' else installed, 8 * 1024 * 1024)
+               for name, installed in CORE_FILES.items()}
+    payload[MANIFEST] = bounded_code_read(directory, MANIFEST, 16384)
+    # Verify the bytes actually captured, not only an earlier pathname read.
+    manifest = parse_release_json(payload[MANIFEST])
+    if any(hashlib.sha256(payload[name]).hexdigest() != manifest['files'][name] for name in CORE_FILES):
+        raise ApplyError('package_changed_during_read')
+    return payload
+
+
+def apply_syntax(payload):
+    for name in ('dots-ts', 'dots_proxy.py', 'shim.py'):
+        try: compile(payload[name], name, 'exec')
+        except (SyntaxError, ValueError): raise ApplyError('invalid_python_syntax')
+    try:
+        result = subprocess.run(['bash', '-n'], input=payload['tailscale-setup.sh'],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+    except subprocess.TimeoutExpired: raise ApplyError('shell_syntax_timeout')
+    if result.returncode: raise ApplyError('invalid_shell_syntax')
+
+
+def apply_ts_version(payload):
+    matches = re.findall(rb'^TS_VERSION=(?:"([0-9]+\.[0-9]+\.[0-9]+)"|([0-9]+\.[0-9]+\.[0-9]+))$', payload['tailscale-setup.sh'], re.M)
+    if len(matches) != 1: raise ApplyError('unsupported_binary_version_declaration')
+    return matches[0][0] or matches[0][1]
+
+
+def apply_components(directory, runtime, proxy):
+    matches = {'shim': [], 'sshd': []}
+    for entry in pathlib.Path('/proc').iterdir():
+        if not entry.name.isdigit(): continue
+        try:
+            if entry.stat().st_uid != os.getuid(): continue
+            argv = (entry / 'cmdline').read_bytes().rstrip(b'\0').decode('utf8', 'surrogateescape').split('\0')
+            executable = os.readlink(entry / 'exe')
+        except FileNotFoundError: continue
+        except PermissionError:
+            # An unreadable unrelated process is not evidence for any target.
+            continue
+        kind = None
+        if re.fullmatch(r'python(?:3(?:\.\d+)?)?', pathlib.Path(executable).name) and script_operand(argv) == str(directory / 'shim/shim.py'):
+            kind = 'shim'
+        if pathlib.Path(executable).name == 'sshd' and ssh_config(argv) == str(directory / 'sshd/sshd_config'):
+            kind = 'sshd'
+        if kind:
+            identity = apply_identity(int(entry.name))
+            if identity:
+                if kind == 'shim' and argv != [executable, str(directory / 'shim/shim.py')]:
+                    # Interpreter argv[0] may be a PATH alias; options are unsupported.
+                    if len(argv) != 2 or argv[1] != str(directory / 'shim/shim.py'):
+                        raise ApplyError('unsupported_shim_arguments')
+                matches[kind].append(identity)
+    if any(len(value) != 1 for value in matches.values()): raise ApplyError('ambiguous_component_identity')
+    result = {key: value[0] for key, value in matches.items()}
+    daemon = proxy._daemon(directory, runtime)
+    if not daemon or not proxy._socket_owned(daemon, runtime): raise ApplyError('daemon_socket_identity_unknown')
+    if ([arg for arg in daemon['argv'][1:] if arg == '--statedir' or arg.startswith('--statedir=')] != ['--statedir=' + str(directory / 'state')]
+            or any(arg == '--state' or arg.startswith('--state=') for arg in daemon['argv'][1:])):
+        raise ApplyError('unexpected_daemon_state_directory')
+    result['_socket'] = proxy._socket_identity(runtime)
+    result['tailscaled'] = apply_identity(daemon['pid'])
+    if not result['tailscaled']: raise ApplyError('daemon_exited')
+    for name, port in (('shim', 18089), ('sshd', 22)):
+        if not proxy._listener_owned(result[name], port): raise ApplyError('listener_identity_unknown')
+    return result
+
+
+def apply_public_identity(directory, runtime, timeout=3):
+    reply = run_cli(directory, runtime, ['status', '--json'], timeout=timeout)
+    if reply.returncode: raise ApplyError('backend_unavailable')
+    data = json.loads(reply.stdout)
+    if data.get('BackendState') != 'Running': raise ApplyError('backend_not_running')
+    own = data.get('Self') or {}
+    if not own.get('ID') or not own.get('PublicKey') or not own.get('TailscaleIPs'):
+        raise ApplyError('public_identity_unavailable')
+    return hashlib.sha256(json.dumps({key: own[key] for key in ('ID', 'PublicKey', 'TailscaleIPs')}, sort_keys=True).encode()).hexdigest()
+
+
+def apply_environment(process):
+    if apply_identity(process['pid']) != process: raise ApplyError('shim_identity_changed')
+    try:
+        values = dict(item.split(b'=', 1) for item in pathlib.Path('/proc/{}/environ'.format(process['pid'])).read_bytes().split(b'\0') if item)
+        environment = {'PATH': '/usr/bin:/bin', 'PYTHONNOUSERSITE': '1', 'PYTHONDONTWRITEBYTECODE': '1'}
+        for key, default in (('UPSTREAM_HOST', 'browser-proxy'), ('UPSTREAM_PORT', '8889'), ('SHIM_PORT', '18089')):
+            environment[key] = values.get(key.encode(), default.encode()).decode('ascii')
+        for key in ('SSL_CERT_FILE', 'SSL_CERT_DIR'):
+            if key.encode() in values:
+                value = os.fsdecode(values[key.encode()])
+                if not os.path.isabs(value) or len(value) > 4096 or '\x00' in value: raise ValueError()
+                environment[key] = value
+        if not re.fullmatch(r'[A-Za-z0-9._:-]{1,253}', environment['UPSTREAM_HOST']): raise ValueError()
+        if not 1 <= int(environment['UPSTREAM_PORT']) <= 65535 or environment['SHIM_PORT'] != '18089': raise ValueError()
+    except (OSError, UnicodeError, ValueError): raise ApplyError('unsupported_shim_environment')
+    if apply_identity(process['pid']) != process: raise ApplyError('shim_identity_changed')
+    return environment
+
+
+def apply_stop(process, timeout=8):
+    import signal
+    current = apply_identity(process['pid'])
+    if current is None: return
+    if current != process: raise ApplyError('process_identity_changed')
+    try: fd = os.pidfd_open(process['pid'])
+    except ProcessLookupError: return  # kernel confirms absence at pidfd_open
+    try:
+        try: current = apply_identity(process['pid'])
+        except ApplyError:
+            with selectors.DefaultSelector() as selector:
+                selector.register(fd, selectors.EVENT_READ)
+                if selector.select(0): return
+            raise
+        if current is None: return
+        if current != process: raise ApplyError('process_identity_changed')
+        try: signal.pidfd_send_signal(fd, signal.SIGTERM)
+        except ProcessLookupError: return
+        # The pidfd stays bound to this process even after PID reuse. Its
+        # readability is positive kernel exit evidence, without /proc races.
+        deadline = time.monotonic() + timeout
+        with selectors.DefaultSelector() as selector:
+            selector.register(fd, selectors.EVENT_READ)
+            while time.monotonic() < deadline:
+                if selector.select(max(0, deadline - time.monotonic())): return
+        raise ApplyError('component_stop_timeout')
+    finally: os.close(fd)
+
+
+
+def apply_stop_child(child, timeout=8):
+    # Popen owns the unreaped child, whose PID cannot yet be reused. This is
+    # authoritative even during exit_mm -> zombie when /proc/exe disappears.
+    if child.poll() is None:
+        try: child.terminate()
+        except ProcessLookupError: pass
+    try: child.wait(timeout=timeout)
+    except subprocess.TimeoutExpired: raise ApplyError('owned_child_stop_timeout')
+
+
+def apply_interpreter(process):
+    path = process['exe']
+    try:
+        if path.endswith(' (deleted)') or not os.path.isabs(path): raise ValueError()
+        info = os.stat(path)
+        if not stat.S_ISREG(info.st_mode) or not os.access(path, os.X_OK): raise ValueError()
+    except (OSError, ValueError): raise ApplyError('shim_interpreter_unavailable')
+
+
+def apply_launch(directory, baseline, environment, log):
+    child = subprocess.Popen([baseline['shim']['exe'], str(directory / 'shim/shim.py')],
+                             env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                             close_fds=True, start_new_session=True)
+    return child
+
+
+def apply_candidate(child, baseline):
+    identity = apply_identity(child.pid)
+    if identity is None:
+        child.wait(timeout=1)
+        return {'pid': child.pid, 'ticks': 'exited', 'uid': os.getuid(), 'exe': baseline['shim']['exe']}
+    return identity
+
+
+def apply_ready(directory, runtime, proxy, baseline, candidate, public, config, host_public, timeout=30):
+    if candidate['exe'] != baseline['shim']['exe']: raise ApplyError('candidate_executable_changed')
+    deadline = time.monotonic() + timeout
+    def remaining():
+        budget = deadline - time.monotonic()
+        if budget <= 0: raise ApplyError('readiness_timeout')
+        return budget
+    while time.monotonic() < deadline:
+        if apply_identity(candidate['pid']) != candidate: raise ApplyError('candidate_identity_changed')
+        if '_socket' in baseline and proxy._socket_identity(runtime) != baseline['_socket']:
+            raise ApplyError('daemon_socket_changed')
+        for name in ('tailscaled', 'sshd'):
+            if apply_identity(baseline[name]['pid']) != baseline[name]: raise ApplyError('preserved_process_changed')
+        try:
+            if apply_public_identity(directory, runtime, min(3, remaining())) != public: raise ApplyError('node_identity_changed')
+            if proxy.inspect_config(directory, runtime) != config: raise ApplyError('proxy_configuration_changed')
+            if bounded_code_read(directory, 'sshd/ssh_host_ed25519_key.pub', 16384) != host_public: raise ApplyError('host_public_key_changed')
+            if not proxy._listener_owned(candidate, 18089): raise ApplyError('shim_listener_not_ready')
+            with socket.create_connection(('127.0.0.1', 22), timeout=min(2, remaining())) as connection:
+                connection.settimeout(min(2, remaining()))
+                if not connection.recv(256).startswith(b'SSH-'): raise ApplyError('ssh_not_ready')
+            remaining()
+            return
+        except ApplyError as error:
+            if str(error) not in ('backend_not_running', 'backend_unavailable', 'public_identity_unavailable', 'shim_listener_not_ready', 'ssh_not_ready'): raise
+        except (OSError, subprocess.SubprocessError): pass
+        time.sleep(min(.2, max(0, deadline-time.monotonic())))
+    raise ApplyError('readiness_timeout')
+
+
+def apply_replace(directory, payload, transaction, journal, phase):
+    for source, installed in list(CORE_FILES.items()) + [(MANIFEST, MANIFEST)]:
+        record = apply_journal_best_effort if phase == 'restore' else apply_journal
+        record(transaction, journal, phase=phase, file=source)
+        target = directory / installed
+        if target.is_symlink() or not target.is_file(): raise ApplyError('unsafe_installed_file')
+        apply_write(target, payload[source], 0o600 if source == MANIFEST else 0o700)
+        record(transaction, journal, completed_file=source)
+
+
+def apply_transaction(directory, runtime, transaction, journal, proxy):
+    old = apply_bundle(directory, 'installed')
+    candidate_payload = apply_bundle(transaction / 'stage')
+    apply_syntax(candidate_payload)
+    if apply_ts_version(old) != apply_ts_version(candidate_payload): raise ApplyError('binary_update_unsupported')
+    baseline = apply_components(directory, runtime, proxy)
+    apply_interpreter(baseline['shim'])
+    environment = apply_environment(baseline['shim'])
+    public = apply_public_identity(directory, runtime)
+    try: host_public = bounded_code_read(directory, 'sshd/ssh_host_ed25519_key.pub', 16384)
+    except (OSError, ValueError): raise ApplyError('public_ssh_host_key_required')
+    config = proxy.inspect_config(directory, runtime)
+    if config.get('restart_required') or not config.get('daemon_running'): raise ApplyError('proxy_state_pending')
+    backup = apply_private(transaction / 'backup', create=True)
+    for name, data in old.items(): apply_write(backup / name, data)
+    # The shim is long lived; discard output rather than leave an unbounded log.
+    logfd = os.open(os.devnull, os.O_WRONLY)
+    child = None; candidate = None; stopped = False; mutation = False
+    try:
+        apply_journal(transaction, journal, phase='stop_old_shim', destructive=True, baseline=baseline)
+        apply_stop(baseline['shim']); stopped = True
+        apply_journal(transaction, journal, phase='replace_intent')
+        mutation = True
+        apply_replace(directory, candidate_payload, transaction, journal, 'replace')
+        apply_journal(transaction, journal, phase='launch_candidate')
+        child = apply_launch(directory, baseline, environment, logfd)
+        candidate = apply_candidate(child, baseline)
+        apply_journal(transaction, journal, candidate=candidate, phase='readiness')
+        apply_ready(directory, runtime, proxy, baseline, candidate, public, config, host_public)
+        if apply_bundle(directory, 'installed') != candidate_payload: raise ApplyError('installed_verification_failed')
+        apply_journal(transaction, journal, state='applied', phase='complete')
+    except Exception as failure:
+        apply_journal_best_effort(transaction, journal, error=str(failure) if isinstance(failure, ApplyError) else 'transaction_failed', state='running', phase='rollback_intent')
+        try:
+            if child is not None: apply_stop_child(child)
+            if not stopped:
+                # Failed stop is not permission to start a duplicate or alter code.
+                raise ApplyError('old_shim_stop_uncertain')
+            if mutation: apply_replace(directory, old, transaction, journal, 'restore')
+            restored = apply_launch(directory, baseline, environment, logfd)
+            identity = apply_candidate(restored, baseline)
+            apply_journal_best_effort(transaction, journal, restored=identity, phase='rollback_readiness')
+            apply_ready(directory, runtime, proxy, baseline, identity, public, config, host_public)
+            if apply_bundle(directory, 'installed') != old: raise ApplyError('rollback_verification_failed')
+            apply_outcome(transaction, journal, 'failed_rolled_back', phase='complete')
+        except Exception:
+            apply_outcome(transaction, journal, 'rollback_failed_manual_required', phase='manual_recovery')
+    finally: os.close(logfd)
+
+
+def apply_worker(directory, runtime, transaction):
+    import signal
+    import dots_proxy as proxy
+    apply_private(directory); apply_private(transaction.parent); apply_private(transaction)
+    if transaction.parent != directory / APPLY_DIRECTORY: raise ApplyError('invalid_transaction_path')
+    journal = apply_read_journal(transaction)
+    if journal.get('state') != 'prepared' or journal.get('boot_id') != apply_boot(): raise ApplyError('invalid_worker_state')
+    interrupted = []
+    for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(signum, lambda number, frame: interrupted.append(number) if not interrupted else None)
+    try:
+        with proxy._operation(directory):
+            apply_journal(transaction, journal, state='running', worker=apply_identity(os.getpid()), phase='preflight')
+            apply_transaction(directory, runtime, transaction, journal, proxy)
+    except Exception as error:
+        apply_outcome(transaction, journal, 'rollback_failed_manual_required' if journal.get('destructive') else 'rejected', error=str(error) if isinstance(error, ApplyError) else 'worker_failed')
+    if interrupted: apply_journal_best_effort(transaction, journal, interrupted_signal=interrupted[0])
+    return 0
+
+
+def update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None):
+    context = {}
+    try:
+        return _update_apply(directory, runtime, tag, bundle, confirm, proxy_url, context)
+    except Exception as error:
+        report = apply_error_report(error)
+        raise ApplyError(report['error'], context.get('transaction_id')) from None
+
+
+def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None, context=None):
+    import signal
+    import uuid
+    import dots_proxy as proxy
+    if not confirm: raise ApplyError('independent_recovery_terminal_confirmation_required')
+    if sys.platform != 'linux' or not hasattr(os, 'pidfd_open') or not hasattr(signal, 'pidfd_send_signal'):
+        raise ApplyError('linux_python_pidfd_required')
+    if bool(tag) == bool(bundle): raise ApplyError('select_exactly_one_tag_or_bundle')
+    apply_private(directory)
+    caller = pathlib.Path(__file__).resolve().parent
+    caller_layout = 'source' if (caller / 'tailscale-setup.sh').is_file() else 'installed'
+    trusted = apply_bundle(caller, caller_layout)
+    with proxy._operation(directory):
+        baseline = apply_bundle(directory, 'installed')
+        root = apply_private(directory / APPLY_DIRECTORY, create=True)
+        for entry in root.iterdir():
+            if not re.fullmatch('[0-9a-f]{32}', entry.name): raise ApplyError('unexpected_transaction_entry')
+            apply_private(entry)
+            previous = apply_status(directory, entry.name)
+            if previous.get('state') not in ('applied', 'failed_rolled_back', 'rejected'):
+                raise ApplyError('prior_transaction_requires_manual_review')
+        if bundle:
+            payload = apply_bundle(pathlib.Path(bundle), 'source')
+        else:
+            release = fetch_release(tag, proxy_url)
+            deadline = time.monotonic() + 60
+            payload = {name: download_release_asset(release, name, proxy_url, deadline) for name in CORE_FILES}
+            payload[MANIFEST] = release['manifest_bytes']
+        apply_syntax(payload)
+        if apply_ts_version(payload) != apply_ts_version(baseline): raise ApplyError('binary_update_unsupported')
+        identifier = uuid.uuid4().hex
+        transaction = apply_private(root / identifier, create=True)
+        context['transaction_id'] = identifier
+        journal = {'schema': 1, 'state': 'prepared', 'boot_id': apply_boot(), 'selection': 'local_bundle' if bundle else tag,
+                   'external_ssh': 'pending', 'checksum_trust': 'consistency_only_not_publisher_authentication'}
+        apply_journal(transaction, journal, phase='staging')
+        try:
+            stage = apply_private(transaction / 'stage', create=True)
+            for name, data in payload.items(): apply_write(stage / name, data)
+            apply_bundle(stage)
+            supervisor = apply_private(transaction / 'supervisor', create=True)
+            for name in ('dots-ts', 'dots_proxy.py'): apply_write(supervisor / name, trusted[name], 0o700)
+            logfd = os.open(str(transaction / 'worker.log'), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            os.close(logfd)
+        except Exception:
+            apply_journal_best_effort(transaction, journal, state='rejected', error='staging_failed')
+            raise
+    log_fd = os.open(str(transaction / 'worker.log'), os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK)
+    info = os.fstat(log_fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+        os.close(log_fd); raise ApplyError('unsafe_worker_log')
+    with os.fdopen(log_fd, 'ab') as log:
+        child = subprocess.Popen([sys.executable, str(supervisor / 'dots-ts'), '_update-worker', str(directory), str(runtime), str(transaction)],
+                                 stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True, start_new_session=True)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        current = apply_read_journal(transaction)
+        if current.get('worker') or current.get('state') in APPLY_TERMINAL:
+            return {'state': current['state'] if current.get('state') in APPLY_TERMINAL else 'started', 'transaction_id': identifier,
+                    'external_ssh': 'pending', 'status_command': 'dots-ts update status --id ' + identifier}
+        if child.poll() is not None: raise ApplyError('worker_exited_inspect_transaction')
+        time.sleep(.05)
+    raise ApplyError('worker_acknowledgement_timeout_inspect_transaction')
 
 
 def directories():
@@ -488,6 +1463,20 @@ class SafeParser(argparse.ArgumentParser):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     try:
+        if argv and argv[0] == '_update-worker':
+            if len(argv) != 4: raise ValueError('invalid_worker_arguments')
+            return apply_worker(*(pathlib.Path(value) for value in argv[1:]))
+        if argv == ["_fetch-update"]:
+            try:
+                request = parse_release_json(sys.stdin.buffer.read(16385))
+                if (not isinstance(request, dict) or set(request) != {"url", "proxy", "limit"}
+                        or type(request["limit"]) is not int or not 1 <= request["limit"] <= 8 * 1024 * 1024):
+                    raise UpdateError("invalid_response")
+                raw = _network_fetch(request["url"], request["proxy"], request["limit"])
+                print(json.dumps({"data": base64.b64encode(raw).decode("ascii")}))
+            except UpdateError as error:
+                print(json.dumps({"error": error.code}))
+            return 0
         if argv and argv[0] == "_verify-package":
             if len(argv) != 4 or argv[2] not in ("source", "installed"):
                 raise ValueError("invalid_arguments")
@@ -510,12 +1499,80 @@ def main(argv=None):
                 return 1
         parser = SafeParser(description="Local CLI forwarding and read-only diagnostics.")
         commands = parser.add_subparsers(dest="command", required=True)
+        update = commands.add_parser("update", help="check stable releases without changing code or services")
+        update_commands = update.add_subparsers(dest="update_command", required=True)
+        check = update_commands.add_parser("check")
+        check.add_argument("--tag")
+        check.add_argument("--proxy")
+        check.add_argument("--json", action="store_true")
+        apply = update_commands.add_parser('apply', help='verified detached manual update; requires independent recovery terminal')
+        selection = apply.add_mutually_exclusive_group(required=True)
+        selection.add_argument('--tag')
+        selection.add_argument('--bundle', type=pathlib.Path)
+        apply.add_argument('--confirm-recovery-terminal', action='store_true')
+        apply.add_argument('--proxy')
+        apply.add_argument('--json', action='store_true')
+        status = update_commands.add_parser('status')
+        status.add_argument('--id', required=True)
+        status.add_argument('--json', action='store_true')
+        notices = update_commands.add_parser("notifications", help="opt-in local cached notices; no scheduler")
+        notice_commands = notices.add_subparsers(dest="notice_command", required=True)
+        configure = notice_commands.add_parser("configure")
+        enabled = configure.add_mutually_exclusive_group()
+        enabled.add_argument("--enable", dest="enabled", action="store_const", const=True, default=None)
+        enabled.add_argument("--disable", dest="enabled", action="store_const", const=False)
+        configure.add_argument("--interval-hours", type=int)
+        configure.add_argument("--json", action="store_true")
+        show = notice_commands.add_parser("show")
+        show.add_argument("--json", action="store_true")
+        refresh = notice_commands.add_parser("refresh")
+        refresh.add_argument("--proxy")
+        refresh.add_argument("--force", action="store_true")
+        refresh.add_argument("--json", action="store_true")
+        notice_commands.add_parser("notify", help="cache-only; interactive stderr only")
         version = commands.add_parser("version", help="offline package integrity and local Tailscale version")
         version.add_argument("--json", action="store_true")
         diagnostic = commands.add_parser("doctor", help="bounded read-only checks; target probes are TCP only")
         diagnostic.add_argument("--json", action="store_true")
         diagnostic.add_argument("--target")
         options = parser.parse_args(argv)
+        if options.command == 'update' and options.update_command in ('apply', 'status'):
+            try:
+                report = (apply_status(directory, options.id) if options.update_command == 'status' else
+                          update_apply(directory, runtime, options.tag, options.bundle, options.confirm_recovery_terminal, options.proxy))
+            except Exception as error:
+                report = apply_error_report(error)
+            print(json.dumps(report, sort_keys=True))
+            return int('error' in report or report.get('state') in ('rejected', 'failed_rolled_back', 'rollback_failed_manual_required', 'interrupted_manual_required'))
+        if options.command == "update" and options.update_command == "notifications":
+            if options.notice_command == "notify":
+                notification_notify(directory)
+                return 0
+            try:
+                if options.notice_command == "configure":
+                    report = notification_configure(directory, options.enabled, options.interval_hours)
+                elif options.notice_command == "refresh":
+                    report = notification_refresh(directory, options.proxy, options.force)
+                else:
+                    report = notification_show(directory)
+            except NoticeError as error:
+                report = {"error": error.code}
+            if options.json:
+                print(json.dumps(report, sort_keys=True))
+            else:
+                print("update notifications: " + json.dumps(report, sort_keys=True))
+            return int("error" in report or report.get("status") == "refresh_failed")
+        if options.command == "update":
+            report = update_check(directory, options.tag, options.proxy)
+            if options.json:
+                print(json.dumps(report, sort_keys=True))
+            else:
+                print("update: " + report["status"])
+                if report["release"]:
+                    print("release: " + report["release"]["tag"] + " (" + report["selection"] + ")")
+                if report["error"]:
+                    print("error: " + report["error"])
+            return update_check_exit(report)
         if options.command == "version":
             report = {"package": package_report(directory), "tailscale": tailscale_version(directory)}
             if options.json:

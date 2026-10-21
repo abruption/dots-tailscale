@@ -51,6 +51,8 @@ bash /workspace/.dots-tailscale/start.sh login
 
 개발 버전의 `dots-ts version`과 `dots-ts version --json`은 dots-tailscale 패키지 버전과 내부 Tailscale 버전을 따로 보여줍니다. v0.3.1에는 아직 없는 명령입니다. 자세한 내용은 [패키지 버전과 파일 확인](docs/usage.ko.md#package-version)을 참고하세요.
 
+개발 버전에는 정식 릴리스 확인, 선택적으로 켜는 캐시 알림, 코드 백업과 원복을 갖춘 수동 업데이트도 추가됩니다. 실행 조건, 복구 터미널 확인과 별도 SSH 검증은 [업데이트 안내](docs/usage.ko.md#update-management)를 참고하세요.
+
 ## 구성 요소
 
 | 경로 | 역할 |

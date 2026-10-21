@@ -108,6 +108,72 @@ JSON은 `package.declared_version`, `package.source_revision`, `package.integrit
 
 유지보수 시에는 검토한 소스 변경 후 `python3 scripts/source_manifest.py`로 명세를 생성하고 차이를 확인한 뒤 `python3 scripts/source_manifest.py --check`로 검사합니다. CI는 파일을 수정하지 않고 검사만 합니다. 설치 경로가 아닌 검토된 소스 체크아웃에서만 생성하세요. 릴리스에는 소스 파일 네 개와 일치하는 명세도 함께 배포해야 합니다. 기존 v0.3.1 릴리스에는 이 명세가 없습니다.
 
+<a id="update-management"></a>
+
+## 새 릴리스 확인과 로컬 알림 (개발 중)
+
+v0.4.0을 위해 개발 중인 기능으로 새 도구가 설치되어 있어야 합니다. 릴리스 발행만으로 기존 설치가 바뀌지는 않습니다. `abruption/dots-tailscale`의 정식 릴리스 중 소스 파일 네 개와 일치하는 `source-manifest.json`이 있는 묶음만 확인합니다. v0.3.1처럼 명세가 없는 기존 릴리스는 검증된 업데이트 대상으로 간주하지 않고 지원되지 않는다고 표시합니다.
+
+```bash
+/workspace/.dots-tailscale/dots-ts update check --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.4.0 --proxy http://browser-proxy:8889 --json
+```
+
+두 번째 예시는 특정 정식 버전을 선택합니다. 실제로 해당 릴리스가 발행된 뒤에 사용할 수 있습니다. `--proxy`가 없으면 직접 HTTPS로 연결하며 셸의 프록시 자격정보를 가져오지 않습니다. 필요한 경우 플랫폼 다운로드 프록시를 직접 지정하세요. shim이나 애플리케이션 SOCKS·HTTP 프록시와는 별개입니다. HTTPS 인증서 검증은 유지하며 GitHub 토큰은 필요하지 않습니다.
+
+`update check`는 설치 코드, 노드 상태, 설정이나 프로세스를 바꾸지 않습니다. JSON의 `status`는 `update_available`, `current`, `local_newer`, `not_comparable`, `check_failed` 중 하나이고, `selection`은 최신 릴리스 조회인지 특정 버전 선택인지 구분합니다. 정상 비교는 종료 코드 0, 로컬 설치를 비교할 수 없으면 1, 조회 실패는 2입니다. 종료 코드 0만 보고 새 버전이 있다고 판단하지 말고 status를 읽으세요. 원격 릴리스를 찾았다고 해서 버전을 알 수 없거나 파일이 수정·혼합된 로컬 설치가 검증되는 것은 아닙니다.
+
+알림은 직접 켜야 하며 로컬에서만 표시합니다. 업데이트를 설치하거나 타이머를 등록하거나 외부로 메시지를 보내지 않습니다.
+
+```bash
+/workspace/.dots-tailscale/dots-ts update notifications configure --enable --interval-hours 24
+/workspace/.dots-tailscale/dots-ts update notifications refresh --proxy http://browser-proxy:8889
+/workspace/.dots-tailscale/dots-ts update notifications show
+/workspace/.dots-tailscale/dots-ts update notifications notify
+/workspace/.dots-tailscale/dots-ts update notifications configure --disable
+```
+
+`refresh`는 제한된 시간 안에 네트워크로 조회하고 결과를 저장합니다. 설정한 간격 안에서는 유효한 결과를 재사용하며, `--force`를 지정하면 그 전에 새로 조회합니다. `notify`는 저장된 결과만 읽으며 만료된 결과와 같은 버전의 반복 안내를 걸러냅니다. 대화형 터미널에서 기동에 성공하면 짧은 제한 시간 안에 캐시된 안내를 stderr로 보여줄 수 있습니다. 알림 확인이 실패해도 기동 결과는 바뀌지 않습니다. 원시 `cli` 전달이나 JSON 출력에는 안내 문구가 섞이지 않습니다. 저장 경로가 읽기 전용이거나 갱신에 실패해도 오래된 결과를 새로 확인한 결과로 취급하지 않습니다. `show`에서 기록 시각과 stale·오류 상태를 확인하세요. 주기적으로 갱신하려면 호출 수단을 별도로 설정해야 하며, VM이 없을 때는 VM 안의 명령도 실행되지 않습니다.
+
+### 검증된 수동 업데이트
+
+설치 경로, 런타임 소켓과 Linux 프로세스 정보가 보이는 환경에서 실행하세요. `update apply`에는 Linux, Python 3.9 이상과 pidfd 지원이 필요합니다. 먼저 클라우드 컴퓨터의 독립 터미널을 열고 제어가 되는지 확인하세요. `--confirm-recovery-terminal`은 사용자가 이를 확인했다는 뜻이며, 프로그램이 터미널의 작동 여부를 검사해 주지는 않습니다. 작업 프로세스가 호출 세션에서 분리되므로 SSH에서 시작할 수 있지만, 그 SSH 연결 자체를 복구 경로로 삼아서는 안 됩니다.
+
+조회한 정식 릴리스 중 특정 버전을 선택합니다.
+
+```bash
+/workspace/.dots-tailscale/dots-ts update apply --tag v0.4.1 --proxy http://browser-proxy:8889 --confirm-recovery-terminal --json
+/workspace/.dots-tailscale/dots-ts update status --id TRANSACTION_ID --json
+```
+
+사용 예시이며 v0.4.1이 이미 발행되었다는 뜻은 아닙니다. `TRANSACTION_ID`는 apply가 반환한 ID로 바꾸세요. 릴리스 파일 다운로드가 막혔거나 미발행 후보를 직접 시험할 때는 검토한 로컬 소스 묶음을 사용할 수 있습니다.
+
+```bash
+/workspace/.dots-tailscale/dots-ts update apply --bundle /workspace/reviewed-bundle --confirm-recovery-terminal --json
+```
+
+소스 파일 네 개와 해당 파일에 일치하는 원본 명세가 필요합니다. 로컬 묶음에는 개발 버전을 사용할 수 있지만, 이를 GitHub에 발행된 릴리스로 표시하지는 않습니다. 교체 전에 해시와 문법을 검사합니다. 체크섬 일치는 선택한 묶음과 파일이 같다는 뜻이며, 작성자의 신뢰성을 별도로 증명하지는 않습니다.
+
+`started`는 분리된 작업 프로세스가 작업을 접수했다는 뜻으로, 업데이트 성공이 아닙니다. 재접속 후 `update status`로 확인하세요. 최종 결과는 `applied`, `failed_rolled_back`, `rollback_failed_manual_required`로 구분합니다. 로컬 준비 상태와 버전 확인만으로 외부 SSH 접속까지 확인되지는 않습니다. 적용이나 원복 성공 후에는 엄격한 호스트 키 검증을 유지한 새 SSH 연결로 실제 접속을 별도로 확인하세요.
+
+setup과 proxy apply가 사용하는 작업 잠금을 유지한 채 소스 파일 네 개와 명세만 백업·교체합니다. 정확히 식별한 shim 프로세스만 재시작하고 tailscaled와 sshd는 계속 실행합니다. 노드 상태, 로그인 정보, 개인키, SSH 설정과 프록시 설정은 복사하거나 초기화하지 않습니다. 내부 Tailscale 실행 파일 버전을 바꾸는 릴리스는 이 updater의 지원 범위 밖이므로 거부합니다. 정체를 알 수 없는 프로세스를 종료하거나 소켓을 지우지 않습니다.
+
+설치 파일과 일치하는 명세가 있어야 합니다. 메타데이터가 없는 구버전은 먼저 별도로 확보하고 검토한 릴리스와 설치 파일 네 개를 비교하세요. 설치된 파일에서 기대 체크섬을 새로 만들면 안 됩니다. 출처를 확인할 수 없거나 파일이 섞여 있으면 수동 검토를 위해 멈추세요. 의도적으로 마이그레이션할 때 사용하는 소스 체크아웃도 자체 명세와 일치해야 기존 설치를 대상으로 updater를 실행할 수 있습니다.
+
+이전 작업이 미완료 상태면 새 업데이트를 막습니다. 작업 프로세스가 강제 종료되거나 VM이 교체되면 독립 터미널에서 상태와 코드 백업을 확인하세요. 다시 시도하려고 기록을 삭제하거나 다음 단계가 안전하다고 가정하지 마세요. 원복 후에도 준비 상태를 확인할 수 없으면 증거를 보존하고 검증된 백업으로 수동 복구해야 합니다. 이 updater는 VM을 자동으로 복구하는 서비스가 아닙니다.
+
+작업 기록은 `.update-transactions/TRANSACTION_ID/`에 남습니다. `journal.json`에는 진행 단계, `stage/`에는 선택한 묶음, `backup/`에는 이전 소스 묶음만 저장하고, `supervisor/`에는 updater 코드 사본을 둡니다. 외부 연결을 확인할 때까지 기록을 보존하세요. `update status`의 종료 코드는 진행 중이거나 적용된 작업은 0, 거부·원복·중단·수동 복구 필요 결과는 1입니다. 진행 중 작업의 종료 코드 0은 완료를 뜻하지 않습니다.
+
+`applied`는 선택한 코드가 명세와 일치하고 로컬 준비 검사를 통과했다는 뜻입니다. shim의 실제 CONNECT·WebSocket 통신까지 시험한 결과는 아닙니다. 재시작한 shim에는 기존 upstream 호스트·포트와 절대 경로의 SSL 인증서 설정을 유지하지만, 다른 셸 환경이나 디버그 설정은 물려주지 않습니다. stdout·stderr는 버리므로 기존 `shim.log`에 새 출력이 쌓일 것으로 기대하지 말고, 작업 기록의 고정 오류 코드와 별도 연결 검사로 확인하세요.
+
+중단된 작업은 증거를 삭제하지 않고 다음과 같이 수동 복구를 마무리할 수 있습니다.
+
+1. 독립 터미널에서 작업 프로세스가 종료됐음을 확실히 확인합니다. PID에 접근할 수 없거나 status가 불확실하다는 이유만으로 종료됐다고 판단하지 마세요.
+2. 필요하면 검토된 코드 묶음으로 복원해 기동하고, 명세·로컬 준비 상태·새 외부 SSH 연결을 확인합니다. 구버전 도구에서는 별도로 검토한 소스 실행기로 명세를 확인해야 할 수 있습니다.
+3. 작업 프로세스가 없고 설치 경로의 `.operation.lock`을 확보한 상태에서, 검토를 마친 작업 디렉터리 전체를 `.update-transactions/` 바깥의 본인 소유·권한 700인 `.update-recovery-archive/`로 옮깁니다. 기록과 백업을 함께 보존하세요. 이렇게 보관하면 미완료 작업 검색에서 제외됩니다. apply 차단을 풀려고 실행 중이거나 검토하지 않은 작업을 옮기면 안 됩니다.
+
+검토된 개발 후보를 2026-10-21에 Dots에서 시험했습니다. 정상 적용, 의도적인 실패 후 원복, 외부 SSH 확인 결과와 한계는 [날짜별 업데이트 검증 기록](validation/v0.4.0-update-trial.md)을 참고하세요.
+
 <a id="development-helpers"></a>
 
 ## v0.3.1 도구와 선택적 애플리케이션 프록시
