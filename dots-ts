@@ -666,8 +666,18 @@ def apply_identity(pid):
         return {'pid': int(pid), 'ticks': fields[19], 'uid': p.stat().st_uid,
                 'exe': os.readlink(p / 'exe')}
     except FileNotFoundError:
-        if p.exists(): raise ApplyError('process_identity_unknown')
-        return None
+        # A process can become a zombie between stat and exe: exe disappears
+        # before its /proc directory. Re-read state; ENOENT alone is not exit.
+        try:
+            fields = (p / 'stat').read_text().rsplit(')', 1)[1].split()
+            if fields[0] == 'Z': return None
+        except FileNotFoundError:
+            try: p.stat()
+            except FileNotFoundError: return None
+            except OSError: raise ApplyError('process_identity_unknown')
+        except (OSError, IndexError, ValueError):
+            raise ApplyError('process_identity_unknown')
+        raise ApplyError('process_identity_unknown')
     except (OSError, IndexError, ValueError):
         raise ApplyError('process_identity_unknown')
 
@@ -792,18 +802,24 @@ def apply_stop(process, timeout=8):
     current = apply_identity(process['pid'])
     if current is None: return
     if current != process: raise ApplyError('process_identity_changed')
-    fd = os.pidfd_open(process['pid'])
+    try: fd = os.pidfd_open(process['pid'])
+    except ProcessLookupError: return  # kernel confirms absence at pidfd_open
     try:
-        if apply_identity(process['pid']) != process: raise ApplyError('process_identity_changed')
-        signal.pidfd_send_signal(fd, signal.SIGTERM)
+        current = apply_identity(process['pid'])
+        if current is None: return
+        if current != process: raise ApplyError('process_identity_changed')
+        try: signal.pidfd_send_signal(fd, signal.SIGTERM)
+        except ProcessLookupError: return
+        # The pidfd stays bound to this process even after PID reuse. Its
+        # readability is positive kernel exit evidence, without /proc races.
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            current = apply_identity(process['pid'])
-            if current is None: return
-            if current != process: raise ApplyError('process_identity_changed')
-            time.sleep(.1)
+        with selectors.DefaultSelector() as selector:
+            selector.register(fd, selectors.EVENT_READ)
+            while time.monotonic() < deadline:
+                if selector.select(max(0, deadline - time.monotonic())): return
         raise ApplyError('component_stop_timeout')
     finally: os.close(fd)
+
 
 
 def apply_launch(directory, baseline, environment, log):
@@ -889,9 +905,11 @@ def apply_transaction(directory, runtime, transaction, journal, proxy):
         apply_journal(transaction, journal, error=str(failure) if isinstance(failure, ApplyError) else 'transaction_failed', phase='rollback_intent')
         try:
             if child is not None:
-                if candidate is None:
-                    if child.poll() is None: raise ApplyError('candidate_identity_unknown')
-                else: apply_stop(candidate)
+                # Popen.poll uses waitpid: a reaped owned child is positive exit
+                # evidence even if a concurrent /proc inspection was uncertain.
+                if child.poll() is None:
+                    if candidate is None: raise ApplyError('candidate_identity_unknown')
+                    apply_stop(candidate)
                 child.wait(timeout=2)
             if not stopped:
                 # Failed stop is not permission to start a duplicate or alter code.

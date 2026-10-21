@@ -60,7 +60,7 @@ class ApplyTests(unittest.TestCase):
     def lifecycle(self, ready=None):
         stack = contextlib.ExitStack(); self.addCleanup(stack.close)
         self.stop = stack.enter_context(mock.patch.object(tool, 'apply_stop'))
-        self.launch = stack.enter_context(mock.patch.object(tool, 'apply_launch', side_effect=[mock.Mock(), mock.Mock()]))
+        self.launch = stack.enter_context(mock.patch.object(tool, 'apply_launch', side_effect=[mock.Mock(poll=mock.Mock(return_value=None)), mock.Mock(poll=mock.Mock(return_value=None))]))
         self.identify = stack.enter_context(mock.patch.object(tool, 'apply_candidate', side_effect=[self.candidate, self.restored]))
         self.ready = stack.enter_context(mock.patch.object(tool, 'apply_ready', side_effect=ready))
         stack.enter_context(mock.patch.object(tool, 'apply_components', return_value=self.baseline))
@@ -184,6 +184,44 @@ class ApplyTests(unittest.TestCase):
         tool.apply_journal(transaction, journal)
         with mock.patch.object(tool, 'apply_boot', return_value='boot'), mock.patch.object(tool, 'apply_identity', return_value=self.candidate):
             self.assertEqual(tool.apply_status(self.directory, identifier)['state'], 'running')
+
+    def test_identity_stat_to_zombie_transition_is_positive_exit(self):
+        running = '1 (fixture) ' + ' '.join(['S'] + ['0'] * 18 + ['42'])
+        zombie = '1 (fixture) ' + ' '.join(['Z'] + ['0'] * 18 + ['42'])
+        with mock.patch.object(Path, 'read_text', side_effect=[running, zombie]), \
+             mock.patch.object(Path, 'stat', return_value=mock.Mock(st_uid=os.getuid())), \
+             mock.patch.object(os, 'readlink', side_effect=FileNotFoundError()):
+            self.assertIsNone(tool.apply_identity(1))
+
+    def test_identity_missing_exe_but_running_stays_unknown(self):
+        running = '1 (fixture) ' + ' '.join(['S'] + ['0'] * 18 + ['42'])
+        with mock.patch.object(Path, 'read_text', return_value=running), \
+             mock.patch.object(Path, 'stat', return_value=mock.Mock(st_uid=os.getuid())), \
+             mock.patch.object(os, 'readlink', side_effect=FileNotFoundError()):
+            with self.assertRaisesRegex(tool.ApplyError, 'process_identity_unknown'):
+                tool.apply_identity(1)
+
+    def test_stop_waits_on_pidfd_without_post_signal_proc_reads(self):
+        selector = mock.MagicMock()
+        selector.__enter__.return_value.select.return_value = [(mock.Mock(), 1)]
+        with mock.patch.object(tool, 'apply_identity', side_effect=[self.baseline['shim'], self.baseline['shim']]) as identity, \
+             mock.patch.object(os, 'pidfd_open', return_value=77, create=True), \
+             mock.patch.object(signal, 'pidfd_send_signal', create=True) as send, \
+             mock.patch.object(tool.selectors, 'DefaultSelector', return_value=selector), \
+             mock.patch.object(os, 'close'):
+            tool.apply_stop(self.baseline['shim'])
+        self.assertEqual(identity.call_count, 2)
+        send.assert_called_once_with(77, signal.SIGTERM)
+        selector.__enter__.return_value.register.assert_called_once_with(77, tool.selectors.EVENT_READ)
+
+    def test_exited_owned_candidate_skips_uncertain_proc_stop(self):
+        self.lifecycle([tool.ApplyError('candidate_identity_changed'), None])
+        dead = mock.Mock(poll=mock.Mock(return_value=1))
+        self.launch.side_effect = [dead, mock.Mock()]
+        self.run_transaction()
+        self.assertEqual(self.journal['state'], 'failed_rolled_back')
+        self.stop.assert_called_once_with(self.baseline['shim'])
+        dead.wait.assert_called_once_with(timeout=2)
 
     def test_real_setup_binary_version_parses(self):
         payload = {'tailscale-setup.sh': (ROOT / 'tailscale-setup.sh').read_bytes()}
