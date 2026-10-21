@@ -47,6 +47,10 @@ bash /workspace/.dots-tailscale/start.sh login
 
 `doctor` 读取本地诊断信息，不会更改状态。`cli` 会选择已安装的 Tailscale 二进制文件和套接字。可选的回环 SOCKS5/HTTP 代理默认关闭；启用前需要单独审查并重启守护进程。配置、访问策略和验证范围请参阅[使用指南](docs/usage.zh-CN.md#development-helpers)和[私有 HTTP API 配置示例](docs/private-http-api.zh-CN.md)。这些代理不会自动配置 ChatGPT 连接器、MCP 客户端或 Dots 浏览器。
 
+## 开发中：查看已安装的软件包版本
+
+开发版新增了 `dots-ts version` 和 `dots-ts version --json`，可以分别查看 dots-tailscale 软件包版本和 Tailscale 程序版本。v0.3.1 尚不包含这些命令。详情见[软件包版本与文件校验](docs/usage.zh-CN.md#package-version)。
+
 ## 项目内容
 
 | 路径 | 用途 |

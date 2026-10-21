@@ -1,0 +1,10 @@
+{
+  "files": {
+    "dots-ts": "69dde01ff73107965f2bdf0b020088386225d59e971f9fa94751b5f9bc447499",
+    "dots_proxy.py": "2b74af2e175d12300196cab008062ba1098e12bc208d617e3fe63c23c2613390",
+    "shim.py": "c0c55c45fbd9126e860b56d0d0359c0c87f8b39ef5d4da4a9560522452ac8c65",
+    "tailscale-setup.sh": "58fff7a0efbfe43009c00cef3e3b831b04efd44a061ab03fd3784cbc8fc12504"
+  },
+  "package_version": "0.4.0-dev",
+  "schema_version": 1
+}

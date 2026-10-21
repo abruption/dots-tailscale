@@ -47,6 +47,10 @@ bash /workspace/.dots-tailscale/start.sh login
 
 `doctor`는 상태를 바꾸지 않고 로컬 진단 정보를 읽습니다. `cli`는 설치된 Tailscale 실행 파일과 소켓을 선택합니다. 선택 기능인 로컬 SOCKS5·HTTP 프록시는 기본적으로 꺼져 있으며, 활성화하려면 데몬 재시작을 별도로 검토해야 합니다. 설정과 접근 정책, 검증 범위는 [사용 가이드](docs/usage.ko.md#development-helpers)와 [비공개 HTTP API 연결 예시](docs/private-http-api.ko.md)를 참고하세요. ChatGPT 커넥터·MCP 클라이언트·Dots 브라우저에 자동으로 적용되지는 않습니다.
 
+## 개발 중: 설치된 패키지 버전 확인
+
+개발 버전의 `dots-ts version`과 `dots-ts version --json`은 dots-tailscale 패키지 버전과 내부 Tailscale 버전을 따로 보여줍니다. v0.3.1에는 아직 없는 명령입니다. 자세한 내용은 [패키지 버전과 파일 확인](docs/usage.ko.md#package-version)을 참고하세요.
+
 ## 구성 요소
 
 | 경로 | 역할 |

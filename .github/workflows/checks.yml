@@ -33,6 +33,8 @@ jobs:
             sudo apt-get update
             sudo apt-get install --yes openssh-client openssh-server
           fi
+      - name: Check source manifest
+        run: python scripts/source_manifest.py --check
       - name: Run offline tests
         run: python -m unittest discover -s tests -v
 

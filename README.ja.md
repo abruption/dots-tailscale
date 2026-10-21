@@ -47,6 +47,10 @@ bash /workspace/.dots-tailscale/start.sh login
 
 `doctor` は状態を変更せず、ローカルの診断情報を読み取ります。`cli` はインストール済みの Tailscale バイナリとソケットを選択します。任意で使える loopback SOCKS5/HTTP プロキシは既定で無効です。有効にするには、デーモンを再起動する手順を別途確認してください。設定、アクセス方針、検証範囲については、[使用ガイド](docs/usage.ja.md#development-helpers)と[プライベート HTTP API の利用例](docs/private-http-api.ja.md)を参照してください。これらのプロキシは ChatGPT コネクター、MCP クライアント、Dots ブラウザーには自動設定されません。
 
+## 開発中：インストール済みパッケージのバージョン確認
+
+開発版では `dots-ts version` と `dots-ts version --json` で、dots-tailscale パッケージと Tailscale バイナリのバージョンを別々に確認できます。v0.3.1 にはまだ含まれていません。詳しくは[パッケージのバージョンとファイルの確認](docs/usage.ja.md#package-version)を参照してください。
+
 ## 同梱内容
 
 | パス | 用途 |
