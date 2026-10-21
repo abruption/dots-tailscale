@@ -420,7 +420,12 @@ case "$state" in
       printf 'authentication_command_failed: backend is running but the explicit authentication command failed\n' >&2
       exit "$AUTH_COMMAND_STATUS"
     fi
-    : > "$D/authenticated"; printf 'running: Tailscale and local SSH ready\n';;
+    : > "$D/authenticated"; printf 'running: Tailscale and local SSH ready\n'
+    # Opt-in cached notice only. Never let a notice change readiness or stdout.
+    if [[ "$MODE" = start && -t 2 ]]; then
+      timeout --kill-after=1s 1s python3 "$D/dots-ts" update notifications notify >/dev/null || true
+    fi
+    ;;
   NeedsLogin) printf 'needs_auth: run bash %s/setup.sh login\n' "$D"; exit 10;;
   NeedsMachineAuth) printf 'needs_machine_auth: approve this existing device in the Tailscale admin console\n'; exit 13;;
   *) printf 'unavailable: BackendState=%s\n' "$state"; exit 11;;

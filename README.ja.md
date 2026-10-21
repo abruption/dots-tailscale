@@ -51,6 +51,8 @@ bash /workspace/.dots-tailscale/start.sh login
 
 開発版では `dots-ts version` と `dots-ts version --json` で、dots-tailscale パッケージと Tailscale バイナリのバージョンを別々に確認できます。v0.3.1 にはまだ含まれていません。詳しくは[パッケージのバージョンとファイルの確認](docs/usage.ja.md#package-version)を参照してください。
 
+開発版には、安定版リリースの確認、任意で有効にするキャッシュ通知、コードのバックアップとロールバックに対応した手動更新も追加されます。実行条件、独立した復旧用ターミナルの確認、別途行う SSH 検証は[更新ガイド](docs/usage.ja.md#update-management)を参照してください。
+
 ## 同梱内容
 
 | パス | 用途 |

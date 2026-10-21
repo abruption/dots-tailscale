@@ -51,6 +51,8 @@ bash /workspace/.dots-tailscale/start.sh login
 
 开发版新增了 `dots-ts version` 和 `dots-ts version --json`，可以分别查看 dots-tailscale 软件包版本和 Tailscale 程序版本。v0.3.1 尚不包含这些命令。详情见[软件包版本与文件校验](docs/usage.zh-CN.md#package-version)。
 
+开发版还新增了正式版本检查、可选的缓存通知，以及支持代码备份和回滚的手动更新。运行条件、独立恢复终端确认和单独的 SSH 验证，请参阅[更新说明](docs/usage.zh-CN.md#update-management)。
+
 ## 项目内容
 
 | 路径 | 用途 |
