@@ -6,7 +6,7 @@ These instructions target a user-level installation in an environment that prese
 
 ## Published release
 
-The initial public repository clone and raw downloads were verified against the prepared source. [Release v0.3.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.1) includes ZIP and tar.gz archives plus `tailscale-setup.sh`, `shim.py`, `dots-ts`, and `dots_proxy.py` as individual assets. The installation examples pin the source to `v0.3.1`. The bundled Tailscale version remains `1.102.4`.
+The initial public repository clone and raw downloads were verified against the prepared source. [Release v0.4.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.4.0) includes ZIP and tar.gz archives plus `tailscale-setup.sh`, `shim.py`, `dots-ts`, `dots_proxy.py`, and `source-manifest.json` as individual assets. The installation examples pin the source to `v0.4.0`. `SHA256SUMS` covers the release artifacts. The bundled Tailscale version remains `1.102.4`.
 
 <a id="download-proxy"></a>
 
@@ -46,12 +46,12 @@ The local shim does not configure a global proxy or route unrelated applications
 
 Clone the repository from `https://github.com/abruption/dots-tailscale` into `/workspace` so the setup script and `shim.py` are available together. Cloning requires Git and GitHub HTTPS access through the cloud computer's proxy. The setup requires Linux x86_64, Python 3, `timeout`, `flock`, OpenSSL, `ssh-keygen`, and `/usr/sbin/sshd`. Installation additionally requires curl, tar, and sha256sum. Binding port 22 must be allowed for the current user; root or systemd is not required.
 
-For v0.3.1, keep all four source files together: `tailscale-setup.sh`, `shim.py`, `dots-ts`, and `dots_proxy.py`. The older v0.2.0 installation uses only the original two files and does not include these helpers.
+For v0.4.0, keep all four source files together with `source-manifest.json`: `tailscale-setup.sh`, `shim.py`, `dots-ts`, and `dots_proxy.py`. The older v0.2.0 installation uses only the original two files and does not include these helpers.
 
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.3.1 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
+  git clone --branch v0.4.0 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -140,9 +140,9 @@ There is no VM cron, systemd service, or automatic startup registration in this 
 
 <a id="package-version"></a>
 
-## Package version and file verification (development)
+## Package version and file verification
 
-This feature is in development for v0.4.0; the v0.3.1 installation examples above do not include it. Publishing a release does not upgrade an existing installation.
+This feature is included in v0.4.0. Publishing a release does not upgrade an existing installation.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts version
@@ -161,9 +161,9 @@ For maintainers: after intentional source changes, run `python3 scripts/source_m
 
 <a id="update-management"></a>
 
-## Release checks and local notifications (development)
+## Release checks and local notifications
 
-These commands are being developed for v0.4.0. They require the new helpers; publishing a release does not update an existing installation. Release checks accept only stable releases from `abruption/dots-tailscale` with the four source files and a matching `source-manifest.json`. Older releases without this manifest, including v0.3.1, are reported as unsupported rather than treated as verified update bundles.
+These commands are included in v0.4.0 and require its helpers; publishing a release does not update an existing installation. Release checks accept only stable releases from `abruption/dots-tailscale` with the four source files and a matching `source-manifest.json`. Older releases without this manifest, including v0.3.1, are reported as unsupported rather than treated as verified update bundles.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts update check --json
@@ -227,9 +227,9 @@ The reviewed development candidate was tested in Dots on 2026-10-21. See the [da
 
 <a id="development-helpers"></a>
 
-## v0.3.1 helpers and optional application proxies
+## v0.4.0 helpers and optional application proxies
 
-These commands require the v0.3.1 files installed together; they are not available in release v0.2.0. `dots-ts` uses Python 3's standard library and finds the installation from its own location. No global `tailscale` command, socket symlink, or shell profile change is needed.
+These commands are included in v0.4.0 and are also available in v0.3.1; they are not available in release v0.2.0. `dots-ts` uses Python 3's standard library and finds the installation from its own location. No global `tailscale` command, socket symlink, or shell profile change is needed.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts cli status
@@ -269,35 +269,35 @@ Applying a changed configuration requires an explicit daemon restart and can int
 
 Application proxies listen on loopback for explicitly configured local clients. They are distinct from the daemon's TLS/WebSocket shim on `127.0.0.1:18089`. Do not use that shim as an application HTTP proxy. Set a proxy on an individual curl request or child process; there is no global environment, browser, MCP, or ChatGPT connector propagation. Local processes that can reach the loopback proxy can attempt to use it, so network policy and API authentication are still required.
 
-### Install v0.3.1 without Git
+### Install v0.4.0 without Git
 
-Download all four release files into a separate source directory. Stop if any request fails, and review the files and hashes before installation:
+Download the four source files and `source-manifest.json` into a separate source directory. Stop if any request fails, and review the files and hashes before installation:
 
 ```bash
 (
   set -euo pipefail
-  mkdir -p /workspace/dots-tailscale-v0.3.1
-  cd /workspace/dots-tailscale-v0.3.1
-  DOTS_TS_REF=v0.3.1
-  for file in tailscale-setup.sh shim.py dots-ts dots_proxy.py; do
+  mkdir -p /workspace/dots-tailscale-v0.4.0
+  cd /workspace/dots-tailscale-v0.4.0
+  DOTS_TS_REF=v0.4.0
+  for file in tailscale-setup.sh shim.py dots-ts dots_proxy.py source-manifest.json; do
     curl -fsSL --proxy http://browser-proxy:8889 --connect-timeout 5 --max-time 60 \
       "https://github.com/abruption/dots-tailscale/releases/download/${DOTS_TS_REF}/${file}" \
       -o "$file"
   done
-  sha256sum tailscale-setup.sh shim.py dots-ts dots_proxy.py
+  sha256sum tailscale-setup.sh shim.py dots-ts dots_proxy.py source-manifest.json
 )
 ```
 
 After all downloads succeed and you have reviewed the files, run these commands for a fresh installation:
 
 ```bash
-cd /workspace/dots-tailscale-v0.3.1
+cd /workspace/dots-tailscale-v0.4.0
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
 bash /workspace/.dots-tailscale/start.sh login
 ```
 
-Keep all four files in the same directory before running setup. If the release-asset host is unavailable, use the same tag and filenames at `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.3.1/`, or transfer the reviewed files from another trusted device. For an existing installation, use the update procedure below; `install` does not overwrite differing installed source files.
+Keep the four source files and `source-manifest.json` in the same directory before running setup. If the release-asset host is unavailable, use the same tag and filenames at `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.4.0/`, or transfer the reviewed files from another trusted device. For an existing v0.4.0 installation, use [update management](#update-management); for older installations, review the [legacy procedure](#restart-update). `install` does not overwrite differing installed source files.
 
 ### Optional noninteractive authentication
 
@@ -342,9 +342,9 @@ Custom paths are available through `--home` and `--probe-root`. No periodic exec
 
 <a id="restart-update"></a>
 
-## Update installed scripts
+## Legacy manual updates for v0.2/v0.3
 
-There is no automatic updater. Stage and review `tailscale-setup.sh` and `shim.py` together outside `/workspace/.dots-tailscale`, using a selected commit or release rather than updating installed files in place from a moving branch. Record that version and both SHA-256 hashes. Validate the staged shell syntax and parse the staged Python source before changing the installation.
+This section preserves the older manual procedure for installations without package metadata. For v0.4.0, use the verified [manual updater](#update-management), which handles the four source files and their manifest together. Stage and review `tailscale-setup.sh` and `shim.py` together outside `/workspace/.dots-tailscale`, using a selected commit or release rather than updating installed files in place from a moving branch. Record that version and both SHA-256 hashes. Validate the staged shell syntax and parse the staged Python source before changing the installation.
 
 When updating to v0.3.1, also stage `dots-ts` and `dots_proxy.py` from that exact commit. The compatibility block below validates the original setup/shim pair; it does not validate the new helpers. Additionally compile both Python helpers without executing them and record all four source hashes. In the deployment and rollback steps, include `dots-ts` and `dots_proxy.py` at the installation root alongside `setup.sh` and `shim/shim.py`, with mode `700`. Preserve `outbound-proxy.json` and node identity files. Do not apply a proxy configuration or restart the daemon as an incidental documentation/update step.
 
@@ -386,7 +386,7 @@ Use a separate staging checkout at `/workspace/dots-tailscale` (adjust the path 
 Use this deployment sequence when the shim changes:
 
 1. Open the cloud computer's platform GUI terminal, independently of Tailscale SSH. Keep that terminal available for recovery. Record the installed `setup.sh` and `shim/shim.py` hashes, the node address, and the public SSH host-key fingerprint outside the VM. Confirm an authenticated baseline and record it separately from the candidate version.
-2. Save private rollback copies of the old `setup.sh` and `shim/shim.py` source files only; for v0.3.1 also include existing `dots-ts` and `dots_proxy.py` and record whether they were absent before the update. Leave authentication state, CA keys, SSH host keys, and authorized keys in place; do not copy state into another installation. Have a bounded, detached restart plan and a rollback plan ready before stopping a process. The detached action must survive loss of the SSH session; this repository does not implement that updater for you.
+2. Save private rollback copies of the old `setup.sh` and `shim/shim.py` source files only; for v0.3.1 also include existing `dots-ts` and `dots_proxy.py` and record whether they were absent before the update. Leave authentication state, CA keys, SSH host keys, and authorized keys in place; do not copy state into another installation. Have a bounded, detached restart plan and a rollback plan ready before stopping a process. The detached action must survive loss of the SSH session; the legacy v0.2/v0.3 tools do not provide that updater.
 3. Identify the running shim by its exact command line and installed script path. From the independent terminal, stop only that identified shim PID. Do not use broad process-name termination. Confirm it exited and that no duplicate shim remains. Install the staged `shim.py` at `shim/shim.py` and the staged `tailscale-setup.sh` at `setup.sh`, with mode `700`. For v0.3.1, also place the staged `dots-ts` and `dots_proxy.py` at the installation root with mode `700`.
 4. Execute the prepared detached startup, then compare the installed source hashes with the staged hashes. Confirm a single shim and the expected daemon processes. Check Tailscale CLI state and the local SSH banner in the independent terminal, then test external DERP connectivity and a real SSH command with strict host-key verification. Record the results against the candidate version.
 5. If validation fails, use the independent terminal to stop only the identified candidate shim, restore the old source files, and run startup again. Recheck the old hashes and baseline connection. Preserve existing state and keys throughout rollback; investigate any unexpected host-key change instead of accepting it.

@@ -26,7 +26,7 @@ bash /workspace/.dots-tailscale/start.sh check
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.3.1 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.4.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -35,9 +35,9 @@ bash /workspace/.dots-tailscale/start.sh login
 
 首次登录时会显示一个授权链接。将客户端公钥添加到已安装 SSH 的 `authorized_keys` 文件中，并在连接前通过云电脑的 GUI 终端核对主机密钥指纹。环境替换后，使用 `bash /workspace/.dots-tailscale/start.sh` 启动现有安装。脚本不会注册自动启动项。
 
-## v0.3.1：诊断与私有 HTTP 访问
+## v0.4.0：诊断与私有 HTTP 访问
 
-要使用这些辅助工具，请从 [v0.3.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.1) 一并安装全部四个源文件。
+要使用这些辅助工具，请从 [v0.4.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.4.0) 一并安装全部四个源文件和 `source-manifest.json`。
 
 ```bash
 /workspace/.dots-tailscale/dots-ts doctor
@@ -47,11 +47,11 @@ bash /workspace/.dots-tailscale/start.sh login
 
 `doctor` 读取本地诊断信息，不会更改状态。`cli` 会选择已安装的 Tailscale 二进制文件和套接字。可选的回环 SOCKS5/HTTP 代理默认关闭；启用前需要单独审查并重启守护进程。配置、访问策略和验证范围请参阅[使用指南](docs/usage.zh-CN.md#development-helpers)和[私有 HTTP API 配置示例](docs/private-http-api.zh-CN.md)。这些代理不会自动配置 ChatGPT 连接器、MCP 客户端或 Dots 浏览器。
 
-## 开发中：查看已安装的软件包版本
+## 查看已安装的软件包版本与更新
 
-开发版新增了 `dots-ts version` 和 `dots-ts version --json`，可以分别查看 dots-tailscale 软件包版本和 Tailscale 程序版本。v0.3.1 尚不包含这些命令。详情见[软件包版本与文件校验](docs/usage.zh-CN.md#package-version)。
+v0.4.0 新增了 `dots-ts version` 和 `dots-ts version --json`，可以分别查看 dots-tailscale 软件包版本和 Tailscale 程序版本。v0.3.1 不包含这些命令。详情见[软件包版本与文件校验](docs/usage.zh-CN.md#package-version)。
 
-开发版还新增了正式版本检查、可选的缓存通知，以及支持代码备份和回滚的手动更新。运行条件、独立恢复终端确认和单独的 SSH 验证，请参阅[更新说明](docs/usage.zh-CN.md#update-management)。
+v0.4.0 还提供正式版本检查、可选的缓存通知，以及支持代码备份和回滚的手动更新。运行条件、独立恢复终端确认和单独的 SSH 验证，请参阅[更新说明](docs/usage.zh-CN.md#update-management)。
 
 ## 项目内容
 
@@ -59,6 +59,7 @@ bash /workspace/.dots-tailscale/start.sh login
 |---|---|
 | `tailscale-setup.sh`, `shim.py` | 检查、安装和启动 Tailscale；配置本地 OpenSSH；Tailscale 身份验证需明确执行 |
 | `dots-ts`, `dots_proxy.py` | CLI、诊断，以及可选的按进程配置出站代理 |
+| `source-manifest.json` | 软件包版本及四个源文件的 SHA-256 校验和 |
 | `home-persistence-probe.py` | 记录 HOME 和 `/workspace` 的连续性标记 |
 | `tests/` | 离线回归测试 |
 

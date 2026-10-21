@@ -26,7 +26,7 @@ The clone command explicitly uses the Dots proxy because direct GitHub HTTPS fai
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.3.1 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.4.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -35,9 +35,9 @@ bash /workspace/.dots-tailscale/start.sh login
 
 The first login prints an approval URL. Add the client public key to the installed SSH `authorized_keys` file and verify the host-key fingerprint over the cloud computer's GUI terminal before connecting. After environment replacement, start the existing installation with `bash /workspace/.dots-tailscale/start.sh`. The scripts do not register automatic startup.
 
-## v0.3.1: diagnostics and private HTTP access
+## v0.4.0: diagnostics and private HTTP access
 
-Install all four source files from [v0.3.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.1) to use these helpers.
+Install the four source files and `source-manifest.json` together from [v0.4.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.4.0) to use these helpers.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts doctor
@@ -47,11 +47,11 @@ Install all four source files from [v0.3.1](https://github.com/abruption/dots-ta
 
 `doctor` reads local diagnostics without changing state. `cli` selects the installed Tailscale binary and socket. Optional loopback SOCKS5/HTTP proxies are disabled by default and require a separately reviewed daemon restart to enable. See the [usage guide](docs/usage.md#development-helpers) and [private HTTP API recipe](docs/private-http-api.md) for configuration, access policy, and validation limits. These proxies do not automatically configure ChatGPT connectors, MCP clients, or the Dots browser.
 
-## Development: installed package version
+## Installed package version and updates
 
-The development build adds `dots-ts version` and `dots-ts version --json` to show the dots-tailscale package version separately from the Tailscale binary version. These commands are not included in v0.3.1. See [package version and file verification](docs/usage.md#package-version).
+v0.4.0 adds `dots-ts version` and `dots-ts version --json` to show the dots-tailscale package version separately from the Tailscale binary version. These commands are not included in v0.3.1. See [package version and file verification](docs/usage.md#package-version).
 
-The development build also adds stable-release checks, opt-in cached notifications and verified manual updates with code-only rollback. See [update management](docs/usage.md#update-management) for requirements, recovery-terminal confirmation and the separate external SSH check.
+v0.4.0 also includes stable-release checks, opt-in cached notifications and verified manual updates with code-only rollback. See [update management](docs/usage.md#update-management) for requirements, recovery-terminal confirmation and the separate external SSH check.
 
 ## Included
 
@@ -59,6 +59,7 @@ The development build also adds stable-release checks, opt-in cached notificatio
 |---|---|
 | `tailscale-setup.sh`, `shim.py` | Check, install, and start Tailscale; configure local OpenSSH; authenticate Tailscale explicitly |
 | `dots-ts`, `dots_proxy.py` | CLI, diagnostics, and optional per-process outbound proxy configuration |
+| `source-manifest.json` | Package version and SHA-256 checksums for the four source files |
 | `home-persistence-probe.py` | Record HOME and `/workspace` continuity markers |
 | `tests/` | Offline regression tests |
 

@@ -6,7 +6,7 @@
 
 ## 公開リリース
 
-公開リポジトリの初回 clone と raw ファイルのダウンロードは、準備済みのソースと照合して検証しました。[Release v0.3.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.1) には ZIP と tar.gz のアーカイブに加えて、`tailscale-setup.sh`、`shim.py`、`dots-ts`、`dots_proxy.py` が個別のアセットとして含まれています。インストール例ではソースを `v0.3.1` に固定しています。同梱される Tailscale のバージョンは引き続き `1.102.4` です。
+公開リポジトリの初回 clone と raw ファイルのダウンロードは、準備済みのソースと照合して検証しました。[Release v0.4.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.4.0) には ZIP と tar.gz のアーカイブに加えて、`tailscale-setup.sh`、`shim.py`、`dots-ts`、`dots_proxy.py` の個別ファイルと `source-manifest.json` が含まれています。インストール例ではソースを `v0.4.0` に固定しています。`SHA256SUMS` にリリースファイルのチェックサムを収録しています。同梱される Tailscale のバージョンは引き続き `1.102.4` です。
 
 <a id="download-proxy"></a>
 
@@ -46,12 +46,12 @@ done
 
 セットアップスクリプトと `shim.py` を一緒に使えるよう、リポジトリを `https://github.com/abruption/dots-tailscale` から `/workspace` に clone します。clone には Git と、クラウドコンピューターのプロキシ経由で GitHub HTTPS にアクセスできることが必要です。セットアップには Linux x86_64、Python 3、`timeout`、`flock`、OpenSSL、`ssh-keygen`、`/usr/sbin/sshd` が必要です。インストール時にはさらに curl、tar、sha256sum が必要です。現在のユーザーがポート 22 をバインドできる必要があります。root や systemd は必要ありません。
 
-v0.3.1 では、ソースファイル 4 つをすべて同じ場所に置いてください: `tailscale-setup.sh`、`shim.py`、`dots-ts`、`dots_proxy.py`。旧版 v0.2.0 のインストールでは元の 2 ファイルだけを使い、これらのヘルパーは含まれません。
+v0.4.0 では、ソースファイル 4 つと `source-manifest.json` を同じ場所に置いてください: `tailscale-setup.sh`、`shim.py`、`dots-ts`、`dots_proxy.py`。旧版 v0.2.0 のインストールでは元の 2 ファイルだけを使い、これらのヘルパーは含まれません。
 
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.3.1 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
+  git clone --branch v0.4.0 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -140,9 +140,9 @@ backend の準備確認では、各フェーズにつき単調時計で計る30�
 
 <a id="package-version"></a>
 
-## パッケージのバージョンとファイルの確認（開発中）
+## パッケージのバージョンとファイルの確認
 
-v0.4.0 に向けて開発中の機能です。上記の v0.3.1 のインストール例には含まれません。新しいリリースを公開しても、既存のインストールは自動で更新されません。
+v0.4.0 に含まれる機能です。新しいリリースを公開しても、既存のインストールは自動で更新されません。
 
 ```bash
 /workspace/.dots-tailscale/dots-ts version
@@ -161,9 +161,9 @@ JSON では `package.declared_version`、`package.source_revision`、`package.in
 
 <a id="update-management"></a>
 
-## リリース確認とローカル通知（開発中）
+## リリース確認とローカル通知
 
-これらのコマンドは v0.4.0 に向けて開発中です。新しいヘルパーが必要です。リリースを公開しても、既存のインストールは更新されません。リリース確認では `abruption/dots-tailscale` の安定版のうち、ソースファイル 4 つと一致する `source-manifest.json` を含むものだけを対象にします。このマニフェストを含まない古いリリース（v0.3.1 を含む）は、検証済みの更新用バンドルとして扱わず、非対応として報告します。
+これらのコマンドは v0.4.0 に含まれ、このバージョンのヘルパーが必要です。リリースを公開しても、既存のインストールは更新されません。リリース確認では `abruption/dots-tailscale` の安定版のうち、ソースファイル 4 つと一致する `source-manifest.json` を含むものだけを対象にします。このマニフェストを含まない古いリリース（v0.3.1 を含む）は、検証済みの更新用バンドルとして扱わず、非対応として報告します。
 
 ```bash
 /workspace/.dots-tailscale/dots-ts update check --json
@@ -227,9 +227,9 @@ JSON では `package.declared_version`、`package.source_revision`、`package.in
 
 <a id="development-helpers"></a>
 
-## v0.3.1 ヘルパーと任意のアプリケーションプロキシ
+## v0.4.0 ヘルパーと任意のアプリケーションプロキシ
 
-これらのコマンドを使うには、v0.3.1 のファイル 4 つをまとめてインストールする必要があります。release v0.2.0 では利用できません。`dots-ts` は Python 3 の標準ライブラリを使い、自身の場所からインストール先を特定します。グローバルな `tailscale` コマンド、ソケットのシンボリックリンク、シェルプロファイルの変更は不要です。
+これらのコマンドは v0.4.0 と v0.3.1 に含まれます。v0.2.0 では利用できません。`dots-ts` は Python 3 の標準ライブラリを使い、自身の場所からインストール先を特定します。グローバルな `tailscale` コマンド、ソケットのシンボリックリンク、シェルプロファイルの変更は不要です。
 
 ```bash
 /workspace/.dots-tailscale/dots-ts cli status
@@ -269,35 +269,35 @@ JSON では `package.declared_version`、`package.source_revision`、`package.in
 
 アプリケーション用プロキシは、明示的に設定されたローカルクライアント向けに loopback で待ち受けます。これはデーモン用 TLS/WebSocket shim の `127.0.0.1:18089` とは別のものです。その shim をアプリケーション用 HTTP プロキシとして使わないでください。個々の curl リクエストまたは子プロセスにプロキシを設定してください。グローバルな環境設定、ブラウザー、MCP、ChatGPT コネクターには伝播しません。loopback プロキシに接続できるローカルプロセスは利用を試みられるため、ネットワーク方針と API 認証は引き続き必要です。
 
-### Git を使わずに v0.3.1 をインストール
+### Git を使わずに v0.4.0 をインストール
 
-リリースファイル 4 つを別のソースディレクトリにダウンロードします。1つでもリクエストに失敗したら中止し、インストール前にファイルとハッシュを確認してください。
+ソースファイル 4 つと `source-manifest.json` を別のソースディレクトリにダウンロードします。1つでもリクエストに失敗したら中止し、インストール前にファイルとハッシュを確認してください。
 
 ```bash
 (
   set -euo pipefail
-  mkdir -p /workspace/dots-tailscale-v0.3.1
-  cd /workspace/dots-tailscale-v0.3.1
-  DOTS_TS_REF=v0.3.1
-  for file in tailscale-setup.sh shim.py dots-ts dots_proxy.py; do
+  mkdir -p /workspace/dots-tailscale-v0.4.0
+  cd /workspace/dots-tailscale-v0.4.0
+  DOTS_TS_REF=v0.4.0
+  for file in tailscale-setup.sh shim.py dots-ts dots_proxy.py source-manifest.json; do
     curl -fsSL --proxy http://browser-proxy:8889 --connect-timeout 5 --max-time 60 \
       "https://github.com/abruption/dots-tailscale/releases/download/${DOTS_TS_REF}/${file}" \
       -o "$file"
   done
-  sha256sum tailscale-setup.sh shim.py dots-ts dots_proxy.py
+  sha256sum tailscale-setup.sh shim.py dots-ts dots_proxy.py source-manifest.json
 )
 ```
 
 すべてのダウンロードに成功し、ファイルの確認を終えたら、新規インストールには次のコマンドを実行します。
 
 ```bash
-cd /workspace/dots-tailscale-v0.3.1
+cd /workspace/dots-tailscale-v0.4.0
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
 bash /workspace/.dots-tailscale/start.sh login
 ```
 
-セットアップを実行する前に、4つのファイルを同じディレクトリに置いてください。リリースアセットのホストを利用できない場合は、同じタグとファイル名で `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.3.1/` から取得するか、信頼できる別の端末から確認済みのファイルを転送します。既存インストールを更新する場合は、下記の[更新手順](#restart-update)を使ってください。`install` は内容が異なるインストール済みソースファイルを上書きしません。
+セットアップを実行する前に、ソースファイル 4 つと `source-manifest.json` を同じディレクトリに置いてください。リリースアセットのホストを利用できない場合は、同じタグとファイル名で `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.4.0/` から取得するか、信頼できる別の端末から確認済みのファイルを転送します。既存の v0.4.0 環境では[更新管理](#update-management)を使い、旧版環境では[従来の手動手順](#restart-update)を確認してください。`install` は内容が異なるインストール済みソースファイルを上書きしません。
 
 ### 任意の非対話認証
 
@@ -342,9 +342,9 @@ SSH キーとホスト別名は自分の設定に合わせてください。結�
 
 <a id="restart-update"></a>
 
-## インストール済みスクリプトの更新
+## v0.2/v0.3 の従来の手動更新
 
-自動アップデーターはありません。動いているブランチからインストール済みファイルを直接更新するのではなく、選択した commit または release を使い、`tailscale-setup.sh` と `shim.py` を `/workspace/.dots-tailscale` の外で一緒に準備して確認します。そのバージョンと2つの SHA-256 ハッシュを記録してください。インストールを変更する前に、準備した shell の構文を検証し、Python ソースを解析してください。
+この節は、パッケージのメタデータがない旧版環境向けの手動手順です。v0.4.0 では、ソースファイル 4 つとマニフェストを一緒に扱う[検証付き手動更新ツール](#update-management)を使ってください。動いているブランチからインストール済みファイルを直接更新するのではなく、選択した commit または release を使い、`tailscale-setup.sh` と `shim.py` を `/workspace/.dots-tailscale` の外で一緒に準備して確認します。そのバージョンと2つの SHA-256 ハッシュを記録してください。インストールを変更する前に、準備した shell の構文を検証し、Python ソースを解析してください。
 
 v0.3.1 に更新する場合は、同じ commit の `dots-ts` と `dots_proxy.py` も準備します。下の互換性ブロックが検証するのは元の setup/shim の組み合わせだけで、新しいヘルパーは対象外です。さらに、2つの Python ヘルパーを実行せずにコンパイルし、4ファイルすべてのソースハッシュを記録してください。展開とロールバックの手順では、`setup.sh` と `shim/shim.py` に加え、`dots-ts` と `dots_proxy.py` もインストールルートに置き、モードを `700` にします。`outbound-proxy.json` とノード ID ファイルは保持してください。文書やコードの更新に付随する作業として、プロキシ設定を適用したりデーモンを再起動したりしないでください。
 
@@ -386,7 +386,7 @@ sha256sum tailscale-setup.sh shim.py dots-ts dots_proxy.py
 shim を変更する場合は、次の手順で展開します。
 
 1. Tailscale SSH とは独立した、クラウドコンピューターのプラットフォーム GUI ターミナルを開きます。復旧に使えるよう、そのターミナルは開いたままにします。インストール済み `setup.sh` と `shim/shim.py` のハッシュ、ノードアドレス、SSH 公開ホスト鍵のフィンガープリントを VM の外に記録します。認証済みの基準状態を確認し、候補バージョンとは別に記録してください。
-2. 古い `setup.sh` と `shim/shim.py` のソースファイルだけを、ロールバック用に非公開で保存します。v0.3.1 では既存の `dots-ts` と `dots_proxy.py` も含め、更新前にファイルがなかった場合はその事実を記録してください。認証 state、CA 鍵、SSH ホスト鍵、authorized_keys はそのままにし、別のインストール先へ state をコピーしないでください。プロセス停止前に、時間を区切った切り離し再起動の手順とロールバック手順を準備します。切り離して実行する処理は SSH セッションが切れても続く必要があります。このリポジトリがそのアップデーターを提供しているわけではありません。
+2. 古い `setup.sh` と `shim/shim.py` のソースファイルだけを、ロールバック用に非公開で保存します。v0.3.1 では既存の `dots-ts` と `dots_proxy.py` も含め、更新前にファイルがなかった場合はその事実を記録してください。認証 state、CA 鍵、SSH ホスト鍵、authorized_keys はそのままにし、別のインストール先へ state をコピーしないでください。プロセス停止前に、時間を区切った切り離し再起動の手順とロールバック手順を準備します。切り離して実行する処理は SSH セッションが切れても続く必要があります。旧版 v0.2/v0.3 のツールには、そのアップデーターは含まれていません。
 3. 正確なコマンドラインとインストール済みスクリプトのパスを使って、実行中の shim を特定します。独立したターミナルから、特定した shim の PID だけを停止します。プロセス名を使った広範な終了操作はしないでください。終了したことと、重複する shim が残っていないことを確認します。確認済みの `shim.py` を `shim/shim.py` に、`tailscale-setup.sh` を `setup.sh` に、それぞれモード `700` で配置します。v0.3.1 では確認済みの `dots-ts` と `dots_proxy.py` もインストールルートにモード `700` で配置します。
 4. 準備した切り離し起動を実行し、インストール済みソースのハッシュを staging 側と比較します。shim が1つだけであることと、想定されるデーモンプロセスが動作していることを確認します。独立ターミナルで Tailscale CLI の状態とローカル SSH バナーを確認し、続いて外部から DERP 接続と、厳格なホスト鍵検証を使った実際の SSH コマンドを試します。結果を候補バージョンと合わせて記録してください。
 5. 検証に失敗した場合は、独立ターミナルから特定済みの候補 shim だけを停止し、古いソースファイルを戻して再起動します。古いハッシュと基準時の接続を再確認してください。ロールバック中も既存 state と鍵を保持し、予期しないホスト鍵の変更があれば受け入れずに調査してください。

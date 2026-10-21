@@ -26,7 +26,7 @@ Linux x86_64, Git, Python 3, OpenSSH와 사용자 계정의 22번 포트 바인�
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.3.1 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.4.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -35,9 +35,9 @@ bash /workspace/.dots-tailscale/start.sh login
 
 최초 로그인 URL을 승인한 뒤 SSH 공개키를 설치 경로의 `authorized_keys`에 등록하세요. 호스트 키 지문은 클라우드 컴퓨터의 GUI 터미널에서 확인한 후 SSH로 접속합니다. 환경이 교체되면 `bash /workspace/.dots-tailscale/start.sh`로 기존 설치를 직접 실행해야 합니다. 스크립트는 자동 시작을 등록하지 않습니다.
 
-## v0.3.1: 진단과 비공개 HTTP 접속
+## v0.4.0: 진단과 비공개 HTTP 접속
 
-아래 도구를 사용하려면 [v0.3.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.1)의 소스 파일 네 개를 함께 설치하세요.
+아래 도구를 사용하려면 [v0.4.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.4.0)의 소스 파일 네 개와 `source-manifest.json`을 함께 설치하세요.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts doctor
@@ -47,11 +47,11 @@ bash /workspace/.dots-tailscale/start.sh login
 
 `doctor`는 상태를 바꾸지 않고 로컬 진단 정보를 읽습니다. `cli`는 설치된 Tailscale 실행 파일과 소켓을 선택합니다. 선택 기능인 로컬 SOCKS5·HTTP 프록시는 기본적으로 꺼져 있으며, 활성화하려면 데몬 재시작을 별도로 검토해야 합니다. 설정과 접근 정책, 검증 범위는 [사용 가이드](docs/usage.ko.md#development-helpers)와 [비공개 HTTP API 연결 예시](docs/private-http-api.ko.md)를 참고하세요. ChatGPT 커넥터·MCP 클라이언트·Dots 브라우저에 자동으로 적용되지는 않습니다.
 
-## 개발 중: 설치된 패키지 버전 확인
+## 설치된 패키지 버전과 업데이트
 
-개발 버전의 `dots-ts version`과 `dots-ts version --json`은 dots-tailscale 패키지 버전과 내부 Tailscale 버전을 따로 보여줍니다. v0.3.1에는 아직 없는 명령입니다. 자세한 내용은 [패키지 버전과 파일 확인](docs/usage.ko.md#package-version)을 참고하세요.
+v0.4.0의 `dots-ts version`과 `dots-ts version --json`은 dots-tailscale 패키지 버전과 내부 Tailscale 버전을 따로 보여줍니다. v0.3.1에는 포함되지 않은 명령입니다. 자세한 내용은 [패키지 버전과 파일 확인](docs/usage.ko.md#package-version)을 참고하세요.
 
-개발 버전에는 정식 릴리스 확인, 선택적으로 켜는 캐시 알림, 코드 백업과 원복을 갖춘 수동 업데이트도 추가됩니다. 실행 조건, 복구 터미널 확인과 별도 SSH 검증은 [업데이트 안내](docs/usage.ko.md#update-management)를 참고하세요.
+v0.4.0에는 정식 릴리스 확인, 선택적으로 켜는 캐시 알림, 코드 백업과 원복을 갖춘 수동 업데이트도 포함됩니다. 실행 조건, 복구 터미널 확인과 별도 SSH 검증은 [업데이트 안내](docs/usage.ko.md#update-management)를 참고하세요.
 
 ## 구성 요소
 
@@ -59,6 +59,7 @@ bash /workspace/.dots-tailscale/start.sh login
 |---|---|
 | `tailscale-setup.sh`, `shim.py` | Tailscale을 점검·설치·기동하고 로컬 OpenSSH를 설정하며 Tailscale 인증을 명시적으로 수행 |
 | `dots-ts`, `dots_proxy.py` | CLI·진단과 프로세스별 외부 연결 프록시 설정 |
+| `source-manifest.json` | 패키지 버전과 소스 파일 네 개의 SHA-256 체크섬 |
 | `home-persistence-probe.py` | HOME과 `/workspace` 지속성 마커를 기록하고 변화 확인 |
 | `tests/` | 오프라인 회귀 테스트 |
 

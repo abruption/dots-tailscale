@@ -26,7 +26,7 @@ Linux x86_64、Git、Python 3、OpenSSH、およびローカルポート 22 を�
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.3.1 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.4.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -35,9 +35,9 @@ bash /workspace/.dots-tailscale/start.sh login
 
 初回ログインでは承認用 URL が表示されます。クライアントの公開鍵をインストール済み SSH の `authorized_keys` ファイルに追加し、接続する前にクラウドコンピューターの GUI ターミナルでホスト鍵のフィンガープリントを確認してください。環境が入れ替わった後は、`bash /workspace/.dots-tailscale/start.sh` で既存のインストールを起動します。スクリプトは自動起動を登録しません。
 
-## v0.3.1: 診断とプライベート HTTP 接続
+## v0.4.0: 診断とプライベート HTTP 接続
 
-これらのヘルパーを使うには、[v0.3.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.1) のソースファイル 4 つをすべてインストールしてください。
+これらのヘルパーを使うには、[v0.4.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.4.0) のソースファイル 4 つと `source-manifest.json` をまとめてインストールしてください。
 
 ```bash
 /workspace/.dots-tailscale/dots-ts doctor
@@ -47,11 +47,11 @@ bash /workspace/.dots-tailscale/start.sh login
 
 `doctor` は状態を変更せず、ローカルの診断情報を読み取ります。`cli` はインストール済みの Tailscale バイナリとソケットを選択します。任意で使える loopback SOCKS5/HTTP プロキシは既定で無効です。有効にするには、デーモンを再起動する手順を別途確認してください。設定、アクセス方針、検証範囲については、[使用ガイド](docs/usage.ja.md#development-helpers)と[プライベート HTTP API の利用例](docs/private-http-api.ja.md)を参照してください。これらのプロキシは ChatGPT コネクター、MCP クライアント、Dots ブラウザーには自動設定されません。
 
-## 開発中：インストール済みパッケージのバージョン確認
+## インストール済みパッケージのバージョンと更新
 
-開発版では `dots-ts version` と `dots-ts version --json` で、dots-tailscale パッケージと Tailscale バイナリのバージョンを別々に確認できます。v0.3.1 にはまだ含まれていません。詳しくは[パッケージのバージョンとファイルの確認](docs/usage.ja.md#package-version)を参照してください。
+v0.4.0 では `dots-ts version` と `dots-ts version --json` で、dots-tailscale パッケージと Tailscale バイナリのバージョンを別々に確認できます。v0.3.1 には含まれていません。詳しくは[パッケージのバージョンとファイルの確認](docs/usage.ja.md#package-version)を参照してください。
 
-開発版には、安定版リリースの確認、任意で有効にするキャッシュ通知、コードのバックアップとロールバックに対応した手動更新も追加されます。実行条件、独立した復旧用ターミナルの確認、別途行う SSH 検証は[更新ガイド](docs/usage.ja.md#update-management)を参照してください。
+v0.4.0 には、安定版リリースの確認、任意で有効にするキャッシュ通知、コードのバックアップとロールバックに対応した手動更新も含まれます。実行条件、独立した復旧用ターミナルの確認、別途行う SSH 検証は[更新ガイド](docs/usage.ja.md#update-management)を参照してください。
 
 ## 同梱内容
 
@@ -59,6 +59,7 @@ bash /workspace/.dots-tailscale/start.sh login
 |---|---|
 | `tailscale-setup.sh`, `shim.py` | Tailscale の確認・インストール・起動、ローカル OpenSSH の設定、Tailscale の明示的な認証 |
 | `dots-ts`, `dots_proxy.py` | CLI、診断、およびプロセスごとの任意の外向きプロキシ設定 |
+| `source-manifest.json` | パッケージのバージョンとソースファイル 4 つの SHA-256 チェックサム |
 | `home-persistence-probe.py` | HOME と `/workspace` の継続性を示すマーカーを記録 |
 | `tests/` | オフライン回帰テスト |
 
