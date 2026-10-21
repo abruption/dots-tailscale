@@ -138,6 +138,27 @@ ssh -o StrictHostKeyChecking=yes -i /path/to/client_private_key 'agent@<tailscal
 
 本仓库没有 VM cron、systemd 服务或自动启动注册。尚未测试通过 Dots 自动化启动。VM 内的进程循环无法在该环境销毁后继续运行。请在新环境中显式启动安装，或通过单独验证过的平台执行机制启动。
 
+<a id="package-version"></a>
+
+## 软件包版本与文件校验（开发中）
+
+这是为 v0.4.0 开发的功能，上面的 v0.3.1 安装示例尚不包含它。发布新版本不会自动更新已有安装。
+
+```bash
+/workspace/.dots-tailscale/dots-ts version
+/workspace/.dots-tailscale/dots-ts version --json
+```
+
+命令只检查本地软件包文件，不连接 GitHub 或 tailnet。它分别显示清单声明的软件包版本、源文件的一致性和已安装的 Tailscale 程序版本。无法确定的源码修订版本会保留为未知。文件与清单一致，只能说明文件一致性，不能证明发布者身份，也不能证明正在运行的服务正常。
+
+请将同一已审核修订版本的四个源文件与 `source-manifest.json` 放在一起。新安装程序会校验这些文件，并将清单保存在安装目录中。不要用修改后的安装文件重新生成预期校验值来掩盖不一致。没有元数据的旧版 v0.2/v0.3 安装会显示软件包版本未知，不能仅凭 Tailscale 版本推断软件包版本。
+
+准备更新或回滚时，请把源文件与对应的原始清单作为一组保存并一起替换。不要只把新清单覆盖到旧代码上。保留节点状态、私钥、SSH 身份和代理设置。下方手动更新的注意事项仍然适用；此命令本身不会更新或重启服务。
+
+JSON 将 `package.declared_version`、`package.source_revision`、`package.integrity` 和逐文件结果，与 `tailscale.version`、`tailscale.status` 分开显示。一致性结果为 `match`、`mismatch`（文件被修改或版本混用）、`incomplete`（文件缺失或不可读）或 `unknown`（元数据缺失、无效或不可读）。目前 `source_revision` 为 `null`，不会猜测提交版本。mismatch/incomplete 的退出码为 `1`，其余为 `0`；因此，退出码 `0` 本身并不代表版本已知或 Tailscale 程序可用。`doctor` 将未知元数据标为 degraded，将文件不一致或不完整标为 unhealthy。
+
+维护时，在确认源码修改后运行 `python3 scripts/source_manifest.py`，检查生成的差异，再运行 `python3 scripts/source_manifest.py --check`。CI 只检查，不重写文件。请只在已审核的源码检出目录中生成清单，不要在安装目录中生成。发布时需要将匹配的清单与四个源文件一起提供；现有 v0.3.1 发布包不包含此清单。
+
 <a id="development-helpers"></a>
 
 ## v0.3.1 辅助工具与可选应用代理

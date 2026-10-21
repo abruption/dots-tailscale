@@ -1,5 +1,6 @@
 """Behavior checks for the installed CLI and shareable diagnostics."""
 import contextlib
+import hashlib
 import importlib.machinery
 import importlib.util
 import io
@@ -85,6 +86,10 @@ class CliDoctorTests(unittest.TestCase):
             path = self.directory / name
             path.parent.mkdir(exist_ok=True, parents=True)
             path.write_text("PRIVATE-SECRET-CONTENTS")
+        manifest = {"schema_version": 1, "package_version": "0.4.0-dev",
+                    "files": {source: hashlib.sha256((self.directory / installed).read_bytes()).hexdigest()
+                              for source, installed in tool.CORE_FILES.items()}}
+        (self.directory / tool.MANIFEST).write_text(json.dumps(manifest))
 
     def diagnose(self, state="Running", *, result=None, error=None, target=None, processes=None):
         self.populate()
@@ -212,8 +217,12 @@ class CliDoctorTests(unittest.TestCase):
 
     def test_doctor_does_not_read_key_or_state_contents(self):
         self.populate()
-        with mock.patch.object(pathlib.Path, "read_bytes", side_effect=AssertionError("secret file read")), \
-                mock.patch.object(pathlib.Path, "read_text", side_effect=AssertionError("secret file read")):
+        original = tool.bounded_code_read
+        allowed = {tool.MANIFEST} | set(tool.CORE_FILES.values())
+        def guarded(directory, relative, limit):
+            self.assertIn(relative, allowed)
+            return original(directory, relative, limit)
+        with mock.patch.object(tool, "bounded_code_read", side_effect=guarded):
             self.diagnose()
 
     def test_readonly_mount_overrides_optimistic_access_and_gives_context_advice(self):

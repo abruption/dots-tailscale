@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — v0.4.0 development
+
+- Add offline `dots-ts version` reporting for package identity, source-file integrity and the separate Tailscale binary version (#27).
+- Require a matching source manifest for new installations; preserve unknown metadata for legacy installations instead of guessing a version.
+- Add package integrity to `doctor` and document the development feature in all four languages.
+
+This development work has not been deployed to Dots. Release checks, notifications and verified updates remain separate work in #28–#30.
+
 ## v0.3.1 — 2026-10-19
 
 - Wait for transient startup backend states within a bounded readiness deadline and distinguish authentication, approval and query failures (#25).

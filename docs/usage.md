@@ -138,6 +138,27 @@ The custom TLS/WebSocket shim implements the configured local HTTP CONNECT bridg
 
 There is no VM cron, systemd service, or automatic startup registration in this repository. Startup through Dots automation has not been tested. A process loop inside the VM cannot survive destruction of that environment. Start the installation explicitly in a new environment or through a separately verified platform execution mechanism.
 
+<a id="package-version"></a>
+
+## Package version and file verification (development)
+
+This feature is in development for v0.4.0; the v0.3.1 installation examples above do not include it. Publishing a release does not upgrade an existing installation.
+
+```bash
+/workspace/.dots-tailscale/dots-ts version
+/workspace/.dots-tailscale/dots-ts version --json
+```
+
+The command checks local package files without contacting GitHub or the tailnet. It reports the manifest’s declared package version, source-file integrity, and the installed Tailscale binary version separately. An unknown source revision stays unknown. A matching manifest proves file consistency, not the identity of the publisher or readiness of the running service.
+
+Keep `source-manifest.json` with the four source files from the same reviewed revision. The new installer verifies that bundle and preserves the manifest in the installation. Never generate a new expected manifest from modified installed files to make a mismatch disappear. Existing v0.2/v0.3 installations without metadata report an unknown package version; the Tailscale version alone cannot identify the package.
+
+When staging an update or a rollback, keep the original manifest with its matching source files and restore them together. Do not copy a newer manifest over older code. Preserve node state, private keys, SSH identity and proxy settings. The manual update precautions below still apply; this command does not update or restart anything.
+
+JSON separates `package.declared_version`, `package.source_revision`, `package.integrity` and per-file results from `tailscale.version` and `tailscale.status`. Integrity is `match`, `mismatch` (modified or mixed files), `incomplete` (missing or unreadable files), or `unknown` (missing, invalid or unreadable metadata). `source_revision` is currently `null`; no commit is guessed. Exit code is `1` for mismatch/incomplete and `0` otherwise, so exit `0` alone does not prove a known version or available Tailscale binary. `doctor` reports unknown metadata as degraded and mismatch/incomplete as unhealthy.
+
+For maintainers: after intentional source changes, run `python3 scripts/source_manifest.py`, review the resulting diff, then run `python3 scripts/source_manifest.py --check`. CI runs the check without rewriting files. Regenerate only in the reviewed source checkout, not in an installed directory. A release must distribute the matching manifest alongside the four source assets; the existing v0.3.1 release does not contain it.
+
 <a id="development-helpers"></a>
 
 ## v0.3.1 helpers and optional application proxies

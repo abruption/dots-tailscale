@@ -47,6 +47,10 @@ Install all four source files from [v0.3.1](https://github.com/abruption/dots-ta
 
 `doctor` reads local diagnostics without changing state. `cli` selects the installed Tailscale binary and socket. Optional loopback SOCKS5/HTTP proxies are disabled by default and require a separately reviewed daemon restart to enable. See the [usage guide](docs/usage.md#development-helpers) and [private HTTP API recipe](docs/private-http-api.md) for configuration, access policy, and validation limits. These proxies do not automatically configure ChatGPT connectors, MCP clients, or the Dots browser.
 
+## Development: installed package version
+
+The development build adds `dots-ts version` and `dots-ts version --json` to show the dots-tailscale package version separately from the Tailscale binary version. These commands are not included in v0.3.1. See [package version and file verification](docs/usage.md#package-version).
+
 ## Included
 
 | Path | Purpose |

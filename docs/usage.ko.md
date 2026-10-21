@@ -87,6 +87,27 @@ ssh -o StrictHostKeyChecking=ask -i /path/to/client_private_key 'agent@<TAILNET_
 
 승인한 뒤에는 `ssh -o StrictHostKeyChecking=yes -i /path/to/client_private_key 'agent@<TAILNET_IP>' 'id; pwd'`로 접속할 수 있습니다. 사용자명과 SSH 키 경로는 자신의 설정에 맞게 지정하세요. 이후 지문이 달라지면 Dots GUI 터미널에서 다시 확인하세요.
 
+<a id="package-version"></a>
+
+## 패키지 버전과 파일 확인 (개발 중)
+
+v0.4.0을 위해 개발 중인 기능입니다. 위의 v0.3.1 설치 예시에는 포함되지 않습니다. 새 릴리스를 발행해도 기존 설치가 자동으로 바뀌지는 않습니다.
+
+```bash
+/workspace/.dots-tailscale/dots-ts version
+/workspace/.dots-tailscale/dots-ts version --json
+```
+
+GitHub나 tailnet에 접속하지 않고 로컬 패키지 파일을 확인합니다. 명세 파일에 적힌 패키지 버전, 소스 파일 일치 여부, 설치된 Tailscale 실행 파일의 버전을 각각 보여줍니다. 소스 리비전을 알 수 없으면 그대로 알 수 없다고 표시합니다. 파일이 명세와 일치한다고 해서 배포자의 신원이나 실행 중인 서비스의 정상 동작까지 증명되는 것은 아닙니다.
+
+같은 검토된 리비전의 소스 파일 네 개와 `source-manifest.json`을 함께 준비하세요. 새 설치기는 이 묶음을 검증한 뒤 명세를 설치 경로에 보존합니다. 불일치를 없애려고 수정된 설치 파일로 기대 체크섬을 다시 만들면 안 됩니다. 메타데이터가 없는 기존 v0.2/v0.3 설치는 패키지 버전을 알 수 없다고 표시합니다. 내부 Tailscale 버전만으로 패키지 버전을 판단할 수는 없습니다.
+
+업데이트나 원복을 준비할 때는 소스 파일과 해당 원본 명세를 한 묶음으로 보관하고 함께 교체하세요. 오래된 코드에 새 명세만 덮어쓰지 마세요. 노드 상태, 개인키, SSH 식별 정보와 프록시 설정은 보존합니다. 아래 수동 업데이트 주의사항도 그대로 적용됩니다. 이 명령 자체는 업데이트하거나 재시작하지 않습니다.
+
+JSON은 `package.declared_version`, `package.source_revision`, `package.integrity`, 파일별 결과를 `tailscale.version` 및 `tailscale.status`와 구분합니다. 일치 여부는 `match`, 수정되거나 다른 버전이 섞인 `mismatch`, 파일이 없거나 읽을 수 없는 `incomplete`, 메타데이터가 없거나 잘못됐거나 읽을 수 없는 `unknown`으로 표시합니다. `source_revision`은 현재 `null`이며 커밋을 추측하지 않습니다. mismatch/incomplete는 종료 코드 `1`, 나머지는 `0`입니다. 따라서 종료 코드 `0`만으로 버전을 확인했거나 Tailscale 실행 파일이 정상이라고 판단하면 안 됩니다. `doctor`는 메타데이터를 알 수 없으면 degraded, 파일 불일치·누락은 unhealthy로 표시합니다.
+
+유지보수 시에는 검토한 소스 변경 후 `python3 scripts/source_manifest.py`로 명세를 생성하고 차이를 확인한 뒤 `python3 scripts/source_manifest.py --check`로 검사합니다. CI는 파일을 수정하지 않고 검사만 합니다. 설치 경로가 아닌 검토된 소스 체크아웃에서만 생성하세요. 릴리스에는 소스 파일 네 개와 일치하는 명세도 함께 배포해야 합니다. 기존 v0.3.1 릴리스에는 이 명세가 없습니다.
+
 <a id="development-helpers"></a>
 
 ## v0.3.1 도구와 선택적 애플리케이션 프록시
