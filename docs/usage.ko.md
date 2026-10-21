@@ -1,8 +1,10 @@
 # 사용 가이드
 
-[English](usage.md) · [프로젝트 소개](../README.ko.md)
+[English](usage.md) · 한국어 · [简体中文](usage.zh-CN.md) · [日本語](usage.ja.md) · [프로젝트 소개](../README.ko.md)
 
-`/workspace`가 환경 교체 후에도 유지되는 Dots 환경에서 실행합니다. 설치·인증 상태와 실행 중에만 필요한 파일을 다른 위치에 두어 재기동 시 기존 장치 신원을 이어 사용합니다.
+`/workspace`가 환경 교체 후에도 유지되는 Dots 환경에서 실행합니다. 저장된 자격증명이 유효하면 설치 파일, 인증 상태, SSH 호스트 키를 재사용해 새로 로그인하지 않고 복구할 수 있습니다. 설치 시 자동 시작 훅은 등록하지 않으므로 새 환경마다 start 명령을 실행해야 합니다.
+
+## 공개 릴리스
 
 공개 저장소 주소는 `https://github.com/abruption/dots-tailscale`입니다. 최초 공개 시 실제 clone과 raw 다운로드를 확인했습니다. [v0.3.1 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.1)는 ZIP·tar.gz와 `tailscale-setup.sh`·`shim.py`·`dots-ts`·`dots_proxy.py` 개별 파일을 제공합니다. `main`은 이후 변경될 수 있으므로 같은 소스로 다시 설치하려면 검토한 tag나 commit을 지정하세요.
 
@@ -61,7 +63,7 @@ bash /workspace/.dots-tailscale/start.sh login
 
 `check`는 설치 파일의 존재 여부를 출력하고, 실행 중인 소켓이 있으면 Tailscale 상태도 보여줍니다. `missing:`이 있어도 종료코드가 `0`일 수 있으므로 성공 코드만으로 설치 완료를 판단하지 마세요.
 
-기존 `$HOME/.ssh/authorized_keys`가 있으면 설치 시 복사합니다. 없으면 빈 `/workspace/.dots-tailscale/sshd/authorized_keys`를 만들므로 사용할 장비의 **공개키**를 한 줄로 추가하고 권한을 `600`으로 지정합니다. SSH 호스트 키 지문은 VM의 GUI 터미널 등 별도 경로로 확인하고 클라이언트 지문과 대조하세요. 호스트 키 검증을 우회하지 않습니다.
+SSH는 `127.0.0.1:22`에서 수신하고 공개키 인증을 사용합니다. Tailscale SSH는 꺼져 있으며 셸 연결은 로컬 OpenSSH 서버가 처리합니다. 기존 `$HOME/.ssh/authorized_keys`가 있으면 설치 시 복사합니다. 없으면 빈 `/workspace/.dots-tailscale/sshd/authorized_keys`를 만들므로 사용할 장비의 **공개키**를 한 줄로 추가하고 권한을 `600`으로 지정합니다. SSH 호스트 키 지문은 VM의 GUI 터미널 등 별도 경로로 확인하고 클라이언트 지문과 대조하세요. 호스트 키 검증을 우회하지 않습니다.
 
 Dots의 GUI 터미널에서 다음 명령으로 지문을 확인합니다.
 
@@ -168,11 +170,31 @@ bash /workspace/.dots-tailscale/start.sh
 bash /workspace/.dots-tailscale/start.sh check
 ```
 
-일반 기동에서는 인증을 시작하지 않습니다. `start`·`login`·`auth`에서 backend가 `Running`이고 로컬 SSH 배너를 확인하면 종료코드 `0`입니다. 인증 필요는 `10`, backend 준비 시간 초과나 그 밖의 준비되지 않은 상태는 `11`, 기한 내 유효한 backend 상태를 한 번도 받지 못하면 `12`, 관리자 장치 승인 필요는 `13`입니다. 기타 구성·기동 실패도 비영 종료코드입니다. 필요할 때만 `start.sh login`을 실행합니다.
+일반 기동에서는 인증을 시작하지 않습니다. 종료코드는 다음과 같습니다.
 
-backend 준비 단계마다 단조 시계 기준 총 30초 동안 조회와 재시도 대기를 수행합니다. 각 조회는 최대 3초이며 남은 예산을 넘지 않습니다. `NoState`·`Starting`은 재조회하고 CLI가 응답했다는 이유만으로 준비 완료로 판단하지 않습니다. 유효한 준비 중 상태를 확인했다면 이후 조회가 실패해도 기한 만료는 `11`로 유지합니다. 이 한도는 backend 단계에 적용되며 전체 구성요소 초기화나 명시적인 인증 시간을 모두 합친 한도가 아닙니다. `login`·`auth`는 먼저 최대 30초 동안 로컬 API의 유효한 응답을 기다립니다. 이 사전 확인은 `NoState`·`Starting`도 허용하므로 새 데몬에 아직 인증이 없어도 명시적인 `up`을 실행할 수 있습니다. 로그인 명령은 별도 180초, Auth Key 인증 명령은 별도 60초 한도를 유지하며, 이후 최종 backend 준비 단계를 수행합니다. 이미 관리자 승인을 기다리는 상태에서는 `up`을 생략합니다. 인증 명령 실패·시간 초과 후에도 backend를 확인해 승인 필요는 `13`, 로그인 필요는 `10`으로 구분합니다. backend가 Running이어도 인증 명령 실패를 성공으로 숨기지 않고 원래 실패 코드를 반환합니다. 새 데몬 기동 여부를 확인하는 상태 조회는 최대 3초입니다.
+| 기동 결과 | 종료코드 |
+|---|---|
+| backend 실행 및 로컬 SSH 배너 확인 | `0` |
+| 인증 필요 (`needs_auth`) | `10` |
+| backend 준비 시간 초과 또는 준비되지 않은 상태 | `11` |
+| 기한 내 유효한 backend 상태를 받지 못함 | `12` |
+| 관리자 장치 승인 필요 (`needs_machine_auth`) | `13` |
+| backend가 실행 중인데 명시적 인증 명령이 실패함 | 원래 명령의 종료코드 |
+| 설정 또는 구성요소 기동 실패 | 비영(보통 `1`) |
 
-설치 위치는 `DOTS_TS_DIR`, 장비 이름은 `NODE_HOSTNAME`, 업스트림 프록시는 `UPSTREAM_PROXY`로 변경합니다. 설치된 래퍼는 자기 디렉터리를 `DOTS_TS_DIR`로 사용합니다. 프록시 URL은 인증 없는 HTTP CONNECT 주소를 지원합니다.
+필요할 때만 `start.sh login`을 실행하세요.
+
+backend 준비 단계마다 단조 시계 기준 총 30초 동안 조회와 재시도 대기를 수행합니다. 각 조회는 최대 3초이며 남은 예산을 넘지 않습니다. `NoState`·`Starting`은 재조회하고 CLI가 응답했다는 이유만으로 준비 완료로 판단하지 않습니다. 유효한 준비 중 상태를 확인했다면 이후 조회가 실패해도 기한 만료는 `11`로 유지하고, 해당 단계에서 유효한 상태를 한 번도 받지 못하면 `12`를 반환합니다. 이 한도는 backend 단계에 적용되며 전체 구성요소 초기화나 명시적인 인증 시간을 모두 합친 한도가 아닙니다. `login`·`auth`는 먼저 최대 30초 동안 로컬 API의 유효한 응답을 기다립니다. 이 사전 확인은 `NoState`·`Starting`도 허용하므로 새 데몬에 아직 인증이 없어도 명시적인 `up`을 실행할 수 있습니다. 로그인 명령은 별도 180초, Auth Key 인증 명령은 별도 60초 한도를 유지하며, 이후 최종 backend 준비 단계를 수행합니다. 이미 관리자 승인을 기다리는 상태에서는 `up`을 생략합니다. 인증 명령 실패·시간 초과 후에도 backend를 확인해 승인 필요는 `13`, 로그인 필요는 `10`으로 구분합니다. backend가 Running이어도 인증 명령 실패를 성공으로 숨기지 않고 원래 실패 코드를 반환합니다. 새 데몬 기동 여부를 확인하는 상태 조회는 최대 3초입니다.
+
+설정은 다음 기본값을 사용합니다.
+
+| 변수 | 기본값 |
+|---|---|
+| `DOTS_TS_DIR` | `/workspace/.dots-tailscale` |
+| `UPSTREAM_PROXY` | `http://browser-proxy:8889` |
+| `NODE_HOSTNAME` | `dots-sandbox` |
+
+`DOTS_TS_DIR`을 바꾸려면 공백이 없는 절대 경로를 지정하세요. 설치와 이후 기동에서 같은 값을 사용해야 합니다. 설치된 래퍼는 자기 디렉터리를 `DOTS_TS_DIR`로 사용합니다. `UPSTREAM_PROXY`에는 인증 정보가 포함되지 않은 HTTP 프록시 주소를 지정하세요. shim은 18089번, SSH는 22번 포트를 사용하므로 한 설치 인스턴스만 실행할 수 있습니다.
 
 shim 수정이 포함된 업데이트는 **setup.sh만 교체해서 완료되지 않습니다.** 다음 절차는 운영자가 별도로 수행할 배치·복구 절차이며 현재 자동 updater로 구현돼 있지 않습니다. 2026-10-14 shim 수정본의 실환경 배포 후 DERP ping과 엄격한 호스트 키 검증을 유지한 SSH 연결은 성공했습니다. 수정본 상태에서 이후 VM 교체를 거친 복구는 아직 관찰하지 않았습니다. 자세한 범위는 아래 [현재 확인한 범위](#current-validation)를 참고하세요.
 
@@ -224,22 +246,25 @@ sha256sum tailscale-setup.sh shim.py dots-ts dots_proxy.py
 
 이 업데이트 작업은 프로세스 재시작이며 VM 교체 검증이 아닙니다. 자연스러운 실제 교체 전후에는 HOME/workspace 관찰 결과를 클라우드 컴퓨터 밖에 보관하고 비교합니다. 아직 교체가 확인되지 않으면 관찰 대기로 유지합니다.
 
-| 보관 위치 | 내용 |
+## 파일 저장 위치와 SSH 권한
+
+| 경로 | 내용 |
 |---|---|
 | `/workspace/.dots-tailscale/state` | Tailscale 인증 state |
-| `…/shim` | shim·CA·개인키·인증서 |
-| `…/sshd` | SSH 설정·호스트 키·authorized_keys |
-| `/tmp/dots-tailscale-1000` | UID 1000 기준 소켓·PID·로그 |
+| `/workspace/.dots-tailscale/shim` | shim·CA·개인키·인증서 |
+| `/workspace/.dots-tailscale/sshd` | SSH 설정·호스트 키·`authorized_keys` |
+| `/tmp/dots-tailscale-$(id -u)` | 사용자별 소켓·PID·실행 로그 |
 
-이미 인증했던 설치에서 state가 사라지면 다른 신원을 자동 생성하지 않고 중단합니다. 동일 state를 여러 실행 중인 VM에 복제하지 마세요. `/proc`의 일부 프로세스가 접근 거부돼도 탐색을 계속하며, CLI가 응답하는 기존 tailscaled는 재사용합니다. 식별되지 않는 데몬의 소켓은 자동 삭제하지 않습니다.
+이전에 인증한 설치에서 state가 사라지면 스크립트는 다른 장치 신원을 자동 생성하지 않고 중단합니다. 같은 Tailscale state를 동시에 실행 중인 여러 VM에 복제하지 마세요. `/workspace`는 자동으로 비공개 처리되는 위치가 아니므로 접근을 통제할 수 있는 디렉터리만 사용하세요. SSH 설정은 `/workspace` 상위 디렉터리 권한 때문에 OpenSSH가 공개키 인증을 거부하지 않도록 `StrictModes no`를 사용합니다. 보관 디렉터리는 `700`, SSH 키·`authorized_keys`·CA 개인키는 `600` 권한으로 제한합니다. 기동 시에는 Tailscale CLI와 로컬 SSH 배너까지만 확인하며, 외부 공개키 로그인을 매번 시험하지 않습니다. 재기동 시 1 MiB가 넘는 로그는 한 세대만 남기고 회전하지만, 프로세스가 계속 실행 중일 때 로그 크기에는 상한이 없습니다.
 
-`StrictModes no`를 사용하되 보관 디렉터리는 `700`, SSH 키·authorized_keys·CA 개인키는 `600`으로 제한합니다. `/workspace` 상위 경로 권한 때문에 공개키 인증이 거부되는 것을 피하기 위한 설정입니다. 기동 검증은 CLI와 로컬 SSH 배너까지이며 원격 공개키 로그인을 매번 확인하지 않습니다. 로그는 재기동 시 1 MiB 초과 파일을 한 세대 회전하며 계속 실행 중인 로그 크기에는 상한이 없습니다.
+`/proc`의 일부 프로세스에 접근할 수 없어도 탐색을 계속하며, CLI가 응답하는 기존 tailscaled는 재사용합니다. 식별되지 않는 데몬의 소켓은 자동 삭제하지 않습니다.
 
 ## 선택적 Auth Key 인증
 
 브라우저 없이 등록하려면 Tailscale 관리 화면에서 발급한 Auth Key를 별도 파일에 저장합니다. 키는 채팅·스크립트·Git에 넣지 마세요. 파일은 현재 사용자 소유의 일반 파일이어야 하며, 절대 경로·심볼릭 링크 없는 경로·권한 `600` 또는 `400`이 필요합니다.
 
 ```bash
+chmod 600 /workspace/.dots-tailscale/auth.key
 DOTS_TS_AUTH_KEY_FILE=/workspace/.dots-tailscale/auth.key \
   bash /workspace/.dots-tailscale/start.sh auth
 ```
@@ -268,7 +293,7 @@ hostname·boot_id·PID 1 시작 값도 비교합니다. 식별 파일 소실은 
 ssh agent@dots-sandbox 'python3 /workspace/dots-tailscale/home-persistence-probe.py' > observation.json
 ```
 
-SSH 키 파일·호스트 별칭은 자신의 설정에 맞게 지정하세요. 결과에는 hostname과 식별자가 포함되므로 공개하기 전에 익명화하세요.
+SSH 키 파일·호스트 별칭은 자신의 설정에 맞게 지정하세요. 결과에는 hostname과 식별자가 포함되므로 공개하기 전에 익명화하세요. `--home`과 `--probe-root` 옵션으로 사용자 지정 경로를 지정할 수 있습니다.
 
 <a id="current-validation"></a>
 
@@ -288,9 +313,11 @@ bash /workspace/.dots-tailscale/start.sh check
 - `check`는 파일 목록과 상태 확인용입니다. `start`의 `running: Tailscale and local SSH ready`는 backend와 로컬 SSH 배너 확인을 뜻하며, 외부 장비에서의 SSH 공개키 로그인을 매번 검사하는 것은 아닙니다.
 - Auth Key 인증과 Dots 자동화를 이용한 자동 기동은 아직 시험하지 않았습니다.
 
-## 검증과 문제 해결
+## 오프라인 회귀 검사
 
 저장소 체크아웃에서 `python3 -m unittest discover -s tests -v`와 `bash -n tailscale-setup.sh`를 실행합니다. 최초 접속 회귀 테스트에는 Git·Bash·Python 3·OpenSSH 클라이언트/서버 도구가 필요합니다. 임시 저장소·키·`known_hosts`, 모의 Tailscale CLI와 격리된 Unix socket을 사용합니다. SSH는 listener 없이 로컬 표준 입출력으로 실행하며 tailnet 인증·실제 프록시 연결·VM 교체는 검증하지 않습니다.
+
+## 문제 해결
 
 - 이전 버전의 `cannot inspect process` 또는 현재의 `process inspection failed`: 현재 스크립트는 일부 `/proc` 접근 거부를 건너뜁니다. 기존 설치의 `setup.sh`는 위 [업데이트 절차](#restart-update)에 따라 검토한 코드로 갱신하세요.
 - `Permission denied (publickey)`: `sshd/authorized_keys`의 공개키 지문을 확인하고 접속 장비의 공개키를 등록하세요. `running` 메시지는 공개키 인증 성공까지 확인하지 않습니다.

@@ -1,16 +1,12 @@
 # Usage
 
-[English README](../README.md) · [한국어 사용법](usage.ko.md)
+English · [한국어](usage.ko.md) · [简体中文](usage.zh-CN.md) · [日本語](usage.ja.md) · [Project overview](../README.md)
 
 These instructions target a user-level installation in an environment that preserves `/workspace` across environment replacements. The recovery path reuses saved installation files, authentication state, and SSH host keys, without a new login while saved credentials remain valid. Installation does not register a startup hook; run the start command in each new environment.
 
-## Published version and verification
+## Published release
 
 The initial public repository clone and raw downloads were verified against the prepared source. [Release v0.3.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.3.1) includes ZIP and tar.gz archives plus `tailscale-setup.sh`, `shim.py`, `dots-ts`, and `dots_proxy.py` as individual assets. The installation examples pin the source to `v0.3.1`. The bundled Tailscale version remains `1.102.4`.
-
-![Dots desktop terminal screenshot of installation checks and Tailscale version](assets/dots-tailscale-ssh-verification.png)
-
-This screenshot provided by the maintainer shows `start.sh check` and Tailscale version `1.102.4` in the Dots desktop terminal. The supplied image is used unchanged. It documents the existing installation's files, status, and CLI version, rather than a new installation or a VM replacement.
 
 <a id="download-proxy"></a>
 
@@ -76,7 +72,7 @@ After authentication, use this command to start missing components:
 bash /workspace/.dots-tailscale/start.sh
 ```
 
-For inspection or explicit authentication, pass `check` or `login` to that installed wrapper. Installation generates `start.sh` in the installation directory and copies `tailscale-setup.sh` to `setup.sh`. The generated wrapper derives that directory from its own location and invokes the neighboring `setup.sh`.
+For inspection or explicit authentication, pass `check` or `login` to that installed wrapper. Installation generates `start.sh` in the installation directory and copies `tailscale-setup.sh` to `setup.sh`. The generated wrapper derives that directory from its own location and invokes the neighboring `setup.sh`. For an existing installation, use the [update procedure](#restart-update) below.
 
 | Setting | Default |
 | --- | --- |
@@ -84,7 +80,7 @@ For inspection or explicit authentication, pass `check` or `login` to that insta
 | `UPSTREAM_PROXY` | `http://browser-proxy:8889` |
 | `NODE_HOSTNAME` | `dots-sandbox` |
 
-An alternate `DOTS_TS_DIR` must be an absolute path without whitespace. Use consistent settings for installation and subsequent starts. The shim currently listens on port 18089 and SSH on port 22; this is a single-installation setup.
+An alternate `DOTS_TS_DIR` must be an absolute path without whitespace. `UPSTREAM_PROXY` must be an unauthenticated HTTP proxy URL. Use consistent settings for installation and subsequent starts. The shim currently listens on port 18089 and SSH on port 22; this is a single-installation setup.
 
 ### SSH keys and readiness
 
@@ -247,9 +243,17 @@ The first run creates a random marker in `$HOME/.dots-home-persistence-marker.js
 | `home_marker_changed_workspace_intact` | HOME marker changed or disappeared while workspace marker remained intact |
 | `marker_continuity_changed` | Other marker continuity change |
 
-Marker loss is evidence of marker loss, not proof that the entire HOME directory was reset. Hostname, boot ID, and PID 1 start ticks provide context; boot ID alone cannot distinguish a container replacement from a host reboot. If the workspace baseline disappears too, the next run creates a new baseline, so retain a result outside the VM for comparison.
+Marker loss is evidence of marker loss, not proof that the entire HOME directory was reset. Hostname, boot ID, and PID 1 start ticks provide context; boot ID alone cannot distinguish a container replacement from a host reboot. If the workspace baseline disappears too, the next run creates a new baseline, so retain a result outside the VM for comparison. You can run the probe over SSH and save its result on your client:
+
+```bash
+ssh agent@dots-sandbox 'python3 /workspace/dots-tailscale/home-persistence-probe.py' > observation.json
+```
+
+Adjust the SSH key and host alias for your setup. The result includes the hostname and marker IDs; anonymize them before sharing it publicly.
 
 Custom paths are available through `--home` and `--probe-root`. No periodic execution is registered for this probe.
+
+<a id="restart-update"></a>
 
 ## Update installed scripts
 
@@ -304,10 +308,49 @@ Do not run `install` as an update shortcut or delete the installation directory.
 
 A successful controlled restart verifies process recovery for that environment, not persistence after VM replacement. The continuity probe remains observational: wait for a natural environment change, retain its results externally, and evaluate authenticated continuity separately. No forced reset or restart is needed for the continuity probe.
 
+## File storage and SSH permissions
+
+| Path | Contents |
+| --- | --- |
+| `/workspace/.dots-tailscale/state` | Tailscale authentication state |
+| `/workspace/.dots-tailscale/shim` | Shim, CA, private keys, and certificates |
+| `/workspace/.dots-tailscale/sshd` | SSH configuration, host keys, and `authorized_keys` |
+| `/tmp/dots-tailscale-$(id -u)` | Per-user sockets, PIDs, and runtime logs |
+
+The SSH server uses `StrictModes no` because permissions on parent `/workspace` directories can otherwise cause OpenSSH to reject public-key authentication. The setup restricts storage directories to mode `700` and SSH keys, `authorized_keys`, and the CA private key to mode `600`. Startup checks the Tailscale CLI and local SSH banner; it does not test remote public-key login on every start. On restart, logs larger than 1 MiB are rotated for one generation. Logs have no size limit while a process keeps running.
+
+Process inspection continues past `/proc` entries that cannot be accessed. If the CLI responds, the setup reuses the existing `tailscaled`. It does not automatically remove a socket belonging to an unidentified daemon.
+
 ## Protect generated files
 
 Keep Tailscale state, host and client private keys, shim CA private keys, auth-key files, generated backups, and runtime logs out of Git. Do not copy one Tailscale node's state into multiple simultaneously running VMs. `/workspace` is not automatically a private location; only use a directory whose access you control.
 
+<a id="current-validation"></a>
+
+## Current validation
+
+![Dots desktop terminal screenshot showing installation files, status, and Tailscale version](assets/dots-tailscale-ssh-verification.png)
+
+This maintainer-provided screenshot shows the existing installation files and status, plus Tailscale version `1.102.4`, in the Dots desktop terminal. It does not show a new installation or a VM replacement.
+
+```bash
+bash /workspace/.dots-tailscale/start.sh check
+/workspace/.dots-tailscale/tailscale version
+```
+
+- The maintainer previously observed the installation running for more than 24 hours. After an environment replacement, the `/workspace` installation files remained and `start.sh` restarted it manually.
+- On 2026-10-14, the revised shim passed a live DERP ping and strict-host-key SSH public-key login and command checks. Recovery after a later VM replacement has not been observed with that revision.
+- `check` reports files and local status. `running: Tailscale and local SSH ready` means the backend is Running and the local SSH banner responds; it does not verify remote public-key login.
+- Auth-key enrollment and startup through Dots automation have not been tested.
+
 ## Offline regression checks
 
 Run `python3 -m unittest discover -s tests -v` and `bash -n tailscale-setup.sh` from the repository checkout. The onboarding tests require Git, Bash, Python 3, and OpenSSH client/server tools. They use disposable repositories, keys, `known_hosts`, a mocked Tailscale CLI, and an isolated Unix socket. SSH runs over local stdio without a listener; these tests do not authenticate to a tailnet, exercise the live proxy, or validate VM replacement.
+
+## Troubleshooting
+
+- `cannot inspect process` or `process inspection failed`: The current script skips `/proc` entries it cannot access. Update the installed `setup.sh` using the reviewed procedure above.
+- `Permission denied (publickey)`: Check the public-key fingerprint in `sshd/authorized_keys` and add your client public key if needed. The `running` message does not confirm remote public-key authentication.
+- `existing file differs`: An installed file differs from the source. Review the configuration and keys, then update only the files that need it. Do not delete the installation directory; it also contains state and host keys.
+- `socket exists but daemon cannot be identified`: Check the existing daemon and socket. The script does not automatically remove an unidentified socket.
+- Terminal text such as `^[[200~` appears after pasting: Cancel the command and enter it one line at a time. Check the command and host-key fingerprint before continuing.

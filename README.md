@@ -1,6 +1,6 @@
 <h1 align="center">dots-tailscale</h1>
 
-<p align="center">English · <a href="README.ko.md">한국어</a></p>
+<p align="center">English · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a></p>
 
 Run Tailscale with user-level OpenSSH in a Dots cloud computer. Installation files, node state, and SSH identity live in `/workspace`; runtime sockets, PIDs, and logs are recreated in `/tmp`.
 
@@ -10,7 +10,7 @@ This setup targets environments that preserve `/workspace`. Processes still need
 
 ![Dots terminal screenshot showing installation checks and Tailscale version 1.102.4](docs/assets/dots-tailscale-ssh-verification.png)
 
-A screenshot provided by the maintainer from the Dots desktop terminal. It shows existing installation checks and status, plus Tailscale version 1.102.4. The supplied image is used unchanged. No new installation is performed in this screenshot.
+This screenshot, provided by the maintainer, shows the existing installation checks and status, plus Tailscale version 1.102.4, in the Dots desktop terminal. The image is used unchanged; it does not show a new installation or a VM replacement.
 
 ```bash
 bash /workspace/.dots-tailscale/start.sh check
@@ -51,9 +51,9 @@ Install all four source files from [v0.3.1](https://github.com/abruption/dots-ta
 
 | Path | Purpose |
 |---|---|
-| `tailscale-setup.sh`, `shim.py` | Check, install, start, and explicitly authenticate Tailscale with local SSH |
+| `tailscale-setup.sh`, `shim.py` | Check, install, and start Tailscale; configure local OpenSSH; authenticate Tailscale explicitly |
 | `dots-ts`, `dots_proxy.py` | CLI, diagnostics, and optional per-process outbound proxy configuration |
 | `home-persistence-probe.py` | Record HOME and `/workspace` continuity markers |
 | `tests/` | Offline regression tests |
 
-See the [English usage guide](docs/usage.md), [Korean usage guide](docs/usage.ko.md), and [MIT License](LICENSE).
+See the [English usage guide](docs/usage.md), [Korean usage guide](docs/usage.ko.md), [Simplified Chinese usage guide](docs/usage.zh-CN.md), [Japanese usage guide](docs/usage.ja.md), and [MIT License](LICENSE).

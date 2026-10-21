@@ -1,8 +1,8 @@
 <h1 align="center">dots-tailscale</h1>
 
-<p align="center"><a href="README.md">English</a> · 한국어</p>
+<p align="center"><a href="README.md">English</a> · 한국어 · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a></p>
 
-Dots 클라우드 컴퓨터에서 사용자 권한으로 Tailscale과 OpenSSH를 실행합니다. 설치 파일·장치 state·SSH identity는 `/workspace`, 실행 socket·PID·로그는 `/tmp`에 둡니다.
+Dots 클라우드 컴퓨터에서 일반 사용자 권한으로 Tailscale과 OpenSSH를 실행합니다. 설치 파일, Tailscale 상태, SSH 키는 `/workspace`에 보관하고 실행 중 필요한 소켓·PID·로그는 `/tmp`에 둡니다.
 
 `/workspace`가 환경 교체 후 보존되는 환경을 대상으로 합니다. 새 환경에서는 start 명령을 실행해야 합니다. OpenAI 또는 Tailscale 공식 도구가 아닌 독립 프로젝트입니다.
 
@@ -10,7 +10,7 @@ Dots 클라우드 컴퓨터에서 사용자 권한으로 Tailscale과 OpenSSH를
 
 ![Dots 터미널에서 설치 상태와 Tailscale 버전 1.102.4를 확인하는 스크린샷](docs/assets/dots-tailscale-ssh-verification.png)
 
-관리자가 제공한 Dots 데스크톱 터미널의 스크린샷입니다. 기존 설치 파일과 상태, Tailscale 1.102.4 버전을 확인하는 장면입니다. 제공된 이미지를 그대로 사용했으며, 새로 설치하는 과정은 포함하지 않습니다.
+관리자가 제공한 Dots 데스크톱 터미널 화면입니다. 기존 설치 파일과 상태, Tailscale 1.102.4 버전을 확인한 모습이며, 새로 설치하거나 VM을 교체하는 장면은 아닙니다.
 
 ```bash
 bash /workspace/.dots-tailscale/start.sh check
@@ -33,7 +33,7 @@ bash tailscale-setup.sh install
 bash /workspace/.dots-tailscale/start.sh login
 ```
 
-최초 로그인 URL을 승인한 뒤 SSH 공개키를 설치 경로의 `authorized_keys`에 등록하세요. 호스트 키 지문은 클라우드 컴퓨터의 GUI 터미널에서 확인한 후 SSH로 접속합니다. 환경이 교체되면 `bash /workspace/.dots-tailscale/start.sh`로 기존 설치를 수동 기동하세요.
+최초 로그인 URL을 승인한 뒤 SSH 공개키를 설치 경로의 `authorized_keys`에 등록하세요. 호스트 키 지문은 클라우드 컴퓨터의 GUI 터미널에서 확인한 후 SSH로 접속합니다. 환경이 교체되면 `bash /workspace/.dots-tailscale/start.sh`로 기존 설치를 직접 실행해야 합니다. 스크립트는 자동 시작을 등록하지 않습니다.
 
 ## v0.3.1: 진단과 비공개 HTTP 접속
 
@@ -47,13 +47,13 @@ bash /workspace/.dots-tailscale/start.sh login
 
 `doctor`는 상태를 바꾸지 않고 로컬 진단 정보를 읽습니다. `cli`는 설치된 Tailscale 실행 파일과 소켓을 선택합니다. 선택 기능인 로컬 SOCKS5·HTTP 프록시는 기본적으로 꺼져 있으며, 활성화하려면 데몬 재시작을 별도로 검토해야 합니다. 설정과 접근 정책, 검증 범위는 [사용 가이드](docs/usage.ko.md#development-helpers)와 [비공개 HTTP API 연결 예시](docs/private-http-api.ko.md)를 참고하세요. ChatGPT 커넥터·MCP 클라이언트·Dots 브라우저에 자동으로 적용되지는 않습니다.
 
-## 파일
+## 구성 요소
 
 | 경로 | 역할 |
 |---|---|
-| `tailscale-setup.sh`, `shim.py` | Tailscale·OpenSSH 점검, 설치, 기동 및 명시적 인증 |
+| `tailscale-setup.sh`, `shim.py` | Tailscale을 점검·설치·기동하고 로컬 OpenSSH를 설정하며 Tailscale 인증을 명시적으로 수행 |
 | `dots-ts`, `dots_proxy.py` | CLI·진단과 프로세스별 외부 연결 프록시 설정 |
-| `home-persistence-probe.py` | HOME과 `/workspace` 식별자 관찰 |
+| `home-persistence-probe.py` | HOME과 `/workspace` 지속성 마커를 기록하고 변화 확인 |
 | `tests/` | 오프라인 회귀 테스트 |
 
-[English guide](docs/usage.md) · [MIT License](LICENSE)
+[English guide](docs/usage.md) · [한국어 사용 가이드](docs/usage.ko.md) · [简体中文使用指南](docs/usage.zh-CN.md) · [日本語の使い方](docs/usage.ja.md) · [MIT License](LICENSE)
