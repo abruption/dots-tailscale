@@ -109,6 +109,11 @@ class UpdateNoticeTests(unittest.TestCase):
             self.assertEqual(tool.main(["update", "notifications", "notify"]), 0)
         self.assertIsNone(tool.notification_show(self.directory)["last_notified"])
 
+    def test_unexpected_notice_error_is_silent(self):
+        self.enable_and_refresh()
+        with mock.patch.object(tool, "package_report", side_effect=TypeError("PRIVATE error")):
+            self.assertEqual(self.notify(), "")
+
     def test_storage_rejects_symlinks_hardlinks_modes_and_hostile_cache(self):
         self.enable_and_refresh()
         folder = self.directory / tool.NOTICE_DIRECTORY
@@ -149,7 +154,7 @@ class UpdateNoticeTests(unittest.TestCase):
         source = (ROOT / "tailscale-setup.sh").read_text()
         hook = source[source.index("# Opt-in cached notice only."):]
         self.assertIn('if [[ "$MODE" = start && -t 2 ]]', hook)
-        self.assertIn('timeout --kill-after=1s 1s python3 "$D/dots-ts" update notifications notify >/dev/null || true', hook)
+        self.assertIn('timeout --foreground --kill-after=1s 1s python3 "$D/dots-ts" update notifications notify >/dev/null || true', hook)
         self.assertNotIn(" refresh", hook)
         self.assertLess(source.index("if [[ \"${AUTH_COMMAND_STATUS:-0}\" != 0 ]]"), source.index("# Opt-in cached notice only."))
 

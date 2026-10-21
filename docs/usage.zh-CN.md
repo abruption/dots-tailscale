@@ -215,6 +215,14 @@ JSON 将 `package.declared_version`、`package.source_revision`、`package.integ
 
 事务记录保存在 `.update-transactions/TRANSACTION_ID/` 下：`journal.json` 记录阶段，`stage/` 保存选定的文件包，`backup/` 只保存之前的源码包，`supervisor/` 保存更新器代码快照。在确认外部连接正常前，请保留这些记录。`update status` 对运行中或已应用的事务返回退出码 0；对拒绝、已回滚、中断或需要手动恢复的结果返回 1。运行中的退出码 0 不代表已经完成。
 
+`applied` 表示所选代码与清单一致，并通过了本地就绪检查，不代表已经验证 shim 的端到端 CONNECT/WebSocket 通信。重启的 shim 保留上游主机、端口和使用绝对路径的 SSL 证书设置，但不继承其他 shell 环境或调试设置。其 stdout/stderr 会被丢弃，因此应查看事务中的固定错误码并单独检查连接，而不要期待旧 `shim.log` 出现新的输出。
+
+中断后，可以在保留证据的前提下完成手动恢复：
+
+1. 在独立终端中明确确认 worker 已退出。PID 无法访问或 status 不确定，都不能作为退出的证据。
+2. 必要时恢复经过审核的代码包并启动，验证清单、本地就绪状态以及一次新的外部严格主机密钥 SSH 连接。旧版工具可能需要单独审核的源码运行器来检查清单。
+3. 确认没有活动 worker，并持有安装目录的 `.operation.lock` 后，将整个已审核的事务目录移动到 `.update-transactions/` 之外、属于当前用户且权限为 700 的 `.update-recovery-archive/`。日志和备份应一并保留。归档后，该事务不再阻止新更新；不要为了绕过限制而归档仍在运行或未经审核的事务。
+
 <a id="development-helpers"></a>
 
 ## v0.3.1 辅助工具与可选应用代理

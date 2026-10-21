@@ -165,7 +165,7 @@ def validate_proxy(proxy):
         return None
     try:
         parsed = urllib.parse.urlsplit(proxy)
-        if (len(proxy) > 512 or parsed.scheme not in ("http", "https") or not parsed.hostname
+        if (len(proxy) > 512 or parsed.scheme != "http" or not parsed.hostname
                 or parsed.username is not None or parsed.password is not None
                 or parsed.path not in ("", "/") or parsed.query or parsed.fragment
                 or parsed.port is None or any(ord(c) < 33 or ord(c) > 126 for c in proxy)):
@@ -362,6 +362,7 @@ def fetch_release(tag=None, proxy=None, timeout=UPDATE_TIMEOUT):
                    for value in manifest["files"].values())):
         raise UpdateError("invalid_metadata")
     release["manifest"] = manifest
+    release["manifest_bytes"] = raw_manifest
     return release
 
 
@@ -586,7 +587,8 @@ def notification_notify(directory):
             cache["last_notified"] = release["tag"]
             notice_write(folder, "cache.json", cache)
             print("dots-ts: stable release " + release["tag"] + " is available; run dots-ts update check before updating.", file=sys.stderr)
-    except (NoticeError, UpdateError, OSError):
+    except Exception:
+        # A best-effort interactive notice must not print a traceback or affect start.
         return
 
 
@@ -597,7 +599,28 @@ APPLY_TERMINAL = {'applied', 'failed_rolled_back', 'rollback_failed_manual_requi
 
 
 class ApplyError(Exception):
-    pass
+    def __init__(self, code, transaction_id=None):
+        super().__init__(code)
+        self.transaction_id = transaction_id
+
+
+def apply_error_report(error):
+    if isinstance(error, ApplyError): code = str(error)
+    elif isinstance(error, UpdateError): code = error.code
+    else:
+        try:
+            import dots_proxy as proxy
+            proxy_error = isinstance(error, proxy.ProxyError)
+        except ImportError: proxy_error = False
+        if proxy_error: code = 'operation_busy_or_unsafe'
+        elif isinstance(error, OSError): code = 'filesystem_or_process_error'
+        elif isinstance(error, (ValueError, TypeError, KeyError, RecursionError)): code = 'invalid_apply_data'
+        else: code = 'apply_internal_error'
+    report = {'error': code}
+    identifier = getattr(error, 'transaction_id', None)
+    if identifier: report['transaction_id'] = identifier
+    return report
+
 
 
 def apply_private(path, create=False):
@@ -633,6 +656,31 @@ def apply_write(path, data, mode=0o600):
 def apply_journal(transaction, journal, **changes):
     journal.update(changes, updated_at=int(time.time()))
     apply_write(transaction / 'journal.json', json.dumps(journal, sort_keys=True).encode())
+
+
+def apply_journal_best_effort(transaction, journal, **changes):
+    journal.update(changes)
+    try:
+        apply_journal(transaction, journal, **changes)
+        return True
+    except Exception:
+        journal['journal_persistence_failed'] = True
+        return False
+
+
+def apply_outcome(transaction, journal, state, **changes):
+    if apply_journal_best_effort(transaction, journal, state=state, **changes): return
+    # One bounded static marker per outcome; never append raw exception text.
+    try:
+        fd = os.open(str(transaction / 'worker.log'), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        try:
+            info = os.fstat(fd)
+            if (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                    and stat.S_IMODE(info.st_mode) == 0o600 and info.st_size < 4096):
+                os.write(fd, ('update_outcome=' + state + ' journal_persisted=false\n').encode())
+                os.fsync(fd)
+        finally: os.close(fd)
+    except Exception: pass
 
 
 def apply_read_journal(transaction):
@@ -691,7 +739,15 @@ def apply_status(directory, identifier):
     root = apply_private(directory / APPLY_DIRECTORY)
     transaction = apply_private(root / identifier)
     journal = apply_read_journal(transaction)
-    if journal.get('state') not in APPLY_TERMINAL:
+    try:
+        log = bounded_code_read(transaction, 'worker.log', 8192)
+    except FileNotFoundError: log = b''
+    except (OSError, ValueError): log = b''
+    markers = re.findall(rb'^update_outcome=(applied|failed_rolled_back|rollback_failed_manual_required|rejected) journal_persisted=false$', log, re.M)
+    if markers:
+        journal = dict(journal, state='interrupted_manual_required', journal_persistence_failed=True,
+                       observed_outcome=markers[-1].decode('ascii'))
+    if journal.get('state') not in APPLY_TERMINAL and not markers:
         worker = journal.get('worker')
         try:
             alive = journal.get('boot_id') == apply_boot() and worker and apply_identity(worker['pid']) == worker
@@ -790,6 +846,11 @@ def apply_environment(process):
         environment = {'PATH': '/usr/bin:/bin', 'PYTHONNOUSERSITE': '1', 'PYTHONDONTWRITEBYTECODE': '1'}
         for key, default in (('UPSTREAM_HOST', 'browser-proxy'), ('UPSTREAM_PORT', '8889'), ('SHIM_PORT', '18089')):
             environment[key] = values.get(key.encode(), default.encode()).decode('ascii')
+        for key in ('SSL_CERT_FILE', 'SSL_CERT_DIR'):
+            if key.encode() in values:
+                value = os.fsdecode(values[key.encode()])
+                if not os.path.isabs(value) or len(value) > 4096 or '\x00' in value: raise ValueError()
+                environment[key] = value
         if not re.fullmatch(r'[A-Za-z0-9._:-]{1,253}', environment['UPSTREAM_HOST']): raise ValueError()
         if not 1 <= int(environment['UPSTREAM_PORT']) <= 65535 or environment['SHIM_PORT'] != '18089': raise ValueError()
     except (OSError, UnicodeError, ValueError): raise ApplyError('unsupported_shim_environment')
@@ -805,7 +866,12 @@ def apply_stop(process, timeout=8):
     try: fd = os.pidfd_open(process['pid'])
     except ProcessLookupError: return  # kernel confirms absence at pidfd_open
     try:
-        current = apply_identity(process['pid'])
+        try: current = apply_identity(process['pid'])
+        except ApplyError:
+            with selectors.DefaultSelector() as selector:
+                selector.register(fd, selectors.EVENT_READ)
+                if selector.select(0): return
+            raise
         if current is None: return
         if current != process: raise ApplyError('process_identity_changed')
         try: signal.pidfd_send_signal(fd, signal.SIGTERM)
@@ -820,6 +886,25 @@ def apply_stop(process, timeout=8):
         raise ApplyError('component_stop_timeout')
     finally: os.close(fd)
 
+
+
+def apply_stop_child(child, timeout=8):
+    # Popen owns the unreaped child, whose PID cannot yet be reused. This is
+    # authoritative even during exit_mm -> zombie when /proc/exe disappears.
+    if child.poll() is None:
+        try: child.terminate()
+        except ProcessLookupError: pass
+    try: child.wait(timeout=timeout)
+    except subprocess.TimeoutExpired: raise ApplyError('owned_child_stop_timeout')
+
+
+def apply_interpreter(process):
+    path = process['exe']
+    try:
+        if path.endswith(' (deleted)') or not os.path.isabs(path): raise ValueError()
+        info = os.stat(path)
+        if not stat.S_ISREG(info.st_mode) or not os.access(path, os.X_OK): raise ValueError()
+    except (OSError, ValueError): raise ApplyError('shim_interpreter_unavailable')
 
 
 def apply_launch(directory, baseline, environment, log):
@@ -840,6 +925,10 @@ def apply_candidate(child, baseline):
 def apply_ready(directory, runtime, proxy, baseline, candidate, public, config, host_public, timeout=30):
     if candidate['exe'] != baseline['shim']['exe']: raise ApplyError('candidate_executable_changed')
     deadline = time.monotonic() + timeout
+    def remaining():
+        budget = deadline - time.monotonic()
+        if budget <= 0: raise ApplyError('readiness_timeout')
+        return budget
     while time.monotonic() < deadline:
         if apply_identity(candidate['pid']) != candidate: raise ApplyError('candidate_identity_changed')
         if '_socket' in baseline and proxy._socket_identity(runtime) != baseline['_socket']:
@@ -847,13 +936,14 @@ def apply_ready(directory, runtime, proxy, baseline, candidate, public, config, 
         for name in ('tailscaled', 'sshd'):
             if apply_identity(baseline[name]['pid']) != baseline[name]: raise ApplyError('preserved_process_changed')
         try:
-            if apply_public_identity(directory, runtime, min(3, max(.01, deadline-time.monotonic()))) != public: raise ApplyError('node_identity_changed')
+            if apply_public_identity(directory, runtime, min(3, remaining())) != public: raise ApplyError('node_identity_changed')
             if proxy.inspect_config(directory, runtime) != config: raise ApplyError('proxy_configuration_changed')
             if bounded_code_read(directory, 'sshd/ssh_host_ed25519_key.pub', 16384) != host_public: raise ApplyError('host_public_key_changed')
             if not proxy._listener_owned(candidate, 18089): raise ApplyError('shim_listener_not_ready')
-            with socket.create_connection(('127.0.0.1', 22), timeout=min(2, max(.1, deadline-time.monotonic()))) as connection:
-                connection.settimeout(min(2, max(.01, deadline-time.monotonic())))
+            with socket.create_connection(('127.0.0.1', 22), timeout=min(2, remaining())) as connection:
+                connection.settimeout(min(2, remaining()))
                 if not connection.recv(256).startswith(b'SSH-'): raise ApplyError('ssh_not_ready')
+            remaining()
             return
         except ApplyError as error:
             if str(error) not in ('backend_not_running', 'backend_unavailable', 'public_identity_unavailable', 'shim_listener_not_ready', 'ssh_not_ready'): raise
@@ -864,11 +954,12 @@ def apply_ready(directory, runtime, proxy, baseline, candidate, public, config, 
 
 def apply_replace(directory, payload, transaction, journal, phase):
     for source, installed in list(CORE_FILES.items()) + [(MANIFEST, MANIFEST)]:
-        apply_journal(transaction, journal, phase=phase, file=source)
+        record = apply_journal_best_effort if phase == 'restore' else apply_journal
+        record(transaction, journal, phase=phase, file=source)
         target = directory / installed
         if target.is_symlink() or not target.is_file(): raise ApplyError('unsafe_installed_file')
         apply_write(target, payload[source], 0o600 if source == MANIFEST else 0o700)
-        apply_journal(transaction, journal, completed_file=source)
+        record(transaction, journal, completed_file=source)
 
 
 def apply_transaction(directory, runtime, transaction, journal, proxy):
@@ -877,6 +968,7 @@ def apply_transaction(directory, runtime, transaction, journal, proxy):
     apply_syntax(candidate_payload)
     if apply_ts_version(old) != apply_ts_version(candidate_payload): raise ApplyError('binary_update_unsupported')
     baseline = apply_components(directory, runtime, proxy)
+    apply_interpreter(baseline['shim'])
     environment = apply_environment(baseline['shim'])
     public = apply_public_identity(directory, runtime)
     try: host_public = bounded_code_read(directory, 'sshd/ssh_host_ed25519_key.pub', 16384)
@@ -902,27 +994,21 @@ def apply_transaction(directory, runtime, transaction, journal, proxy):
         if apply_bundle(directory, 'installed') != candidate_payload: raise ApplyError('installed_verification_failed')
         apply_journal(transaction, journal, state='applied', phase='complete')
     except Exception as failure:
-        apply_journal(transaction, journal, error=str(failure) if isinstance(failure, ApplyError) else 'transaction_failed', phase='rollback_intent')
+        apply_journal_best_effort(transaction, journal, error=str(failure) if isinstance(failure, ApplyError) else 'transaction_failed', state='running', phase='rollback_intent')
         try:
-            if child is not None:
-                # Popen.poll uses waitpid: a reaped owned child is positive exit
-                # evidence even if a concurrent /proc inspection was uncertain.
-                if child.poll() is None:
-                    if candidate is None: raise ApplyError('candidate_identity_unknown')
-                    apply_stop(candidate)
-                child.wait(timeout=2)
+            if child is not None: apply_stop_child(child)
             if not stopped:
                 # Failed stop is not permission to start a duplicate or alter code.
                 raise ApplyError('old_shim_stop_uncertain')
             if mutation: apply_replace(directory, old, transaction, journal, 'restore')
             restored = apply_launch(directory, baseline, environment, logfd)
             identity = apply_candidate(restored, baseline)
-            apply_journal(transaction, journal, restored=identity, phase='rollback_readiness')
+            apply_journal_best_effort(transaction, journal, restored=identity, phase='rollback_readiness')
             apply_ready(directory, runtime, proxy, baseline, identity, public, config, host_public)
             if apply_bundle(directory, 'installed') != old: raise ApplyError('rollback_verification_failed')
-            apply_journal(transaction, journal, state='failed_rolled_back', phase='complete')
+            apply_outcome(transaction, journal, 'failed_rolled_back', phase='complete')
         except Exception:
-            apply_journal(transaction, journal, state='rollback_failed_manual_required', phase='manual_recovery')
+            apply_outcome(transaction, journal, 'rollback_failed_manual_required', phase='manual_recovery')
     finally: os.close(logfd)
 
 
@@ -941,12 +1027,21 @@ def apply_worker(directory, runtime, transaction):
             apply_journal(transaction, journal, state='running', worker=apply_identity(os.getpid()), phase='preflight')
             apply_transaction(directory, runtime, transaction, journal, proxy)
     except Exception as error:
-        apply_journal(transaction, journal, state='rollback_failed_manual_required' if journal.get('destructive') else 'rejected', error=str(error) if isinstance(error, ApplyError) else 'worker_failed')
-    if interrupted: apply_journal(transaction, journal, interrupted_signal=interrupted[0])
+        apply_outcome(transaction, journal, 'rollback_failed_manual_required' if journal.get('destructive') else 'rejected', error=str(error) if isinstance(error, ApplyError) else 'worker_failed')
+    if interrupted: apply_journal_best_effort(transaction, journal, interrupted_signal=interrupted[0])
     return 0
 
 
 def update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None):
+    context = {}
+    try:
+        return _update_apply(directory, runtime, tag, bundle, confirm, proxy_url, context)
+    except Exception as error:
+        report = apply_error_report(error)
+        raise ApplyError(report['error'], context.get('transaction_id')) from None
+
+
+def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None, context=None):
     import signal
     import uuid
     import dots_proxy as proxy
@@ -963,7 +1058,8 @@ def update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy
         root = apply_private(directory / APPLY_DIRECTORY, create=True)
         for entry in root.iterdir():
             if not re.fullmatch('[0-9a-f]{32}', entry.name): raise ApplyError('unexpected_transaction_entry')
-            previous = apply_read_journal(apply_private(entry))
+            apply_private(entry)
+            previous = apply_status(directory, entry.name)
             if previous.get('state') not in ('applied', 'failed_rolled_back', 'rejected'):
                 raise ApplyError('prior_transaction_requires_manual_review')
         if bundle:
@@ -972,11 +1068,12 @@ def update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy
             release = fetch_release(tag, proxy_url)
             deadline = time.monotonic() + 60
             payload = {name: download_release_asset(release, name, proxy_url, deadline) for name in CORE_FILES}
-            payload[MANIFEST] = json.dumps(release['manifest'], sort_keys=True).encode()
+            payload[MANIFEST] = release['manifest_bytes']
         apply_syntax(payload)
         if apply_ts_version(payload) != apply_ts_version(baseline): raise ApplyError('binary_update_unsupported')
         identifier = uuid.uuid4().hex
         transaction = apply_private(root / identifier, create=True)
+        context['transaction_id'] = identifier
         journal = {'schema': 1, 'state': 'prepared', 'boot_id': apply_boot(), 'selection': 'local_bundle' if bundle else tag,
                    'external_ssh': 'pending', 'checksum_trust': 'consistency_only_not_publisher_authentication'}
         apply_journal(transaction, journal, phase='staging')
@@ -989,7 +1086,7 @@ def update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy
             logfd = os.open(str(transaction / 'worker.log'), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             os.close(logfd)
         except Exception:
-            apply_journal(transaction, journal, state='rejected', error='staging_failed')
+            apply_journal_best_effort(transaction, journal, state='rejected', error='staging_failed')
             raise
     log_fd = os.open(str(transaction / 'worker.log'), os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK)
     info = os.fstat(log_fd)
@@ -1002,11 +1099,11 @@ def update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy
     while time.monotonic() < deadline:
         current = apply_read_journal(transaction)
         if current.get('worker') or current.get('state') in APPLY_TERMINAL:
-            return {'state': 'started' if current.get('worker') else current['state'], 'transaction_id': identifier,
+            return {'state': current['state'] if current.get('state') in APPLY_TERMINAL else 'started', 'transaction_id': identifier,
                     'external_ssh': 'pending', 'status_command': 'dots-ts update status --id ' + identifier}
-        if child.poll() is not None: raise ApplyError('worker_exited_inspect_transaction_' + identifier)
+        if child.poll() is not None: raise ApplyError('worker_exited_inspect_transaction')
         time.sleep(.05)
-    raise ApplyError('worker_acknowledgement_timeout_inspect_transaction_' + identifier)
+    raise ApplyError('worker_acknowledgement_timeout_inspect_transaction')
 
 
 def directories():
@@ -1443,8 +1540,8 @@ def main(argv=None):
             try:
                 report = (apply_status(directory, options.id) if options.update_command == 'status' else
                           update_apply(directory, runtime, options.tag, options.bundle, options.confirm_recovery_terminal, options.proxy))
-            except (ApplyError, UpdateError) as error:
-                report = {'error': str(error)}
+            except Exception as error:
+                report = apply_error_report(error)
             print(json.dumps(report, sort_keys=True))
             return int('error' in report or report.get('state') in ('rejected', 'failed_rolled_back', 'rollback_failed_manual_required', 'interrupted_manual_required'))
         if options.command == "update" and options.update_command == "notifications":

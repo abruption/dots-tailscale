@@ -215,6 +215,14 @@ A prior incomplete transaction blocks new updates. After a killed worker or VM r
 
 Transaction records live under `.update-transactions/TRANSACTION_ID/`: `journal.json` records the phase, `stage/` contains the selected bundle, `backup/` contains only the previous source bundle, and `supervisor/` holds the updater code snapshot. Keep these records until you have checked external connectivity. `update status` returns exit 0 for a running or applied transaction and 1 for a rejected, rolled-back, interrupted or manual-recovery result. Exit 0 for a running transaction is not completion.
 
+`applied` means the selected code matches its manifest and local readiness checks passed. It does not test the shim's end-to-end CONNECT/WebSocket path. The restarted shim keeps its upstream host/port and absolute SSL certificate-path settings; unrelated shell environment and debug settings are not inherited. Its stdout/stderr are discarded, so use the transaction's fixed error codes and separate connectivity checks rather than expecting new output in the old `shim.log`.
+
+After an interrupted transaction, a manual recovery can be concluded without deleting evidence:
+
+1. In the independent terminal, positively establish that the worker has exited. An inaccessible PID or an uncertain `status` result is not proof of exit.
+2. Restore a reviewed code bundle if needed, start it and verify its manifest, local readiness and a new external strict-host-key SSH connection. A legacy helper may require a separately reviewed source runner to inspect its manifest.
+3. With the installation's `.operation.lock` held and no active worker, move the entire reviewed transaction directory to an owned, mode-700 `.update-recovery-archive/` directory outside `.update-transactions/`. Preserve the journal and backups together. This manual archive removes it from the pending-update scan; never archive an active or unreviewed transaction just to unblock apply.
+
 <a id="development-helpers"></a>
 
 ## v0.3.1 helpers and optional application proxies

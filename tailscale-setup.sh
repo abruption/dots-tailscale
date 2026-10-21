@@ -423,7 +423,7 @@ case "$state" in
     : > "$D/authenticated"; printf 'running: Tailscale and local SSH ready\n'
     # Opt-in cached notice only. Never let a notice change readiness or stdout.
     if [[ "$MODE" = start && -t 2 ]]; then
-      timeout --kill-after=1s 1s python3 "$D/dots-ts" update notifications notify >/dev/null || true
+      timeout --foreground --kill-after=1s 1s python3 "$D/dots-ts" update notifications notify >/dev/null || true
     fi
     ;;
   NeedsLogin) printf 'needs_auth: run bash %s/setup.sh login\n' "$D"; exit 10;;

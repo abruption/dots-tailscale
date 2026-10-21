@@ -3,6 +3,7 @@ import contextlib
 import hashlib
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -59,6 +61,7 @@ class ApplyTests(unittest.TestCase):
 
     def lifecycle(self, ready=None):
         stack = contextlib.ExitStack(); self.addCleanup(stack.close)
+        stack.enter_context(mock.patch.object(tool, 'apply_interpreter'))
         self.stop = stack.enter_context(mock.patch.object(tool, 'apply_stop'))
         self.launch = stack.enter_context(mock.patch.object(tool, 'apply_launch', side_effect=[mock.Mock(poll=mock.Mock(return_value=None)), mock.Mock(poll=mock.Mock(return_value=None))]))
         self.identify = stack.enter_context(mock.patch.object(tool, 'apply_candidate', side_effect=[self.candidate, self.restored]))
@@ -91,7 +94,7 @@ class ApplyTests(unittest.TestCase):
         self.lifecycle([tool.ApplyError('readiness_timeout'), None]); self.run_transaction()
         self.assertEqual(self.journal['state'], 'failed_rolled_back')
         self.assertEqual(tool.apply_bundle(self.directory, 'installed'), self.old)
-        self.assertEqual(self.stop.call_args_list, [mock.call(self.baseline['shim']), mock.call(self.candidate)])
+        self.stop.assert_called_once_with(self.baseline['shim'])
         self.assert_protected()
 
     def test_rollback_failure_is_never_success(self):
@@ -215,13 +218,14 @@ class ApplyTests(unittest.TestCase):
         selector.__enter__.return_value.register.assert_called_once_with(77, tool.selectors.EVENT_READ)
 
     def test_exited_owned_candidate_skips_uncertain_proc_stop(self):
-        self.lifecycle([tool.ApplyError('candidate_identity_changed'), None])
+        self.lifecycle()
+        self.identify.side_effect = [tool.ApplyError('process_identity_unknown'), self.restored]
         dead = mock.Mock(poll=mock.Mock(return_value=1))
         self.launch.side_effect = [dead, mock.Mock()]
         self.run_transaction()
         self.assertEqual(self.journal['state'], 'failed_rolled_back')
         self.stop.assert_called_once_with(self.baseline['shim'])
-        dead.wait.assert_called_once_with(timeout=2)
+        dead.wait.assert_called_once_with(timeout=8)
 
     def test_real_setup_binary_version_parses(self):
         payload = {'tailscale-setup.sh': (ROOT / 'tailscale-setup.sh').read_bytes()}
@@ -231,15 +235,28 @@ class ApplyTests(unittest.TestCase):
         payload['tailscale-setup.sh'] = b'TS_VERSION="1.102.4\n'
         with self.assertRaises(tool.ApplyError): tool.apply_ts_version(payload)
 
-    def test_candidate_identity_failure_never_launches_duplicate(self):
+    def test_owned_exiting_candidate_unknown_identity_wait_success_rolls_back(self):
+        self.lifecycle()
+        self.identify.side_effect = [tool.ApplyError('process_identity_unknown'), self.restored]
+        live_child = mock.Mock(); live_child.poll.return_value = None
+        self.launch.side_effect = [live_child, mock.Mock()]
+        self.run_transaction()
+        self.assertEqual(self.journal['state'], 'failed_rolled_back')
+        self.assertEqual(self.launch.call_count, 2)
+        live_child.terminate.assert_called_once()
+        live_child.wait.assert_called_once_with(timeout=8)
+        self.stop.assert_called_once_with(self.baseline['shim'])
+
+    def test_owned_child_timeout_never_launches_duplicate(self):
         self.lifecycle()
         self.identify.side_effect = tool.ApplyError('process_identity_unknown')
         live_child = mock.Mock(); live_child.poll.return_value = None
+        live_child.wait.side_effect = subprocess.TimeoutExpired('fixture', 8)
         self.launch.side_effect = [live_child]
         self.run_transaction()
         self.assertEqual(self.journal['state'], 'rollback_failed_manual_required')
         self.launch.assert_called_once()
-        self.stop.assert_called_once_with(self.baseline['shim'])
+
 
     def test_worker_journal_failure_after_destructive_intent_is_manual(self):
         transaction = self.directory / tool.APPLY_DIRECTORY / ('a' * 32)
@@ -257,6 +274,128 @@ class ApplyTests(unittest.TestCase):
              mock.patch.object(signal, 'signal'):
             tool.apply_worker(self.directory, self.root, transaction)
         self.assertEqual(tool.apply_read_journal(transaction)['state'], 'rollback_failed_manual_required')
+
+    def test_all_rollback_journal_failures_do_not_prevent_restoration(self):
+        self.lifecycle([tool.ApplyError('readiness_timeout'), None])
+        original = tool.apply_journal
+        broken = []
+        def journal(folder, record, **changes):
+            if changes.get('phase') == 'rollback_intent': broken.append(True)
+            if broken: raise OSError('PRIVATE disk failure')
+            return original(folder, record, **changes)
+        with mock.patch.object(tool, 'apply_journal', side_effect=journal): self.run_transaction()
+        self.assertEqual(tool.apply_bundle(self.directory, 'installed'), self.old)
+        self.assertEqual(self.launch.call_count, 2)
+        self.assertEqual(self.journal['state'], 'failed_rolled_back')
+        self.assertTrue(self.journal['journal_persistence_failed'])
+        self.assertNotEqual(tool.apply_read_journal(self.transaction)['state'], 'failed_rolled_back')
+        self.assertEqual((self.transaction / 'worker.log').read_text(),
+                         'update_outcome=failed_rolled_back journal_persisted=false\n')
+        self.assert_protected()
+
+    def test_journal_failure_before_mutation_still_relaunches_old_shim(self):
+        self.lifecycle()
+        original = tool.apply_journal
+        def journal(folder, record, **changes):
+            if changes.get('phase') in ('replace_intent', 'rollback_intent'):
+                raise OSError('PRIVATE disk failure')
+            return original(folder, record, **changes)
+        with mock.patch.object(tool, 'apply_journal', side_effect=journal): self.run_transaction()
+        self.assertEqual(self.journal['state'], 'failed_rolled_back')
+        self.launch.assert_called_once()
+        self.assertEqual(tool.apply_bundle(self.directory, 'installed'), self.old)
+
+    def test_nonchild_unknown_second_identity_only_accepts_readable_pidfd(self):
+        for readable in (True, False):
+            with self.subTest(readable=readable):
+                selector = mock.MagicMock()
+                selector.__enter__.return_value.select.return_value = [(mock.Mock(), 1)] if readable else []
+                with mock.patch.object(tool, 'apply_identity', side_effect=[self.baseline['shim'], tool.ApplyError('process_identity_unknown')]), \
+                     mock.patch.object(os, 'pidfd_open', return_value=77, create=True), \
+                     mock.patch.object(signal, 'pidfd_send_signal', create=True) as send, \
+                     mock.patch.object(tool.selectors, 'DefaultSelector', return_value=selector), \
+                     mock.patch.object(os, 'close'):
+                    if readable: tool.apply_stop(self.baseline['shim'])
+                    else:
+                        with self.assertRaises(tool.ApplyError): tool.apply_stop(self.baseline['shim'])
+                    send.assert_not_called()
+
+    def test_interpreter_deleted_or_nonexecutable_refused(self):
+        for executable in ('/python (deleted)', str(self.directory / 'dots-ts')):
+            with self.assertRaisesRegex(tool.ApplyError, 'shim_interpreter_unavailable'):
+                tool.apply_interpreter({'exe': executable})
+        tool.apply_interpreter({'exe': sys.executable})
+
+    def test_ssl_environment_paths_preserved_only_in_memory(self):
+        env = b'UPSTREAM_HOST=fixture\0SSL_CERT_FILE=/certs/bundle.pem\0SSL_CERT_DIR=/certs/ca\0HOME=/private\0TOKEN=secret\0'
+        with mock.patch.object(tool, 'apply_identity', return_value=self.baseline['shim']), \
+             mock.patch.object(Path, 'read_bytes', return_value=env):
+            result = tool.apply_environment(self.baseline['shim'])
+        self.assertEqual(result['SSL_CERT_FILE'], '/certs/bundle.pem')
+        self.assertEqual(result['SSL_CERT_DIR'], '/certs/ca')
+        self.assertNotIn('HOME', result); self.assertNotIn('TOKEN', result)
+
+    def test_apply_public_errors_static_and_transaction_id_retained(self):
+        class ProxyError(RuntimeError): pass
+        proxy = mock.Mock(ProxyError=ProxyError)
+        cases = [(ProxyError('PRIVATE lock'), 'operation_busy_or_unsafe'),
+                 (OSError('PRIVATE filesystem'), 'filesystem_or_process_error'),
+                 (KeyError('PRIVATE manifest'), 'invalid_apply_data')]
+        for error, expected in cases:
+            def failed(*args):
+                args[-1]['transaction_id'] = 'a' * 32
+                raise error
+            with mock.patch.dict(sys.modules, {'dots_proxy': proxy}), \
+                 mock.patch.object(tool, '_update_apply', side_effect=failed):
+                with self.assertRaises(tool.ApplyError) as caught:
+                    tool.update_apply(self.directory, self.root, confirm=True)
+                self.assertEqual(tool.apply_error_report(caught.exception),
+                                 {'error': expected, 'transaction_id': 'a' * 32})
+
+    def test_unpersisted_outcome_marker_prevents_terminal_success_claim(self):
+        root = self.directory / tool.APPLY_DIRECTORY; root.mkdir(mode=0o700)
+        identifier = 'a' * 32; transaction = root / identifier; transaction.mkdir(mode=0o700)
+        tool.apply_journal(transaction, {'schema': 1, 'state': 'applied'})
+        (transaction / 'worker.log').write_text('update_outcome=failed_rolled_back journal_persisted=false\n')
+        result = tool.apply_status(self.directory, identifier)
+        self.assertEqual(result['state'], 'interrupted_manual_required')
+        self.assertEqual(result['observed_outcome'], 'failed_rolled_back')
+        self.assertTrue(result['journal_persistence_failed'])
+
+    def test_public_status_oserror_is_json_without_private_detail(self):
+        output = io.StringIO()
+        with mock.patch.object(tool, 'directories', return_value=(self.directory, self.root)), \
+             mock.patch.object(tool, 'apply_status', side_effect=OSError('PRIVATE path')), \
+             contextlib.redirect_stdout(output):
+            code = tool.main(['update', 'status', '--id', 'a' * 32, '--json'])
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(output.getvalue()), {'error': 'filesystem_or_process_error'})
+
+    def test_terminal_worker_ack_overrides_worker_identity(self):
+        proxy = mock.Mock(); proxy._operation.return_value = contextlib.nullcontext()
+        def spawn(argv, **kwargs):
+            transaction = Path(argv[-1]); record = tool.apply_read_journal(transaction)
+            tool.apply_journal(transaction, record, state='rejected', worker=self.candidate)
+            return mock.Mock()
+        with mock.patch.dict(sys.modules, {'dots_proxy': proxy}), \
+             mock.patch.object(tool.sys, 'platform', 'linux'), \
+             mock.patch.object(tool.os, 'pidfd_open', create=True), \
+             mock.patch.object(signal, 'pidfd_send_signal', create=True), \
+             mock.patch.object(tool, 'apply_bundle', return_value=self.old), \
+             mock.patch.object(tool, 'apply_syntax'), \
+             mock.patch.object(tool, 'apply_boot', return_value='boot'), \
+             mock.patch.object(subprocess, 'Popen', side_effect=spawn):
+            result = tool.update_apply(self.directory, self.root, bundle=self.transaction / 'stage', confirm=True)
+        self.assertEqual(result['state'], 'rejected')
+        self.assertEqual(result['external_ssh'], 'pending')
+
+    def test_real_owned_child_cleanup_during_immediate_exit(self):
+        child = subprocess.Popen([sys.executable, '-c', 'raise SystemExit(1)'])
+        try:
+            tool.apply_stop_child(child, timeout=2)
+            self.assertIsNotNone(child.returncode)
+        finally:
+            if child.poll() is None: child.terminate(); child.wait(timeout=2)
 
     def test_malformed_journal_is_structured_error(self):
         for payload in ({'schema': 1, 'state': []}, {'schema': 1, 'state': 'running', 'worker': []},
@@ -298,6 +437,20 @@ class ApplyTests(unittest.TestCase):
         with mock.patch.object(tool, 'apply_identity', return_value=None):
             with self.assertRaisesRegex(tool.ApplyError, 'candidate_identity_changed'):
                 tool.apply_ready(self.directory, self.root, self.proxy, self.baseline, self.candidate, 'same', {}, b'public-key', timeout=1)
+
+    def test_expired_readiness_cannot_report_success(self):
+        identities = {item['pid']: item for item in list(self.baseline.values()) + [self.candidate]}
+        def slow_backend(*args):
+            time.sleep(.02)
+            return 'same'
+        self.proxy.inspect_config.return_value = {}
+        self.proxy._listener_owned.return_value = True
+        with mock.patch.object(tool, 'apply_identity', side_effect=lambda pid: identities[pid]), \
+             mock.patch.object(tool, 'apply_public_identity', side_effect=slow_backend), \
+             mock.patch.object(tool.socket, 'create_connection') as connect:
+            with self.assertRaisesRegex(tool.ApplyError, 'readiness_timeout'):
+                tool.apply_ready(self.directory, self.root, self.proxy, self.baseline, self.candidate, 'same', {}, b'public-key', timeout=.01)
+            connect.assert_not_called()
 
     @unittest.skipUnless(sys.platform == 'linux' and hasattr(os, 'pidfd_open'), 'Linux pidfd integration')
     def test_real_owned_child_sigterm_and_identity(self):

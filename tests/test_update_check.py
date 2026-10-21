@@ -65,6 +65,17 @@ class UpdateCheckTests(unittest.TestCase):
         self.assertEqual(fetch.call_args_list[0].args[0], tool.UPDATE_API + "/tags/v0.4.0")
         self.assertEqual(set(result["assets"]), set(tool.CORE_FILES) | {tool.MANIFEST})
 
+    def test_original_manifest_bytes_preserved_and_https_proxy_refused(self):
+        metadata, raw = release_fixture()
+        original = b"\n  " + raw + b"\n"
+        for asset in metadata["assets"]:
+            if asset["name"] == tool.MANIFEST:
+                asset["size"] = len(original)
+        result, _ = self.fetch(metadata=metadata, raw_manifest=original)
+        self.assertEqual(result["manifest_bytes"], original)
+        with self.assertRaisesRegex(tool.UpdateError, "invalid_proxy"):
+            tool.validate_proxy("https://proxy.example:8889")
+
     def test_draft_prerelease_and_wrong_repo_tag_rejected(self):
         original, _ = release_fixture()
         for key, value in (("draft", True), ("prerelease", True), ("draft", 0),
