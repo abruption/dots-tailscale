@@ -223,6 +223,8 @@ After an interrupted transaction, a manual recovery can be concluded without del
 2. Restore a reviewed code bundle if needed, start it and verify its manifest, local readiness and a new external strict-host-key SSH connection. A legacy helper may require a separately reviewed source runner to inspect its manifest.
 3. With the installation's `.operation.lock` held and no active worker, move the entire reviewed transaction directory to an owned, mode-700 `.update-recovery-archive/` directory outside `.update-transactions/`. Preserve the journal and backups together. This manual archive removes it from the pending-update scan; never archive an active or unreviewed transaction just to unblock apply.
 
+The reviewed development candidate was tested in Dots on 2026-10-21. See the [dated update validation report](validation/v0.4.0-update-trial.md) for normal apply, intentional failure/rollback, external SSH evidence and limits.
+
 <a id="development-helpers"></a>
 
 ## v0.3.1 helpers and optional application proxies

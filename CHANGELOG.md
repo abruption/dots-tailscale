@@ -11,7 +11,7 @@
 
 - Add detached manual updates from fixed releases or explicitly reviewed local bundles, with code-only backups, a persistent transaction journal and bounded shim rollback (#30).
 
-This development work is undergoing validation; live deployment evidence will be recorded separately.
+The reviewed `0.4.0-dev` candidate passed normal update, intentional startup-failure rollback, checksum-refusal and fresh external SSH/ping checks in Dots. See the [dated validation report](docs/validation/v0.4.0-update-trial.md) for the independent review, CI evidence and limits. This is not a published v0.4.0 release.
 
 ## v0.3.1 — 2026-10-19
 

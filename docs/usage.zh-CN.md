@@ -223,6 +223,8 @@ JSON 将 `package.declared_version`、`package.source_revision`、`package.integ
 2. 必要时恢复经过审核的代码包并启动，验证清单、本地就绪状态以及一次新的外部严格主机密钥 SSH 连接。旧版工具可能需要单独审核的源码运行器来检查清单。
 3. 确认没有活动 worker，并持有安装目录的 `.operation.lock` 后，将整个已审核的事务目录移动到 `.update-transactions/` 之外、属于当前用户且权限为 700 的 `.update-recovery-archive/`。日志和备份应一并保留。归档后，该事务不再阻止新更新；不要为了绕过限制而归档仍在运行或未经审核的事务。
 
+已于 2026-10-21 在 Dots 中测试经过审核的开发候选版本。正常应用、故意启动失败后的回滚、外部 SSH 验证及其范围，请参阅[更新验证记录](validation/v0.4.0-update-trial.md)。
+
 <a id="development-helpers"></a>
 
 ## v0.3.1 辅助工具与可选应用代理
