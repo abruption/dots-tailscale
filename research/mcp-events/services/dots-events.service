@@ -1,0 +1,16 @@
+# User service: install in ~/.config/systemd/user after replacing all placeholders.
+# Confirm loginctl show-user USER -p Linger; lingering may require root approval.
+[Unit]
+Description=Dots MCP recovery event experiment
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+WorkingDirectory=/ABSOLUTE/APP
+ExecStart=/ABSOLUTE/APP/.venv/bin/python /ABSOLUTE/APP/server.py serve --config /ABSOLUTE/PRIVATE/config.json
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=yes
+[Install]
+WantedBy=default.target
