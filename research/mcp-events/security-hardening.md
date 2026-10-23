@@ -1,0 +1,53 @@
+# MCP recovery broker security hardening
+
+This describes the implementation deployed to the research broker on 2026-10-23. Local checks and a successful deployment do not establish complete security or prove unattended recovery across a VM replacement.
+
+## Process and authentication boundaries
+
+The system service runs as a dedicated `dots-events` account with a non-login shell. Application code and its offline-installed Python environment are root-owned under `/opt/dots-events-research`; writable broker state is confined to `/var/lib/dots-events`. The unit restricts home access, privileges, devices, writable filesystem paths, and resource use: memory high/max 128/256 MiB, CPU quota 50%, and 64 tasks.
+
+Caddy connects through a systemd-owned Unix socket accessible to the service account and Caddy group. The server verifies that inherited descriptor 3 is a listening Unix stream socket and refuses inconsistent configuration. There is no fallback to a TCP listener in this mode. Legacy loopback mode remains available for existing fixtures/configurations and trusts local processes; it does not provide the same account boundary.
+
+Caddy removes client-supplied identity headers. Both `/authorize` and `/oauth/consent` require the configured Authelia identity. The application checks that identity and trusted transport before allocating an authorization ticket. Anonymous requests therefore cannot fill the pending-ticket pool. PKCE, exact redirect/resource checks, short-lived access tokens, refresh rotation, and scope restrictions remain in effect. Token and revocation endpoints remain available to OAuth clients without an interactive SSO redirect.
+
+## Request and callback limits
+
+The OAuth routes share a bounded admission counter of eight active requests, returning 429 when full. Token/revocation uploads have a 16 KiB limit and a five-second total read deadline; consent uses 4 KiB and the same deadline. Authenticated MCP POST uploads have a 64 KiB limit and a ten-second total read deadline. MCP authentication runs before body consumption. The upload deadline does not terminate an ongoing response or SSE stream. Monitor ingestion retains its separate authentication, 8 KiB body limit, and five-second deadline.
+
+Uvicorn limits concurrent connections/tasks to 64, backlog to 128, idle keepalive to five seconds, and graceful shutdown to ten seconds. These controls bound resource consumption; they are not a complete distributed denial-of-service defense or a per-client request-rate policy.
+
+Callback work uses spawned child processes, two admission slots, a 20-second wall deadline, and bounded responses. Child cleanup can take additional time. Callback destination validation and TLS verification remain required. A timed-out callback may already have reached its destination; timeout alone must not be interpreted as proof of non-delivery or permission to repeat a recovery command.
+
+## Reviewed deployment and preserved state
+
+`security_bootstrap.py` defaults to a read-only plan. Applying requires root and a SHA-256-pinned manifest containing only reviewed code, unit files, dependency locks, and offline wheels. It rejects unexpected paths, symlinks, unsafe ownership/modes, excessive file sizes, and mismatched hashes, then freezes the verified bytes into root-owned staging. Secrets, runtime configuration, and broker databases are excluded from this payload.
+
+The bootstrap itself must first be loaded from trusted root-owned code or verified in memory by an independently pinned privileged launcher. Running a user-writable script directly through sudo does not establish that trust. Hashes establish agreement with the reviewed payload, not independent publisher identity.
+
+The core helper validates the existing operator and public host, refuses existing migration targets, validates Caddy/Authelia candidates, and defers cutover while an incident is active. It installs dependencies from the reviewed wheelhouse with hash verification and no package-index access. OAuth, event, and recovery databases are copied using SQLite snapshots rather than reset. This preserves grants, subscriptions, incident/claim records, and retry history. The issuer remains unchanged. A short service interruption and an Authelia restart are part of cutover.
+
+After switching, the helper checks access through Caddy's socket identity, rejects access from the old operator, records ledger counts, and disables the previous user service. It retains the old runtime as root-private evidence. The final apply is an explicit operator sudo action using the prepared, pinned launcher; success must be followed by service, authentication, ingestion, subscription, and ledger checks.
+
+## IPv6 guard and rollback
+
+Before changing host rules, the bootstrap tests IPv6 apply, repeated apply, and removal inside a fresh network namespace. The host guard owns one named INPUT chain and inserts one jump. It preserves existing controls through RETURN rules for required traffic, including loopback, established connections, Tailscale, SSH, ICMPv6, DHCPv6, and Cloudflare web ingress. Remaining traffic reaches a DROP. RETURN does not override later restrictions in existing chains.
+
+The helper refuses unexpected rules or references. It accepts the guard first, or one preceding `ts-input` jump only when every rule in that chain is an explicitly recognized ACCEPT subset of guard exemptions: IPv6 host-address loopback, `tailscale0`, or UDP 41641. Unknown preceding rules still fail closed. It never flushes the host ruleset. Cloudflare prefixes are a dated snapshot and need maintenance when the upstream ranges change. An existing IPv6 unit must match the reviewed contents. A later firewall-manager reload may remove or unexpectedly reorder the guard; use the read-only `--check` and operational monitoring rather than assuming that an active oneshot unit proves current rules are intact.
+
+Core migration failures attempt to restore previous routing and services. If the new broker has started, rollback snapshots its latest ledgers before returning them to the previous runtime, preserving newly recorded claims and token changes. An uncertain or failed rollback requires inspection of the root-private record; do not rerun a one-time migration blindly or restore an older database over newer claims.
+
+If MCP isolation succeeds but IPv6 installation fails, the bootstrap reports partial success and retains the successful MCP migration. Inspect the recorded failure before retrying. For deliberate IPv6 removal, disable the owned guard unit and run the reviewed helper with `--remove`; the helper validates ownership of the exact chain and references first. Stopping the unit alone intentionally does not remove filtering. No broad firewall flush is part of this procedure.
+
+## Deployment observations — 2026-10-23
+
+The Linux Python 3.12 validation ran 155 tests successfully. The privileged deployment reported MCP isolation and IPv6 guard installation successful. A separate namespace exercise verified IPv6 apply, idempotent reapply, and removal before host application.
+
+Post-deployment checks found the system broker, socket, guard unit, Caddy, and Authelia active. The broker runs as `dots-events`, with `ProtectHome=yes`, `ProtectSystem=strict`, `NoNewPrivileges=yes`, and a 256 MiB memory ceiling; observed memory was about 48 MiB. The old user unit is disabled. The previous operator receives `PermissionError` when connecting to the Unix socket. External health returned 200, anonymous/invalid-token MCP requests returned 401, anonymous authorization returned 401, and a hidden-file probe returned 404. HSTS was present. A new scheduled monitoring observation was acknowledged after cutover, with `subscription_active=true` and zero consecutive transport failures; this confirms the existing ingestion credential and subscription survived the switch, without claiming a new end-to-end recovery incident.
+
+An initial attempt stopped before creating the new application/runtime. Review found a missing `/usr/local/bin` Authelia discovery path and an application-directory mode that would have been reduced by the private deployment umask. Both were corrected and covered by regression tests before the successful retry. These deployment failures do not represent a demonstrated remote exploit.
+
+The active guard unit and successful installation are a deployment snapshot, not continuous proof of rule order or a completed public IPv6 ingress test. Recovery after a new VM and long-term token renewal remain separate research questions.
+
+### Reboot follow-up
+
+A controlled research-server reboot on 2026-10-23 restored the broker, proxy, authentication service, and monitoring ingestion with the existing subscription active. Inspection found Tailscale's INPUT jump preceding the unchanged guard. Its three rules accepted only the exempt traffic listed above, so ordinary external web traffic still reached the guard. The original first-position-only check reported this as an error. The corrected validator recognizes only this restricted safe prefix and rejects broader or unknown rules. Regression coverage was added; 156 local tests completed with one Linux-only skip. The helper-only correction requires privileged installation; it does not rewrite firewall rules or require another reboot.
