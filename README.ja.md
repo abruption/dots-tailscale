@@ -1,5 +1,7 @@
 <h1 align="center">dots-tailscale</h1>
 
+<p align="center"><a href="https://github.com/abruption/dots-tailscale/stargazers"><img src="https://img.shields.io/github/stars/abruption/dots-tailscale?style=flat&logo=github" alt="GitHub Stars"></a></p>
+
 <p align="center"><a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · 日本語</p>
 
 Dots のクラウドコンピューターで、ユーザー権限の OpenSSH とともに Tailscale を実行します。インストールファイル、ノードの状態、SSH の ID 情報は `/workspace` に保存し、実行時のソケット、PID、ログは `/tmp` に作成し直します。
