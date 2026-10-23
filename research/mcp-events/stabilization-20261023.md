@@ -29,7 +29,9 @@ does not yet establish unattended recovery after an arbitrary VM replacement.
 
 ## Validation
 
-- Local Mac and deployed Linux: **113 offline tests passed**. These include
+- Initial Mac/Linux deployment: **113 offline tests passed**. The current
+  suite adds an inherited-writer/worker-exit regression (**114 tests**), so a
+  crashed worker is detected without waiting for a pipe held by another child. These include
   observation/MCP credential separation, owner/scope checks, duplicate and stale
   inputs, bounded callback work, durable preflight reports, hanging DNS and
   process cleanup, and alert grace/cooldown without contacting Telegram.

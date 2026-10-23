@@ -7,6 +7,7 @@ The child returns bounded JSON bytes, never pickled network objects or errors.
 from dataclasses import dataclass
 import json
 import multiprocessing
+from multiprocessing.connection import wait
 import time
 
 MAX_RESULT_BYTES = 8192
@@ -48,8 +49,11 @@ def bounded_call(operation, timeout=20):
             return BoundedResult('failed')
         sender.close()
         remaining = max(0, timeout-(time.monotonic()-started))
-        if not receiver.poll(remaining):
+        ready = wait([receiver, process.sentinel], timeout=remaining)
+        if not ready:
             return BoundedResult('timeout')
+        if receiver not in ready and not receiver.poll(0):
+            return BoundedResult('failed')
         try:
             raw = receiver.recv_bytes(MAX_RESULT_BYTES)
             value = json.loads(raw)

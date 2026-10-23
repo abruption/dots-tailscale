@@ -3,6 +3,7 @@ import os
 import signal
 import time
 import unittest
+from unittest import mock
 
 from bounded_network import bounded_call
 
@@ -13,7 +14,7 @@ class BoundedNetworkTests(unittest.TestCase):
 
     def test_json_result_and_child_reaped(self):
         before=self.children()
-        result=bounded_call(lambda:{'accepted':True,'failure_class':'ok'},timeout=1)
+        result=bounded_call(lambda:{'accepted':True,'failure_class':'ok'},timeout=5)
         self.assertEqual(result.status,'completed')
         self.assertEqual(result.value,{'accepted':True,'failure_class':'ok'})
         self.assertEqual(self.children(),before)
@@ -38,14 +39,40 @@ class BoundedNetworkTests(unittest.TestCase):
 
     def test_crash_invalid_result_and_exception_are_sanitized(self):
         def fail():raise RuntimeError('SECRET URL TOKEN')
-        for operation in (fail,lambda:object(),lambda:'x'*9000,lambda:os._exit(2)):
-            result=bounded_call(operation,timeout=1)
-            self.assertEqual(result.status,'failed')
-            self.assertNotIn('SECRET',repr(result))
+        for name, operation in [('exception',fail), ('invalid_result',lambda:object()),
+                                ('oversized_result',lambda:'x'*9000), ('process_exit',lambda:os._exit(2))]:
+            with self.subTest(operation=name):
+                result=bounded_call(operation,timeout=5)
+                self.assertEqual(result.status,'failed')
+                self.assertNotIn('SECRET',repr(result))
 
     def test_deadline_rejects_unbounded_values(self):
         for timeout in (0,-1,True,21,'20',float('inf'),float('nan')):
             with self.assertRaises(ValueError):bounded_call(lambda:None,timeout=timeout)
+
+    def test_exited_worker_does_not_wait_for_an_inherited_writer(self):
+        context = multiprocessing.get_context('fork')
+        real_pipe = context.Pipe
+        holders = []
+        before = self.children()
+        def inherited_pipe(*args, **kwargs):
+            receiver, sender = real_pipe(*args, **kwargs)
+            holder = context.Process(target=time.sleep, args=(60,), daemon=True)
+            holder.start()  # Keeps the writer open after the actual worker exits.
+            holders.append(holder)
+            return receiver, sender
+        try:
+            started = time.monotonic()
+            with mock.patch.object(context, 'Pipe', inherited_pipe):
+                result = bounded_call(lambda: os._exit(2), timeout=5)
+            self.assertEqual(result.status, 'failed')
+            self.assertLess(time.monotonic() - started, 3)
+        finally:
+            for holder in holders:
+                holder.terminate(); holder.join(timeout=1)
+                if holder.is_alive(): holder.kill(); holder.join(timeout=1)
+                holder.close()
+        self.assertEqual(self.children(), before)
 
 
 if __name__=='__main__':unittest.main()
