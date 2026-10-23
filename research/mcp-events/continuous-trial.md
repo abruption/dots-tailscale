@@ -64,7 +64,9 @@ report without fabricating a claim.
 ## Limits
 
 - One claim per incident; no repeat after an unknown result.
-- At least one hour between claims and at most three claims per rolling 24 hours.
+- Defaults: at least one hour between claims and at most three claims per rolling 24 hours. Operators can configure `recovery_max_claims_per_24h` (strict integer 1–24) and `recovery_cooldown_seconds` (300–86400). The current improvement prepares an explicit 12-per-24-hour, 3600-second trial policy; applying it requires the privileged deployment step, not a prompt change.
+- Status includes `eligibility_reason`, `retry_at`, and `policy`. `retry_at` is the earliest time-only restriction expiry, not authorization: a fresh observation and new accepted claim are still required. Server policy denial is not a local preflight report reason.
+- A recorded policy-blocked → freshly eligible transition creates a distinct reminder event for the same incident (maximum three such reminders per incident). Original events, delivery attempts, claims, and outcomes remain intact. Already-claimed or closed incidents cannot emit these reminders. Delayed processing remains possible.
 - Monitoring data must be no older than 150 seconds; gaps reset the failure streak.
 - Only explicit transport failures trigger this trial. A reachable node with a
   separate SSH failure is not automatically restarted by this external policy.
@@ -150,3 +152,9 @@ investigating an interrupted attempt, rather than clearing them to force retry.
 OAuth tokens, callback URLs/secrets and live configuration stay outside the
 checkout in private runtime directories. Public evidence contains only
 sanitized status and timestamps.
+
+## Rolling-limit improvement — 2026-10-24
+
+A reported fourth outage could not be claimed under the original three-claims-per-day policy. Successful attempts also consume that budget. The operator approved an improvement; the default remains unchanged while this deployment explicitly sets the trial to 12 claims per rolling day and preserves the one-hour interval and one claim per incident.
+
+`policy_deployment.py` must run from verified root-owned staging. It seeds an existing pending incident's policy-blocked marker using the **old** configuration before changing the limit, without invoking a callback or claim. It preserves every database, installs the reviewed server/core, and changes only the runtime policy fields. Rollback restores code/configuration without overwriting ledger updates. The edited Dots task instructions were saved through the browser; they now defer to server policy and do not treat a reminder or `retry_at` as permission to execute.
