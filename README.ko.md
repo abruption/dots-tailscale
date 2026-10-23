@@ -1,5 +1,7 @@
 <h1 align="center">dots-tailscale</h1>
 
+<p align="center"><a href="https://github.com/abruption/dots-tailscale/stargazers"><img src="https://img.shields.io/github/stars/abruption/dots-tailscale?style=flat&logo=github" alt="GitHub Stars"></a></p>
+
 <p align="center"><a href="README.md">English</a> · 한국어 · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a></p>
 
 Dots 클라우드 컴퓨터에서 일반 사용자 권한으로 Tailscale과 OpenSSH를 실행합니다. 설치 파일, Tailscale 상태, SSH 키는 `/workspace`에 보관하고 실행 중 필요한 소켓·PID·로그는 `/tmp`에 둡니다.

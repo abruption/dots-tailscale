@@ -1,5 +1,7 @@
 <h1 align="center">dots-tailscale</h1>
 
+<p align="center"><a href="https://github.com/abruption/dots-tailscale/stargazers"><img src="https://img.shields.io/github/stars/abruption/dots-tailscale?style=flat&logo=github" alt="GitHub Stars"></a></p>
+
 <p align="center"><a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · 简体中文 · <a href="README.ja.md">日本語</a></p>
 
 在 Dots 云电脑上以普通用户权限运行 Tailscale 和 OpenSSH。安装文件、节点状态和 SSH 身份保存在 `/workspace`；运行时套接字、PID 和日志会在 `/tmp` 中重新创建。
