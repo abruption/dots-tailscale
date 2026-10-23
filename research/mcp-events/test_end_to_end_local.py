@@ -38,7 +38,7 @@ class LocalEndToEnd(unittest.TestCase):
                 challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
                 authorization = client.get('/authorize?'+urlencode(dict(client_id='test-client', response_type='code',
                     redirect_uri=redirect, resource=origin+'/mcp', scope='events:observe',
-                    state='test-state', code_challenge=challenge, code_challenge_method='S256')))
+                    state='test-state', code_challenge=challenge, code_challenge_method='S256')), headers={'Remote-User': 'alice'})
                 self.assertIn(authorization.status_code, (302, 303), authorization.text)
                 consent_url = authorization.headers['location']
                 denied = client.get(consent_url)

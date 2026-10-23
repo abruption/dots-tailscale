@@ -1,11 +1,13 @@
-"""Research OAuth adapter; Caddy must authenticate ONLY /oauth/consent.
+"""Research OAuth adapter; Caddy must authenticate /authorize and /oauth/consent.
 
-Bind the enclosing server to loopback with proxy_headers=False. Caddy must
-remove client-supplied Remote-* headers before copying Authelia's Remote-User.
-Local processes are inside this trust boundary. There is no development bypass.
+Bind the enclosing server to a protected Unix socket (or legacy loopback) with
+proxy_headers=False. Caddy must remove client-supplied Remote-* headers before
+copying Authelia's Remote-User. Socket access is the Unix trust boundary; all local
+processes are trusted in legacy loopback mode. There is no development bypass.
 """
 
 from contextlib import contextmanager
+import asyncio
 import hashlib
 import html
 import json
@@ -25,12 +27,16 @@ from mcp.server.auth.routes import create_auth_routes
 from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyHttpUrl
+from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Route
 
 SCOPE = "events:observe"
 RECOVERY_SCOPE = "recovery:execute"
 MAX_PENDING_TICKETS = 64
+AUTH_INFLIGHT_LIMIT = 8
+BODY_TIMEOUT_SECONDS = 5
+AUTH_BODY_LIMIT = 16384
 COOKIE = "__Host-dots-mcp-consent"
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy": "no-referrer"}
 
@@ -55,7 +61,11 @@ class RegisteredClient(OAuthClientInformationFull):
 
 class OAuthAdapter(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshToken, AccessToken]):
     def __init__(self, db_path, issuer, resource, allowed_user, client_id, redirect_uri,
-                 enable_recovery=False, refresh_lifetime_seconds=86400):
+                 enable_recovery=False, refresh_lifetime_seconds=86400, trusted_proxy_transport="loopback"):
+        if trusted_proxy_transport not in ("loopback", "unix"):
+            raise ValueError("trusted_proxy_transport must be loopback or unix")
+        self.trusted_proxy_transport = trusted_proxy_transport
+        self._auth_inflight = 0
         if type(enable_recovery) is not bool or type(refresh_lifetime_seconds) is not int:
             raise ValueError("recovery flag must be boolean and lifetime an integer")
         self.allowed_scopes = [SCOPE] + ([RECOVERY_SCOPE] if enable_recovery else [])
@@ -156,7 +166,9 @@ class OAuthAdapter(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshTo
     def trusted_identity(self, request):
         users = request.headers.getlist("remote-user")
         return (
-            request.client is not None and request.client.host in ("127.0.0.1", "::1")
+            ((self.trusted_proxy_transport == "loopback" and request.client is not None
+              and request.client.host in ("127.0.0.1", "::1"))
+             or (self.trusted_proxy_transport == "unix" and request.client is None))
             and request.headers.get("host") == self.host
             and len(users) == 1 and secrets.compare_digest(users[0].encode(), self.allowed_user.encode())
         )
@@ -197,10 +209,14 @@ class OAuthAdapter(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshTo
         if request.headers.get("content-type", "").split(";")[0] != "application/x-www-form-urlencoded":
             return JSONResponse({"error": "invalid_request"}, status_code=400, headers=NO_STORE)
         body = bytearray()
-        async for chunk in request.stream():
-            body.extend(chunk)
-            if len(body) > 4096:
-                return JSONResponse({"error": "invalid_request"}, status_code=413, headers=NO_STORE)
+        try:
+            async with asyncio.timeout(BODY_TIMEOUT_SECONDS):
+                async for chunk in request.stream():
+                    if len(body) + len(chunk) > 4096:
+                        return JSONResponse({"error": "invalid_request"}, status_code=413, headers=NO_STORE)
+                    body.extend(chunk)
+        except TimeoutError:
+            return JSONResponse({"error": "request_timeout"}, status_code=408, headers=NO_STORE)
         try:
             pairs = parse_qsl(body.decode("utf-8"), max_num_fields=4, strict_parsing=True)
         except (ValueError, UnicodeError):
@@ -307,16 +323,22 @@ class OAuthAdapter(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshTo
             async def wrapped(scope, receive, send, original=original, path=path):
                 if path in ("/token", "/revoke") and scope["method"] == "POST":
                     chunks = bytearray()
-                    while True:
-                        message = await receive()
-                        if message["type"] != "http.request":
-                            return
-                        chunks.extend(message.get("body", b""))
-                        if len(chunks) > 16384:
-                            await JSONResponse({"error": "invalid_request"}, status_code=413, headers=NO_STORE)(scope, receive, send)
-                            return
-                        if not message.get("more_body"):
-                            break
+                    try:
+                        async with asyncio.timeout(BODY_TIMEOUT_SECONDS):
+                            while True:
+                                message = await receive()
+                                if message["type"] != "http.request":
+                                    return
+                                chunk = message.get("body", b"")
+                                if len(chunks) + len(chunk) > AUTH_BODY_LIMIT:
+                                    await JSONResponse({"error": "invalid_request"}, status_code=413, headers=NO_STORE)(scope, receive, send)
+                                    return
+                                chunks.extend(chunk)
+                                if not message.get("more_body"):
+                                    break
+                    except TimeoutError:
+                        await JSONResponse({"error": "request_timeout"}, status_code=408, headers=NO_STORE)(scope, receive, send)
+                        return
                     try:
                         pairs = parse_qsl(chunks.decode("utf-8"), max_num_fields=20)
                         params = dict(pairs)
@@ -358,4 +380,23 @@ class OAuthAdapter(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshTo
                 else:
                     await original(scope, receive, send)
             route.app = wrapped
-        return routes + [Route("/oauth/consent", self.consent, methods=["GET", "POST"])]
+        routes.append(Route("/oauth/consent", self.consent, methods=["GET", "POST"]))
+        for route in routes:
+            original, path = route.app, route.path
+            async def admitted(scope, receive, send, original=original, path=path):
+                if path == "/authorize" and not self.trusted_identity(Request(scope)):
+                    await JSONResponse({"error": "access_denied"}, status_code=403, headers=NO_STORE)(scope, receive, send)
+                    return
+                # One bounded counter for all OAuth routes. No attacker-controlled
+                # keys and no waiting queue. ASGI admission has no await before increment.
+                if self._auth_inflight >= AUTH_INFLIGHT_LIMIT:
+                    await JSONResponse({"error": "temporarily_unavailable"}, status_code=429,
+                                       headers={**NO_STORE, "Retry-After": "5"})(scope, receive, send)
+                    return
+                self._auth_inflight += 1
+                try:
+                    await original(scope, receive, send)
+                finally:
+                    self._auth_inflight -= 1
+            route.app = admitted
+        return routes

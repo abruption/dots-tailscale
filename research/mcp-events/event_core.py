@@ -66,6 +66,12 @@ class PublicHTTPS:
     No proxy environment variables, redirects, retries, or credential forwarding.
     """
     def __call__(self, url, body, headers):
+        from callback_transport import bounded_request
+        _, url = callback(url)
+        return bounded_request(url, body, headers)
+
+    def _direct(self, url, body, headers):
+        """Child-only network transport; also used by offline SSRF tests."""
         _, url = callback(url)
         p = urlsplit(url)
         addresses = socket.getaddrinfo(p.hostname, 443, type=socket.SOCK_STREAM)

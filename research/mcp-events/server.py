@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -47,6 +48,45 @@ def principal():
     if token is None or not token.subject:
         raise MCPError(-32012, 'Forbidden')
     return token.subject
+
+
+MCP_BODY_TIMEOUT_SECONDS = 10
+MCP_BODY_LIMIT = 65536
+
+
+class MCPBodyGuard:
+    """Bound only authenticated POST upload time, never an SSE response."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http' or scope['method'] != 'POST':
+            return await self.app(scope, receive, send)
+        body = bytearray()
+        try:
+            async with asyncio.timeout(MCP_BODY_TIMEOUT_SECONDS):
+                while True:
+                    message = await receive()
+                    if message['type'] != 'http.request':
+                        return
+                    chunk = message.get('body', b'')
+                    if len(body) + len(chunk) > MCP_BODY_LIMIT:
+                        await JSONResponse({'error': 'request_too_large'}, status_code=413)(scope, receive, send)
+                        return
+                    body.extend(chunk)
+                    if not message.get('more_body', False):
+                        break
+        except TimeoutError:
+            await JSONResponse({'error': 'request_timeout'}, status_code=408)(scope, receive, send)
+            return
+        pending = True
+        async def replay():
+            nonlocal pending
+            if pending:
+                pending = False
+                return {'type': 'http.request', 'body': bytes(body), 'more_body': False}
+            return await receive()
+        await self.app(scope, replay, send)
 
 
 def create_app(core, provider, origin, recovery=None, monitor_token_sha256=None):
@@ -197,6 +237,14 @@ def create_app(core, provider, origin, recovery=None, monitor_token_sha256=None)
         token_verifier=ProviderTokenVerifier(provider), custom_starlette_routes=routes,
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True,
                             allowed_hosts=[host], allowed_origins=[origin]), debug=False)
+    # Keep authorization ahead of body consumption. Refuse startup if the
+    # pinned SDK changes this boundary rather than silently moving it outside.
+    from mcp.server.auth.middleware.bearer_auth import RequireAuthMiddleware
+    mcp_routes = [r for r in app.router.routes if getattr(r, 'path', None) == '/mcp']
+    if len(mcp_routes) != 1 or not isinstance(mcp_routes[0].app, RequireAuthMiddleware):
+        raise RuntimeError('MCP authentication boundary changed; review body guard placement')
+    auth_boundary = mcp_routes[0].app
+    auth_boundary.app = MCPBodyGuard(auth_boundary.app)
     from monitor_ingest import MonitorIngestMiddleware
     app.add_middleware(MonitorIngestMiddleware, recovery=recovery, token_sha256=monitor_token_sha256)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[urlsplit(origin).hostname])
@@ -226,9 +274,28 @@ def load_components(config_path):
         raise ValueError('origin must be canonical HTTPS origin')
     provider = OAuthAdapter(root/'oauth.sqlite', origin, origin+'/mcp', cfg['allowed_user'], cfg['client_id'], cfg['redirect_uri'],
                             enable_recovery=bool(cfg.get('enable_recovery', False)),
-                            refresh_lifetime_seconds=cfg.get('refresh_lifetime_seconds', 86400))
+                            refresh_lifetime_seconds=cfg.get('refresh_lifetime_seconds', 86400),
+                            trusted_proxy_transport=cfg.get('trusted_proxy_transport', 'loopback'))
     core = EventCore(root/'events.sqlite', cfg['allowed_callback_origins'])
     return cfg, core, provider
+
+
+def listener_options(cfg):
+    """Fail closed when a protected systemd Unix socket is required."""
+    transport = cfg.get('trusted_proxy_transport', 'loopback')
+    if transport == 'unix':
+        if type(cfg.get('listen_fd')) is not int or cfg['listen_fd'] != 3:
+            raise ValueError('Unix transport requires listen_fd=3')
+        # Duplicate only for inspection; Uvicorn owns the inherited original.
+        with socket.socket(fileno=os.dup(3)) as listener:
+            if (listener.family != socket.AF_UNIX or
+                    listener.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_STREAM or
+                    not listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)):
+                raise ValueError('listen_fd must be a listening AF_UNIX stream socket')
+        return {'fd': 3}
+    if transport != 'loopback' or 'listen_fd' in cfg:
+        raise ValueError('inconsistent trusted proxy transport/listener configuration')
+    return {'host': '127.0.0.1', 'port': cfg.get('port', 18743)}
 
 
 def main():
@@ -245,8 +312,9 @@ def main():
         recovery = RecoveryCore(Path(cfg['runtime_dir'])/'recovery.sqlite', cfg['allowed_callback_origins'], cfg['allowed_user'])
     if args.command == 'serve':
         import uvicorn
-        uvicorn.run(create_app(core, provider, cfg['origin'], recovery, cfg.get('monitor_token_sha256')), host='127.0.0.1', port=cfg.get('port', 18743),
-                    proxy_headers=False, access_log=False, log_level='warning')
+        uvicorn.run(create_app(core, provider, cfg['origin'], recovery, cfg.get('monitor_token_sha256')),
+                    **listener_options(cfg), proxy_headers=False, access_log=False, log_level='warning',
+                    limit_concurrency=64, backlog=128, timeout_keep_alive=5, timeout_graceful_shutdown=10)
     elif args.command == 'emit-probe':
         if not args.request_id:
             p.error('--request-id is required for emit-probe')

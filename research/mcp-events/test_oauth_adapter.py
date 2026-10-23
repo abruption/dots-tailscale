@@ -42,7 +42,8 @@ class OAuthTests(unittest.TestCase):
                   "scope": "events:observe", "code_challenge": CHALLENGE, "code_challenge_method": "S256",
                   "resource": ISSUER + "/mcp", "state": "fixture-state"}
         params.update(overrides)
-        return self.client.get("/authorize", params={k: v for k, v in params.items() if v is not None})
+        return self.client.get("/authorize", params={k: v for k, v in params.items() if v is not None},
+                               headers={"Remote-User": "fixture-user"})
 
     def consent_form(self, **overrides):
         response = self.authorize(**overrides)

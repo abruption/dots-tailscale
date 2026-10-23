@@ -118,7 +118,7 @@ class CoreTest(unittest.TestCase):
     def test_private_resolution_refused_before_socket(self):
         for address in ('127.0.0.1','10.0.0.1','169.254.169.254','::1','100.64.0.1'):
             with patch('event_core.socket.getaddrinfo', return_value=[(2,1,6,'',(address,443))]), patch('event_core.socket.socket') as sock:
-                with self.assertRaises(ValueError): PublicHTTPS()(URL,b'{}',{})
+                with self.assertRaises(ValueError): PublicHTTPS()._direct(URL,b'{}',{})
                 sock.assert_not_called()
 
     def test_unknown_sending_survives_restart(self):

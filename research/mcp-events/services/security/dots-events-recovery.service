@@ -1,0 +1,31 @@
+[Unit]
+Description=Dots Events isolated recovery broker
+Requires=dots-events-recovery.socket
+After=network-online.target dots-events-recovery.socket
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+User=dots-events
+Group=dots-events
+Sockets=dots-events-recovery.socket
+ExecStart=/opt/dots-events-research/.venv/bin/python /opt/dots-events-research/server.py serve --config /var/lib/dots-events/config.json
+Restart=on-failure
+RestartSec=10
+UMask=0077
+MemoryHigh=128M
+MemoryMax=256M
+CPUQuota=50%
+TasksMax=64
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/dots-events
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

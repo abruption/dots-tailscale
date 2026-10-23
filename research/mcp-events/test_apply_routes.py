@@ -1,7 +1,7 @@
 """Pure candidate-generation tests; never execute privileged deployment."""
 import unittest
 import re
-from apply_routes import candidates, authelia_validation_command, CONSENT_RESOURCE
+from apply_routes import candidates, authelia_validation_command, CONSENT_RESOURCE, AUTHORIZE_RESOURCE
 
 CADDY = '''(tls_origin_dev) {
     tls /test/cert /test/key
@@ -41,7 +41,8 @@ class CandidateTests(unittest.TestCase):
         self.assertTrue(a.startswith(prefix + '  rules:\n'))
         self.assertTrue(a.endswith(suffix))
         self.assertEqual(a.count('default_policy: deny'), 1)
-        self.assertIn(f"resources: ['{CONSENT_RESOURCE}']", a)
+        self.assertIn(f"resources: ['{AUTHORIZE_RESOURCE}', '{CONSENT_RESOURCE}']", a)
+        self.assertIn('@consent path /oauth/consent /oauth/consent/* /authorize', c)
         self.assertIn("subject: ['user:operator']", a)
         self.assertIn("policy: 'two_factor'", a)
         self.assertIn('request_header -Remote-User', c)
@@ -74,6 +75,9 @@ class CandidateTests(unittest.TestCase):
 
     def test_exact_repair_preserves_all_other_configuration(self):
         c, fixed = candidates(CADDY, AUTHELIA, HOST, 'operator')
+        # This command repairs the legacy consent-only policy, not the new
+        # authorization-admission policy used by a fresh hardened deployment.
+        fixed = fixed.replace(f"'{AUTHORIZE_RESOURCE}', ", '')
         broken = fixed.replace(CONSENT_RESOURCE, '^/oauth/consent(?:/.*)?$')
         after_c, after_a = candidates(c, broken, HOST, 'operator', True)
         self.assertEqual(after_c, c)

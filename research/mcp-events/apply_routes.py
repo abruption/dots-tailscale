@@ -23,6 +23,7 @@ CADDY = Path('/etc/caddy/Caddyfile')
 AUTHELIA = Path('/etc/authelia/configuration.yml')
 ROOT = Path('/var/lib/dots-events-research-deploy')
 CONSENT_RESOURCE = r'^/oauth/consent(?:/[^?]*)?(?:\?.*)?$'
+AUTHORIZE_RESOURCE = r'^/authorize(?:\?.*)?$'
 
 
 def candidates(caddy, authelia, hostname, username, repair_consent_query=False):
@@ -53,7 +54,7 @@ https://{hostname} {{
         request_header -Remote-Groups
         request_header -Remote-Email
         request_header -Remote-Name
-        @consent path /oauth/consent /oauth/consent/*
+        @consent path /oauth/consent /oauth/consent/* /authorize
         handle @consent {{
             forward_auth 127.0.0.1:9091 {{
                 uri /api/authz/forward-auth
@@ -76,7 +77,7 @@ https://{hostname} {{
     offset = section.start() + match.end()
     rule = (f"    # Dots MCP Events research #43: only the browser consent path\n"
             f"    - domain: '{hostname}'\n"
-            f"      resources: ['{CONSENT_RESOURCE}']\n"
+            f"      resources: ['{AUTHORIZE_RESOURCE}', '{CONSENT_RESOURCE}']\n"
             "      policy: 'two_factor'\n"
             f"      subject: ['user:{username}']\n")
     return caddy.rstrip()+'\n'+block, authelia[:offset]+rule+authelia[offset:]

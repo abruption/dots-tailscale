@@ -1,0 +1,12 @@
+[Unit]
+Description=Dots Events trusted Caddy transport
+
+[Socket]
+ListenStream=/run/dots-events-recovery.sock
+SocketUser=dots-events
+SocketGroup=caddy
+SocketMode=0660
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
