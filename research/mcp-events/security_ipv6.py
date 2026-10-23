@@ -7,6 +7,7 @@ RETURN permits existing INPUT controls to decide; it never overrides a later DRO
 import argparse
 import fcntl
 import json
+import ipaddress
 import os
 import shlex
 import stat
@@ -27,6 +28,28 @@ RULES = [
 ] + [['-s', prefix, '-p', 'tcp', '-m', 'tcp', '--dport', port, '-j', 'RETURN']
      for prefix in CF_PREFIXES for port in ('80', '443')] + [['-j', 'DROP']]
 JUMP = ['-A', 'INPUT', '-j', CHAIN]
+
+
+def safe_tailscale_prefix(snapshot, preceding):
+    """Only permit accepts already exempted by our guard, not arbitrary ts rules."""
+    if preceding != [['-A', 'INPUT', '-j', 'ts-input']] or ['-N', 'ts-input'] not in snapshot:
+        return False
+    for row in snapshot:
+        if row[:2] != ['-A', 'ts-input']:
+            continue
+        rule = row[2:]
+        if rule in (['-i', 'tailscale0', '-j', 'ACCEPT'],
+                    ['-p', 'udp', '-m', 'udp', '--dport', '41641', '-j', 'ACCEPT']):
+            continue
+        if len(rule) == 6 and rule[0] == '-s' and rule[2:] == ['-i', 'lo', '-j', 'ACCEPT']:
+            try:
+                address = ipaddress.ip_network(rule[1], strict=True)
+                if address.version == 6 and address.prefixlen == 128:
+                    continue
+            except ValueError:
+                pass
+        return False
+    return True
 
 
 class Firewall:
@@ -51,11 +74,14 @@ class Firewall:
         inputs = [line for line in snapshot if line[:2] == ['-A', 'INPUT']]
         if (exists and own != RULES) or (not exists and own):
             raise RuntimeError('Owned chain differs from expected rules; refusing to modify it')
-        # Other services can prepend INPUT rules later. Even a ts-input jump
-        # may ACCEPT traffic before this guard, so any ordering drift requires
-        # manual review; apply/remove must not silently accept that bypass.
-        if references and (references != [JUMP] or not inputs or inputs[0] != JUMP):
-            raise RuntimeError('Unexpected chain references or jump order; refusing to modify rules')
+        # Tailscale may prepend its jump after this early-boot guard. Accept
+        # only its narrowly validated rules whose traffic our guard also allows.
+        if references:
+            if references != [JUMP] or JUMP not in inputs:
+                raise RuntimeError('Unexpected chain references; refusing to modify rules')
+            preceding = inputs[:inputs.index(JUMP)]
+            if preceding and not safe_tailscale_prefix(snapshot, preceding):
+                raise RuntimeError('Unsafe or unknown rules before guard; refusing to modify rules')
         if references and not exists:
             raise RuntimeError('Jump without owned chain')
         return exists, bool(references)
@@ -132,7 +158,14 @@ def main():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--apply', action='store_true')
     modes.add_argument('--remove', action='store_true')
+    modes.add_argument('--check', action='store_true', help='read current rules without changing them')
     args = parser.parse_args()
+    if args.check:
+        exists, jumped = Firewall().inspect()
+        print(json.dumps({'guard_present': exists, 'protected_order': jumped}))
+        if not (exists and jumped):
+            raise SystemExit(1)
+        return
     if not (args.apply or args.remove):
         print(json.dumps({'mode': 'plan', 'chain': CHAIN, 'rules': RULES,
                           'insert': 'INPUT position 1', 'existing_rules': 'preserved',

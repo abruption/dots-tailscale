@@ -85,6 +85,28 @@ class Tests(unittest.TestCase):
             self.assertEqual(fw.rows,before)
         fw = Fake(); fw.apply(); fw.rows.remove(JUMP); fw.rows.append(JUMP)
         with self.assertRaises(RuntimeError): fw.apply()
+    def test_boot_tailscale_prefix_safe_and_idempotent(self):
+        fw = Fake(); fw.apply()
+        fw.rows.remove(JUMP)
+        index = fw.rows.index(['-A', 'INPUT', '-j', 'ts-input'])
+        fw.rows.insert(index+1, JUMP)
+        fw.rows += [
+            ['-A','ts-input','-s','fd7a:115c:a1e0::1/128','-i','lo','-j','ACCEPT'],
+            ['-A','ts-input','-i','tailscale0','-j','ACCEPT'],
+            ['-A','ts-input','-p','udp','-m','udp','--dport','41641','-j','ACCEPT']]
+        self.assertEqual(fw.inspect(), (True, True))
+        before = fw.snapshot(); calls = len(fw.calls)
+        self.assertFalse(fw.apply())
+        self.assertEqual(fw.snapshot(), before)
+        self.assertEqual(len(fw.calls), calls)
+        for rule in (['-j','ACCEPT'], ['-p','tcp','--dport','443','-j','ACCEPT'],
+                     ['-i','eth0','-j','ACCEPT'], ['-j','another-chain'],
+                     ['-s','fd7a::/16','-i','lo','-j','ACCEPT']):
+            fw.rows.append(['-A','ts-input']+rule)
+            with self.assertRaises(RuntimeError): fw.inspect()
+            fw.rows.pop()
+        self.assertTrue(fw.remove())
+
     def test_failed_insert_cleanup(self):
         fw = Fake(); before = fw.snapshot(); fw.fail_insert = True
         with self.assertRaises(subprocess.CalledProcessError): fw.apply()
