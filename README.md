@@ -6,6 +6,10 @@ Run Tailscale with user-level OpenSSH in a Dots cloud computer. Installation fil
 
 This setup targets environments that preserve `/workspace`. Processes still need a start command in each new environment. This project is independent and is not an official OpenAI or Tailscale tool.
 
+## Experimental external recovery
+
+Advanced users can review the [external recovery experiment](docs/experimental-recovery.md). It requires an external server, private SSO and an authorized Dots task; it is not enabled by the normal installer. Setup on another account and recovery after arbitrary VM replacement remain unverified.
+
 ## Demo
 
 ![Dots terminal screenshot showing installation checks and Tailscale version 1.102.4](docs/assets/dots-tailscale-ssh-verification.png)
@@ -26,7 +30,7 @@ The clone command explicitly uses the Dots proxy because direct GitHub HTTPS fai
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.4.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.5.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install

@@ -6,6 +6,10 @@ Dots のクラウドコンピューターで、ユーザー権限の OpenSSH と
 
 `/workspace` が環境の入れ替え後も保持される環境を対象としています。新しい環境では、その都度 start コマンドを実行する必要があります。このプロジェクトは独立したもので、OpenAI や Tailscale の公式ツールではありません。
 
+## 実験的な外部復旧
+
+v0.5.0 には、外部監視と MCP Events で Dots に既存の起動コマンドの実行を依頼する実験コードと運用手順を含めています。通常のインストールでは有効になりません。外部サーバーと認証・監視の運用が必要です。再起動後の接続復旧は複数回確認していますが、すべての VM 交換での復旧や即時実行を保証するものではありません。[実験機能の運用ガイド（英語）](docs/experimental-recovery.md)をご覧ください。
+
 ## デモ
 
 ![Dots ターミナルでインストール状況と Tailscale バージョン 1.102.4 を確認する画面](docs/assets/dots-tailscale-ssh-verification.png)
@@ -26,7 +30,7 @@ Linux x86_64、Git、Python 3、OpenSSH、およびローカルポート 22 を�
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.4.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.5.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install

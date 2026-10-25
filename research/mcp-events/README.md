@@ -1,7 +1,7 @@
 # MCP Events recovery research (#43)
 
 This directory contains research fixtures, not a supported recovery service.
-No component is included in the dots-tailscale installer or release manifest.
+No component is included in the dots-tailscale installer or release manifest. Full source archives include this directory. See the [experimental operator guide](../../docs/experimental-recovery.md) for setup boundaries, status, stop and diagnosis procedures.
 
 The operator subsequently authorized an ongoing recovery trial. See
 [continuous-trial.md](continuous-trial.md) for its event policy, fixed startup

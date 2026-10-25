@@ -6,6 +6,10 @@
 
 本方案适用于会保留 `/workspace` 的环境。每次进入新环境后，仍需运行启动命令。本项目独立开发，并非 OpenAI 或 Tailscale 的官方工具。
 
+## 实验性外部恢复
+
+v0.5.0 包含实验代码和运维说明，可通过外部监控与 MCP Events 请求 Dots 执行已有的启动命令。普通安装不会启用这项功能，需要自行维护外部服务器、认证和监控。我们已多次观察到新启动后的连接恢复，但这不保证每次 VM 替换后都能恢复，也不保证立即执行。详见[实验功能运维指南（英文）](docs/experimental-recovery.md)。
+
 ## 演示
 
 ![Dots 终端中的安装检查以及 Tailscale 版本 1.102.4 截图](docs/assets/dots-tailscale-ssh-verification.png)
@@ -26,7 +30,7 @@ bash /workspace/.dots-tailscale/start.sh check
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.4.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.5.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
