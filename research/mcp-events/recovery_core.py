@@ -77,7 +77,7 @@ class RecoveryCore(EventCore):
             ssh = a.get('error_class')
             if ssh not in ('timeout','network_unreachable') or a['command_succeeded'] or a['probe_valid'] or type(a.get('exit_code')) is not int or a['exit_code'] == 0:
                 ssh = 'local_error'
-        ping = 'ok' if b['responded'] and type(b.get('exit_code')) is int and b['exit_code'] == 0 else ('failed' if b['responded'] is False and type(b.get('exit_code')) is int and b['exit_code'] != 0 and not b.get('error_class') else 'local_error')
+        ping = 'ok' if b['responded'] and type(b.get('exit_code')) is int and b['exit_code'] == 0 else ('failed' if b['responded'] is False and type(b.get('exit_code')) is int and b['exit_code'] != 0 and b.get('error_class') in (None, 'ok') else 'local_error')
         # Only the monitor's explicit external-unreachable classification permits failure counting.
         if observation['state'] != 'external_unreachable' and ssh != 'ok':
             ssh = 'local_error'

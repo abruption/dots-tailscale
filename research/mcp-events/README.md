@@ -140,16 +140,20 @@ Use an external host with an HTTPS MCP endpoint, not a process in Dots.
 The first deployed server exposes only a synthetic probe and read-only tools.
 No remote-shell tool or automatic recovery loop is part of the first stage.
 
-The proposed OAuth adapter uses the existing SSO only for its browser consent
-route. Caddy strips caller-supplied identity headers, authenticates the browser,
-and forwards the verified identity on that route. MCP requests use OAuth bearer
+The current OAuth adapter uses the existing SSO for browser authorization
+(`/authorize`) and consent (`/oauth/consent`). Caddy strips caller-supplied
+identity headers, authenticates the browser, and forwards the verified identity
+on both routes. Authorization requires this identity before allocating a ticket. MCP requests use OAuth bearer
 tokens; token exchange uses an authorization code and S256 PKCE. The existing
 SSO configuration does not need OIDC enabled for this design.
 
 The adapter must allow one configured local account, exact client/redirect and
 resource identifiers, short-lived single-use codes and rotating refresh tokens.
-Its loopback listener trusts the local host and Caddy; this is not a boundary
-against other privileged processes on that host. Do not expose the listener
+The original synthetic trial used a loopback listener that trusts the local host
+and Caddy, including other local processes. The hardened deployment uses a
+dedicated service account and a protected Unix socket; see
+[security hardening](security-hardening.md). The loopback example in
+[deployment](deployment.md) remains a legacy trial configuration. Do not expose the listener
 directly or forward unverified identity headers.
 
 Runtime secrets, OAuth state, webhook signing keys and callback URLs belong in a

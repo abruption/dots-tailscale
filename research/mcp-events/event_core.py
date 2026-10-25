@@ -181,7 +181,7 @@ class EventCore:
         nonce, challenge_id = secrets.token_urlsafe(32), secrets.token_hex(16)
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
-            if db.execute('SELECT count(*) FROM subscriptions WHERE owner=? AND active=1', (principal,)).fetchone()[0] >= 16 and not db.execute('SELECT 1 FROM subscriptions WHERE id=?', (sid,)).fetchone():
+            if db.execute('SELECT count(*) FROM subscriptions WHERE owner=? AND active=1 AND expires>?', (principal, self.clock())).fetchone()[0] >= 16 and not db.execute('SELECT 1 FROM subscriptions WHERE id=?', (sid,)).fetchone():
                 raise ValueError('subscription limit reached')
             db.execute('DELETE FROM challenges WHERE expires<?', (self.clock(),))
             if db.execute('SELECT count(*) FROM challenges WHERE used=0').fetchone()[0] >= 64:

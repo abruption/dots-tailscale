@@ -78,6 +78,7 @@ class CandidateTests(unittest.TestCase):
         # This command repairs the legacy consent-only policy, not the new
         # authorization-admission policy used by a fresh hardened deployment.
         fixed = fixed.replace(f"'{AUTHORIZE_RESOURCE}', ", '')
+        fixed = fixed.replace("browser authorization and consent paths", "only the browser consent path")
         broken = fixed.replace(CONSENT_RESOURCE, '^/oauth/consent(?:/.*)?$')
         after_c, after_a = candidates(c, broken, HOST, 'operator', True)
         self.assertEqual(after_c, c)

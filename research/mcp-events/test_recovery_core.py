@@ -81,6 +81,26 @@ class RecoveryTests(unittest.TestCase):
         self.fail(); self.fail(); self.now+=60
         self.assertIsNone(self.core.ingest(self.observation(ping_error='timeout_or_local_failure'))['incident'])
 
+    def test_ping_error_class_matches_replay_failure_classification(self):
+        from offline_replay import failed_sample
+        for marker in ('absent', None, 'ok', 'timeout_or_local_failure',
+                       'local_execution_failed', 'permission_denied', '', False):
+            with self.subTest(error_class=marker):
+                self.now+=60
+                self.core.ingest(self.observation(healthy=True))
+                expected=marker in ('absent', None, 'ok')
+                for _ in range(3):
+                    self.now+=60
+                    observation=self.observation()
+                    if marker != 'absent':
+                        observation['peer_ping']['error_class']=marker
+                    self.assertEqual(failed_sample(observation),expected)
+                    state=self.core.ingest(observation)
+                    self.assertEqual(state['observation']['ping'],
+                                     'failed' if expected else 'local_error')
+                self.assertEqual(state['claimable'],expected)
+                self.assertEqual(state['incident'] is not None,expected)
+
     def test_gap_and_stale_and_out_of_order(self):
         self.fail(); self.fail(); old=self.observation(); self.now+=151
         with self.assertRaises(ValueError): self.core.ingest(old)

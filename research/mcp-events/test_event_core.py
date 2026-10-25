@@ -52,6 +52,27 @@ class CoreTest(unittest.TestCase):
             self.assertEqual(db.execute('SELECT sum(used) FROM challenges').fetchone()[0], 2)
             self.assertEqual(db.execute('UPDATE challenges SET used=1 WHERE used=0').rowcount, 0)
 
+    def test_expired_subscriptions_release_admission_capacity(self):
+        for n in range(16):
+            self.core.subscribe('alice', URL+'/'+str(n), SECRET, ttl=10)
+        self.now += 10
+        self.core = self.new_core()
+        result = self.core.subscribe('alice', URL+'/new', SECRET)
+        self.assertTrue(result['subscriptionId'])
+        with self.core._db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM subscriptions').fetchone()[0], 17)
+            self.assertEqual(db.execute('SELECT count(*) FROM subscriptions WHERE active=1 AND expires>?', (self.now,)).fetchone()[0], 1)
+
+    def test_live_subscription_limit_preserves_renewals(self):
+        for n in range(16):
+            self.core.subscribe('alice', URL+'/'+str(n), SECRET)
+        sent = len(self.sent)
+        with self.assertRaisesRegex(ValueError, 'subscription limit reached'):
+            self.core.subscribe('alice', URL+'/new', SECRET)
+        self.assertEqual(len(self.sent), sent)
+        self.core.subscribe('alice', URL+'/0', SECRET)
+        self.core.subscribe('bob', URL+'/new', SECRET)
+
     def test_wrong_echo_and_expired_challenge(self):
         self.echo = False
         with self.assertRaises(ValueError):

@@ -75,7 +75,7 @@ https://{hostname} {{
     if not match:
         raise ValueError('expected block rules sequence missing')
     offset = section.start() + match.end()
-    rule = (f"    # Dots MCP Events research #43: only the browser consent path\n"
+    rule = (f"    # Dots MCP Events research #43: browser authorization and consent paths\n"
             f"    - domain: '{hostname}'\n"
             f"      resources: ['{AUTHORIZE_RESOURCE}', '{CONSENT_RESOURCE}']\n"
             "      policy: 'two_factor'\n"

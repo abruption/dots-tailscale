@@ -1,7 +1,12 @@
 # Deployment checklist for the synthetic trial
 
-Status: preparation only. Local tests are not evidence of a ChatGPT event
-subscription or delivery. No recovery command is exposed by this service.
+This page documents the original bounded synthetic trial using a **legacy
+loopback listener**. It is not the hardened broker deployment guide. For the
+dedicated service account and protected Unix socket, use
+[security hardening](security-hardening.md) and the
+[experimental recovery guide](../../docs/experimental-recovery.md). The examples
+below use the current OAuth identity checks even when exercising that legacy
+transport. Local tests do not establish a live subscription or delivery.
 
 ## Host preparation
 
@@ -48,7 +53,7 @@ https://dots-events.example.com {
         request_header -Remote-Email
         request_header -Remote-Name
 
-        @consent path /oauth/consent /oauth/consent/*
+        @consent path /oauth/consent /oauth/consent/* /authorize
         handle @consent {
             forward_auth 127.0.0.1:9091 {
                 uri /api/authz/forward-auth
@@ -69,12 +74,19 @@ rules. Example entry under `access_control.rules`:
 
 ```yaml
 - domain: 'dots-events.example.com'
-  resources: ['^/oauth/consent(?:/[^?]*)?(?:\?.*)?$']
+  resources: ['^/authorize(?:\?.*)?$', '^/oauth/consent(?:/[^?]*)?(?:\?.*)?$']
   policy: 'two_factor'
   subject: ['user:operator']
 ```
 
-Both consent methods must authenticate. Backend checks also reject missing or
+`/authorize` and both consent methods must authenticate. The backend checks the
+trusted identity **before allocating an authorization ticket**; protecting only
+consent causes account linking to fail at `/authorize`. The Authelia resource
+patterns include query strings because OAuth authorization and consent URLs
+carry parameters. Token exchange, revocation and public metadata do not use
+this browser SSO matcher.
+
+For this legacy loopback example, backend checks also reject missing or
 unexpected identity, non-loopback peers, invalid consent tickets and CSRF.
 Start Uvicorn with proxy headers disabled; forwarded IP headers must not change
 the peer check. The local host and proxy are part of the trusted boundary.
@@ -102,7 +114,10 @@ A failed validation applies nothing.
 
 1. Public resource and authorization metadata return JSON (no SSO redirects or
    Cloudflare challenge). Unauthenticated `/mcp` returns 401.
-2. Forged `Remote-User` headers cannot authorize consent; unapproved users fail.
+2. Both `/authorize` (including OAuth query parameters) and `/oauth/consent`
+   require SSO. Forged `Remote-User` headers cannot bypass either route;
+   unapproved users fail. Anonymous backend authorization requests allocate no
+   ticket.
 3. Link ChatGPT using the configured public OAuth client and exact redirect.
    The user completes the existing SSO and explicit consent form.
 4. Refresh plugin metadata; confirm the synthetic event is listed.
