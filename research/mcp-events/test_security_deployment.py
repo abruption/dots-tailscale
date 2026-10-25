@@ -44,6 +44,26 @@ class SecurityDeploymentTests(unittest.TestCase):
         with self.assertRaises(ValueError): candidates(nc,na,'dots-events.example.com','operator')
         with self.assertRaises(ValueError): candidates(c,a.replace('operator','someone'),'dots-events.example.com','operator')
 
+    def test_legacy_and_identity_proxy_blocks_migrate_without_trusting_input(self):
+        c,a=initial_candidates('(tls_origin_dev) {\n}\n',
+            'access_control:\n  rules:\n', 'dots-events.example.com','operator')
+        current,auth=candidates(c,a,'dots-events.example.com','operator')
+        self.assertEqual(current.count('header_up X-Dots-Client-IP {client_ip}'),2)
+        self.assertEqual(current.count('reverse_proxy unix//run/dots-events-recovery.sock {'),2)
+        legacy=c.replace('reverse_proxy 127.0.0.1:18743 {\n                header_up X-Dots-Client-IP {client_ip}\n            }',
+                         'reverse_proxy 127.0.0.1:18743')
+        self.assertEqual(candidates(legacy,a,'dots-events.example.com','operator'),(current,auth))
+        for header in ('{http.request.header.X-Dots-Client-IP}', '{http.request.header.X-Forwarded-For}',
+                       '127.0.0.1', '{remote_host}'):
+            with self.subTest(header=header),self.assertRaises(ValueError):
+                candidates(c.replace('header_up X-Dots-Client-IP {client_ip}',
+                                     'header_up X-Dots-Client-IP '+header),a,'dots-events.example.com','operator')
+        with self.assertRaises(ValueError):
+            candidates(c.replace('header_up X-Dots-Client-IP', 'header_up +X-Dots-Client-IP'),a,'dots-events.example.com','operator')
+        with self.assertRaises(ValueError):
+            candidates(c.replace('header_up X-Dots-Client-IP {client_ip}',
+                                 'header_up X-Dots-Client-IP {client_ip}\n                header_up Remote-User forged'),a,'dots-events.example.com','operator')
+
     def test_sqlite_backup_includes_wal_and_preserves_claim(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); src=root/'recovery.sqlite'; target=root/'snapshot.sqlite'

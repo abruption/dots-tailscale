@@ -8,6 +8,8 @@ processes are trusted in legacy loopback mode. There is no development bypass.
 
 from contextlib import contextmanager
 import asyncio
+from collections import OrderedDict
+import ipaddress
 import hashlib
 import html
 import json
@@ -35,6 +37,11 @@ SCOPE = "events:observe"
 RECOVERY_SCOPE = "recovery:execute"
 MAX_PENDING_TICKETS = 64
 AUTH_INFLIGHT_LIMIT = 8
+PUBLIC_CLIENT_LIMIT = 256
+PUBLIC_BURST = 16
+PUBLIC_REFILL_PER_SECOND = 1
+PUBLIC_GLOBAL_BURST = 64
+PUBLIC_GLOBAL_REFILL_PER_SECOND = 16
 BODY_TIMEOUT_SECONDS = 5
 AUTH_BODY_LIMIT = 16384
 COOKIE = "__Host-dots-mcp-consent"
@@ -66,6 +73,9 @@ class OAuthAdapter(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshTo
             raise ValueError("trusted_proxy_transport must be loopback or unix")
         self.trusted_proxy_transport = trusted_proxy_transport
         self._auth_inflight = 0
+        self._public_inflight = 0
+        self._public_clients = OrderedDict()
+        self._public_global = [float(PUBLIC_GLOBAL_BURST), time.monotonic()]
         if type(enable_recovery) is not bool or type(refresh_lifetime_seconds) is not int:
             raise ValueError("recovery flag must be boolean and lifetime an integer")
         self.allowed_scopes = [SCOPE] + ([RECOVERY_SCOPE] if enable_recovery else [])
@@ -172,6 +182,59 @@ class OAuthAdapter(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshTo
             and request.headers.get("host") == self.host
             and len(users) == 1 and secrets.compare_digest(users[0].encode(), self.allowed_user.encode())
         )
+
+    def public_client(self, request):
+        """Caddy-overwritten identity only over the protected Unix transport."""
+        if self.trusted_proxy_transport == "unix":
+            values = request.headers.getlist("x-dots-client-ip")
+            if request.client is not None or len(values) != 1:
+                return None
+            value = values[0]
+        else:
+            # A header from an arbitrary direct peer is never authoritative.
+            if request.client is None or request.client.host not in ("127.0.0.1", "::1"):
+                return None
+            value = request.client.host
+        try:
+            if "%" in value or len(value) > 45:
+                return None
+            address = ipaddress.ip_address(value)
+            if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+                address = address.ipv4_mapped
+            return str(address)
+        except ValueError:
+            return None
+
+    def admit_public(self, client):
+        # No awaits: admission and state changes are atomic on this ASGI loop.
+        # Never evict active clients; idle LRU eviction bounds untrusted key state.
+        if self._public_inflight >= AUTH_INFLIGHT_LIMIT:
+            return False
+        now = time.monotonic()
+        entry = self._public_clients.get(client)
+        if entry is not None and entry['active']:
+            return False
+        if entry is None:
+            if len(self._public_clients) >= PUBLIC_CLIENT_LIMIT:
+                idle = next((key for key, value in self._public_clients.items() if not value['active']), None)
+                if idle is None:
+                    return False
+                del self._public_clients[idle]
+            entry = {'tokens': float(PUBLIC_BURST), 'updated': now, 'active': False}
+            self._public_clients[client] = entry
+        entry['tokens'] = min(PUBLIC_BURST, entry['tokens'] + max(0, now-entry['updated'])*PUBLIC_REFILL_PER_SECOND)
+        entry['updated'] = now
+        self._public_clients.move_to_end(client)
+        global_tokens, updated = self._public_global
+        global_tokens = min(PUBLIC_GLOBAL_BURST, global_tokens + max(0, now-updated)*PUBLIC_GLOBAL_REFILL_PER_SECOND)
+        self._public_global = [global_tokens, now]
+        if entry['tokens'] < 1 or global_tokens < 1:
+            return False
+        entry['tokens'] -= 1
+        self._public_global[0] -= 1
+        entry['active'] = True
+        self._public_inflight += 1
+        return True
 
     async def consent(self, request):
         if not self.trusted_identity(request):
@@ -384,19 +447,32 @@ class OAuthAdapter(OAuthAuthorizationServerProvider[AuthorizationCode, RefreshTo
         for route in routes:
             original, path = route.app, route.path
             async def admitted(scope, receive, send, original=original, path=path):
-                if path == "/authorize" and not self.trusted_identity(Request(scope)):
+                interactive = path in ("/authorize", "/oauth/consent")
+                public = path in ("/token", "/revoke")
+                if not interactive and not public:
+                    return await original(scope, receive, send)
+                request = Request(scope)
+                if interactive and not self.trusted_identity(request):
                     await JSONResponse({"error": "access_denied"}, status_code=403, headers=NO_STORE)(scope, receive, send)
                     return
-                # One bounded counter for all OAuth routes. No attacker-controlled
-                # keys and no waiting queue. ASGI admission has no await before increment.
-                if self._auth_inflight >= AUTH_INFLIGHT_LIMIT:
+                client = self.public_client(request) if public else None
+                if public and client is None:
+                    await JSONResponse({"error": "access_denied"}, status_code=403, headers=NO_STORE)(scope, receive, send)
+                    return
+                admitted = self.admit_public(client) if public else self._auth_inflight < AUTH_INFLIGHT_LIMIT
+                if not admitted:
                     await JSONResponse({"error": "temporarily_unavailable"}, status_code=429,
                                        headers={**NO_STORE, "Retry-After": "5"})(scope, receive, send)
                     return
-                self._auth_inflight += 1
+                if not public:
+                    self._auth_inflight += 1
                 try:
                     await original(scope, receive, send)
                 finally:
-                    self._auth_inflight -= 1
+                    if public:
+                        self._public_clients[client]['active'] = False
+                        self._public_inflight -= 1
+                    else:
+                        self._auth_inflight -= 1
             route.app = admitted
         return routes

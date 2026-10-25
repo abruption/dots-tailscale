@@ -60,10 +60,14 @@ https://{hostname} {{
                 uri /api/authz/forward-auth
                 copy_headers Remote-User
             }}
-            reverse_proxy 127.0.0.1:18743
+            reverse_proxy 127.0.0.1:18743 {{
+                header_up X-Dots-Client-IP {{client_ip}}
+            }}
         }}
         handle {{
-            reverse_proxy 127.0.0.1:18743
+            reverse_proxy 127.0.0.1:18743 {{
+                header_up X-Dots-Client-IP {{client_ip}}
+            }}
         }}
     }}
 }}

@@ -15,6 +15,8 @@ class DeploymentExamples(unittest.TestCase):
         protected = caddy[caddy.index('handle @consent'):caddy.index('        handle {')]
         self.assertIn('forward_auth 127.0.0.1:9091', protected)
         self.assertIn('copy_headers Remote-User', protected)
+        self.assertEqual(caddy.count('header_up X-Dots-Client-IP {client_ip}'), 2)
+        self.assertNotIn('header_up +X-Dots-Client-IP', caddy)
         yaml = re.search(r'```yaml\n(.*?)\n```', doc, re.S).group(1)
         resource_line = next(line for line in yaml.splitlines() if 'resources:' in line)
         patterns = re.findall(r"'([^']+)'", resource_line)

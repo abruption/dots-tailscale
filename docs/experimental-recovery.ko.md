@@ -15,11 +15,17 @@
 ## 준비와 설정 순서
 
 1. [사용 가이드](usage.ko.md)에 따라 Dots에 설치하고 Tailscale 인증을 마칩니다. SSH 호스트 키를 별도 경로로 대조하고, 새 SSH 접속과 Tailscale ping이 되는지 확인합니다. 복구할 때도 기존 설치 파일·노드 상태·SSH 키가 남아 있어야 합니다.
-2. 외부 Linux 서버, `dots-events.example.com` 같은 공개 HTTPS 주소, Caddy, 개인 Authelia SSO를 준비합니다. 정확한 허용 계정·OAuth 클라이언트·리디렉션 URI·리소스를 설정합니다. Caddy는 `/authorize`와 `/oauth/consent` 모두에서 인증하고 외부에서 들어온 신원 헤더를 제거해야 합니다. 보강된 서버는 전용 Unix 계정과 접근이 제한된 Unix 소켓을 사용합니다.
+2. 외부 Linux 서버, `dots-events.example.com` 같은 공개 HTTPS 주소, Caddy, 개인 Authelia SSO를 준비합니다. 정확한 허용 계정·OAuth 클라이언트·리디렉션 URI·리소스를 설정합니다. Caddy는 `/authorize`와 `/oauth/consent` 모두에서 인증하고 클라이언트가 보낸 신원 헤더를 제거해야 합니다. 두 upstream 경로 모두에서 `X-Dots-Client-IP`를 Caddy의 `{client_ip}` 값으로 덮어씁니다. 보강된 서버는 전용 Unix 계정과 접근이 제한된 Unix 소켓을 사용합니다.
 3. [서버 설정 예시](../research/mcp-events/config.example.json), [보안 배포 설명](../research/mcp-events/security-hardening.md), `research/mcp-events/` 코드를 검토합니다. 예시는 복구가 꺼진 상태입니다. 관리자 권한 bootstrap은 **이미 운영 중인 시험 설치를 이전하는 도구**이며, 새 서버용 설치기가 아닙니다. 이 자료만으로 다른 계정에서 처음부터 설치하는 과정은 독립 재현하지 않았습니다. 서비스 경로·의존성 잠금 파일·프록시·SSO 설정을 환경에 맞게 확인한 뒤 적용하세요.
 4. tailnet에 접근할 수 있고 SSH·ping을 각각 확인하는 상시 감시 장비를 준비합니다. 별도 [HTTPS 전달기와 기기용 인증정보](../research/mcp-events/relay-transport.md)를 설정합니다. 인증정보와 실행 상태는 저장소 밖의 전용 비공개 디렉터리에 보관합니다. 토큰·콜백 URL/secret·노드 state·개인키는 공개하지 마세요. Mac 구현은 기기가 깨어 있고 온라인이며, LaunchAgent를 실행할 GUI 로그인 세션이 있어야 합니다.
 5. Dots에 사용자 지정 MCP 앱을 연결하고 `events:observe`, `recovery:execute` 권한을 승인합니다. 해당 앱의 제한된 복구 도구만 의도한 무인 작업에서 사용하도록 설정합니다. [저장된 작업 지침](../research/mcp-events/dots-recovery-instructions.ko.txt)과 [상시 시험 계약](../research/mcp-events/continuous-trial.md)을 검토하세요. 서버 프로세스뿐 아니라 이벤트 구독과 OAuth 갱신도 계속 동작해야 합니다.
 6. 정상 관측과 읽기 전용 이벤트 확인부터 시작합니다. SSH·ping이 정상일 때 복구 시도가 생기지 않아야 합니다. 장애를 일부러 발생시키려면 먼저 Dots 클라우드 터미널에 별도로 접근할 수 있어야 합니다. 이벤트 구독이나 시험 콜백 성공만으로 실제 복구를 확인했다고 판단하지 마세요.
+
+### OAuth 요청 제한과 프록시 신뢰 경계
+
+보강된 Unix socket 모드에서 애플리케이션은 보호된 socket으로 요청이 들어오고 TCP peer 주소가 없으며, 파싱 가능한 IP 값이 정확히 하나 있을 때만 `X-Dots-Client-IP`를 신뢰합니다. admission 키로 사용하기 전에 주소를 canonical 형식으로 정규화합니다. 이 값은 IP별 요청 제한을 위한 키이며 OAuth 인증 신원이 아닙니다. `/authorize`와 `/oauth/consent`는 Authelia 인증이 필요하며, 별도의 동시 처리 요청 한도 8개를 공유합니다. 공개 `/token`, `/revoke` 요청은 별도 한도를 사용합니다. 전체 동시 요청은 최대 8개, IP별로는 1개입니다. IP별 bucket은 최대 16개까지 쌓이고 초당 1개씩 충전됩니다. 전체 bucket은 최대 64개까지 쌓이고 초당 16개씩 충전되며 IP가 바뀌어도 공유됩니다. IP 항목은 최대 256개까지 보관하고 비활성 항목만 LRU 방식으로 제거합니다. OAuth metadata는 이 두 요청 pool에 포함되지 않습니다. IP 값이 없거나, 중복되거나, 잘못된 경우 403으로 거부합니다. pool이나 bucket 한도를 넘으면 `Retry-After: 5`와 429를 반환합니다.
+
+Caddy가 CDN 뒤에 있다면 실제 upstream만 trusted proxy로 설정하고 그 경로에 맞춰 client IP를 확인해야 합니다. 그렇지 않으면 Caddy가 CDN edge IP를 전달해 서로 다른 사용자가 하나의 제한을 공유할 수 있습니다. 같은 NAT 주소를 쓰는 사용자도 제한을 공유합니다. 여러 출발지의 요청이나 upstream/CDN 포화로 장애가 생길 수 있으므로, 이러한 애플리케이션 제한은 DoS 방어를 보장하지 않습니다. 레거시 loopback 모드에서는 `X-Dots-Client-IP`를 무시하고 실제 loopback peer 주소를 사용하며 loopback이 아닌 peer를 거부합니다. loopback proxy를 통과하는 클라이언트는 같은 bucket을 공유할 수 있고, 이 모드는 Unix 계정 경계 없이 로컬 프로세스를 신뢰합니다. 정확한 제한과 경계는 [보안 설명](../research/mcp-events/security-hardening.md)을 참고하세요.
 
 외부 감시 장비는 관측을 전달하고, 서버는 실행 허가인 claim을 발급하며, Dots는 본인의 클라우드 컴퓨터에서 아래 명령을 실행합니다.
 

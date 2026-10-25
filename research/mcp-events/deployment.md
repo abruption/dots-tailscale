@@ -59,10 +59,14 @@ https://dots-events.example.com {
                 uri /api/authz/forward-auth
                 copy_headers Remote-User
             }
-            reverse_proxy 127.0.0.1:18743
+            reverse_proxy 127.0.0.1:18743 {
+                header_up X-Dots-Client-IP {client_ip}
+            }
         }
         handle {
-            reverse_proxy 127.0.0.1:18743
+            reverse_proxy 127.0.0.1:18743 {
+                header_up X-Dots-Client-IP {client_ip}
+            }
         }
     }
 }
@@ -90,6 +94,30 @@ For this legacy loopback example, backend checks also reject missing or
 unexpected identity, non-loopback peers, invalid consent tickets and CSRF.
 Start Uvicorn with proxy headers disabled; forwarded IP headers must not change
 the peer check. The local host and proxy are part of the trusted boundary.
+
+For the hardened Unix-socket deployment, both reverse proxies must overwrite
+`X-Dots-Client-IP` with Caddy's `{client_ip}` as shown above. The backend accepts
+this admission identity only from its protected Unix socket and rejects missing,
+duplicate or invalid IP values on public OAuth POSTs. In legacy loopback mode it
+uses the peer address and ignores this header. Never copy an incoming
+`X-Dots-Client-IP` or unvalidated forwarding header into the trusted value.
+
+When Caddy sits behind a CDN, configure its trusted-proxy ranges and client-IP
+header for that actual upstream only. Verify that arbitrary client-supplied
+forwarding headers cannot choose `{client_ip}`. Without trusted-proxy resolution,
+Caddy can report the CDN edge address; this groups unrelated clients under one
+limit and can deny legitimate requests. Do not solve that by trusting all proxies.
+
+The app admits public token/revocation POSTs before reading their bodies, with
+per-client limits and a pool separate from browser authorization/consent. Thus
+public requests cannot consume interactive admission slots. This uses the
+standard Caddy build; it does not require a custom rate-limit module. It remains
+an application-level resource bound, not protection against distributed flooding
+or saturation of the CDN/proxy itself.
+
+For an existing Unix-socket deployment, validate and reload the identity-header
+proxy changes before starting a backend that requires that header. Verify both
+proxy routes; updating only the SSO route breaks public token exchange.
 
 Back up configuration on the server with private permissions and record hashes.
 Build candidates on the server, validate both with the installed versions, then

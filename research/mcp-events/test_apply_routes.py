@@ -45,6 +45,8 @@ class CandidateTests(unittest.TestCase):
         self.assertIn('@consent path /oauth/consent /oauth/consent/* /authorize', c)
         self.assertIn("subject: ['user:operator']", a)
         self.assertIn("policy: 'two_factor'", a)
+        self.assertEqual(c.count('header_up X-Dots-Client-IP {client_ip}'), 2)
+        self.assertNotIn('header_up +X-Dots-Client-IP', c)
         self.assertIn('request_header -Remote-User', c)
         self.assertLess(c.index('request_header -Remote-User'), c.index('forward_auth'))
 

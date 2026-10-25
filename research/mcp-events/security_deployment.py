@@ -140,7 +140,17 @@ def candidates(caddy, auth, host, operator):
         raise ValueError('unexpected existing proxy layout; manual review required')
     if matches == [oldmatch]:
         block = block.replace(oldmatch, newmatch)
-    block = block.replace('reverse_proxy 127.0.0.1:18743', 'reverse_proxy unix//run/dots-events-recovery.sock')
+    # Accept only the original single-line proxy or our exact identity block.
+    # Unknown proxy options require operator review rather than being discarded.
+    proxy = re.compile(r'(?m)^(?P<indent>[ \t]*)reverse_proxy 127\.0\.0\.1:18743'
+                       r'(?: \{\n(?P=indent)    header_up X-Dots-Client-IP \{client_ip\}\n(?P=indent)\}|)[ \t]*$')
+    def replace_proxy(match):
+        indent = match['indent']
+        return (indent+'reverse_proxy unix//run/dots-events-recovery.sock {\n'
+                +indent+'    header_up X-Dots-Client-IP {client_ip}\n'+indent+'}')
+    block, replaced = proxy.subn(replace_proxy, block)
+    if replaced != 2:
+        raise ValueError('unexpected proxy options; manual review required')
     oldrule = ("    - domain: '"+host+"'\n"
                "      resources: ['^/oauth/consent(?:/[^?]*)?(?:\\?.*)?$']\n"
                "      policy: 'two_factor'\n"

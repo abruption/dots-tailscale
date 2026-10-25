@@ -87,15 +87,97 @@ class HardeningTests(unittest.IsolatedAsyncioTestCase):
             if entered==auth.AUTH_INFLIGHT_LIMIT:
                 ready.set()
             await asyncio.Event().wait()
-        tasks=[asyncio.create_task(self.request('/token',receive)) for _ in range(auth.AUTH_INFLIGHT_LIMIT)]
+        self.adapter.trusted_proxy_transport='unix'
+        tasks=[asyncio.create_task(self.request('/token',receive,[(b'x-dots-client-ip',f'192.0.2.{i+1}'.encode())],None)) for i in range(auth.AUTH_INFLIGHT_LIMIT)]
         await asyncio.wait_for(ready.wait(),1)
         try:
-            self.assertEqual(await self.request('/revoke',self.empty),429)
+            self.assertEqual(await self.request('/revoke',self.empty,[(b'x-dots-client-ip',b'192.0.2.99')],None),429)
+            self.assertEqual(await self.request('/authorize',self.empty,[(b'remote-user',b'alice')],None,'GET'),302)
         finally:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks,return_exceptions=True)
         self.assertEqual(self.adapter._auth_inflight,0)
+
+    async def test_one_slow_client_cannot_block_consent_or_other_client_refresh(self):
+        import time
+        from urllib.parse import urlencode
+        self.adapter.trusted_proxy_transport='unix'
+        with self.adapter.connect() as db:
+            tokens=self.adapter.issue(db,'alice',['events:observe'],'fixture-family',int(time.time())+3600)
+        entered=asyncio.Event()
+        async def slow():
+            entered.set()
+            await asyncio.Event().wait()
+        attacker=[(b'x-dots-client-ip',b'192.0.2.1')]
+        task=asyncio.create_task(self.request('/token',slow,attacker,None))
+        await entered.wait()
+        try:
+            for _ in range(12):
+                self.assertEqual(await self.request('/revoke',self.empty,attacker,None),429)
+            self.assertEqual(await self.request('/authorize',self.empty,[(b'remote-user',b'alice')],None,'GET'),302)
+            body=urlencode({'grant_type':'refresh_token','client_id':'fixture','refresh_token':tokens.refresh_token}).encode()
+            async def valid_body(): return {'type':'http.request','body':body,'more_body':False}
+            self.assertEqual(await self.request('/token',valid_body,
+                             [(b'x-dots-client-ip',b'192.0.2.2'),(b'content-type',b'application/x-www-form-urlencoded')],None),200)
+        finally:
+            task.cancel()
+            await asyncio.gather(task,return_exceptions=True)
+        self.assertEqual(self.adapter._public_inflight,0)
+
+    async def test_identity_header_cannot_override_direct_peer_or_duplicate_unix_identity(self):
+        from starlette.requests import Request
+        def request(client, values):
+            return Request({'type':'http','client':client,'headers':[(b'x-dots-client-ip',v) for v in values]})
+        self.assertEqual(self.adapter.public_client(request(('127.0.0.1',1),[b'192.0.2.1'])),'127.0.0.1')
+        self.assertIsNone(self.adapter.public_client(request(('192.0.2.1',1),[b'127.0.0.1'])))
+        self.adapter.trusted_proxy_transport='unix'
+        for values in ([],[b'192.0.2.1',b'192.0.2.2'],[b'192.0.2.1:80'],[b'fe80::1%lo']):
+            self.assertIsNone(self.adapter.public_client(request(None,values)))
+        self.assertIsNone(self.adapter.public_client(request(('127.0.0.1',1),[b'192.0.2.1'])))
+        self.assertEqual(self.adapter.public_client(request(None,[b'2001:0db8::0001'])),'2001:db8::1')
+        self.assertEqual(self.adapter.public_client(request(None,[b'::ffff:192.0.2.1'])),'192.0.2.1')
+        self.assertEqual(await self.request('/token',self.empty,[],None),403)
+
+    async def test_public_rate_limit_refills_without_consuming_interactive_capacity(self):
+        import time
+        now=time.monotonic()
+        self.adapter.trusted_proxy_transport='unix'
+        identity=[(b'x-dots-client-ip',b'192.0.2.1')]
+        with patch.object(auth.time,'monotonic',return_value=now):
+            for _ in range(auth.PUBLIC_BURST):
+                self.assertNotEqual(await self.request('/token',self.empty,identity,None),429)
+            self.assertEqual(await self.request('/token',self.empty,identity,None),429)
+            self.assertEqual(await self.request('/authorize',self.empty,[(b'remote-user',b'alice')],None,'GET'),302)
+        with patch.object(auth.time,'monotonic',return_value=now+1.01):
+            self.assertNotEqual(await self.request('/token',self.empty,identity,None),429)
+
+    async def test_client_map_bounded_and_active_entries_survive_churn(self):
+        import time
+        now=time.monotonic()
+        with patch.object(auth.time,'monotonic',return_value=now):
+            self.assertTrue(self.adapter.admit_public('active'))
+        for i in range(auth.PUBLIC_CLIENT_LIMIT+10):
+            with patch.object(auth.time,'monotonic',return_value=now+i+1):
+                key=f'192.0.2.{i}'
+                self.assertTrue(self.adapter.admit_public(key))
+                self.adapter._public_clients[key]['active']=False
+                self.adapter._public_inflight-=1
+        self.assertEqual(len(self.adapter._public_clients),auth.PUBLIC_CLIENT_LIMIT)
+        self.assertTrue(self.adapter._public_clients['active']['active'])
+        self.assertEqual(self.adapter._public_inflight,1)
+
+    async def test_public_global_bucket_bounds_rotating_clients(self):
+        import time
+        now=time.monotonic()
+        with patch.object(auth.time,'monotonic',return_value=now):
+            for i in range(auth.PUBLIC_GLOBAL_BURST):
+                key=str(i)
+                self.assertTrue(self.adapter.admit_public(key))
+                self.adapter._public_clients[key]['active']=False
+                self.adapter._public_inflight-=1
+            self.assertFalse(self.adapter.admit_public('new-client'))
+
 
 
 class ListenerTests(unittest.TestCase):
