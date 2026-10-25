@@ -1,0 +1,5 @@
+{
+  "ssh_host": "agent@research-target.invalid",
+  "ssh_hostname": "research-target.invalid",
+  "data_dir": "/absolute/private/collector-data"
+}

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.5.0 — 2026-10-25
+
+- Add opt-in MCP Events recovery research with authenticated external observations, durable single-use claims, explicit eligibility reasons and bounded reminders when a policy limit clears (#43).
+- Add external relay/subscription health checks, preflight reporting, and bounded lifecycle observation tools (#20).
+- Document a separately deployed recovery broker with a dedicated service account, restricted Unix socket, bounded request handling and resource limits. Include reviewed deployment helpers and offline fixtures.
+- Record boot-change recovery observations, broker restart checks and monitor maintenance limitations to define the experimental support scope (#45).
+
+The four installed executable sources are unchanged from v0.4.0; this release updates package metadata and adds research material and documentation. The standard installer and updater do not deploy the broker, register a Dots task, start a watchdog or enable automatic recovery. Existing installations are not changed by preparing or publishing a release.
+
+Research remains experimental. Three observed boot-change recoveries do not establish VM replacement, a recovery-time guarantee or reproducible setup for another account. See the [release preparation notes](docs/releases/v0.5.0.md) for evidence and remaining gates. Publishing the release does not establish deployment to an existing environment.
+
 ## v0.4.0 — 2026-10-21
 
 - Add offline `dots-ts version` reporting for package identity, source-file integrity and the separate Tailscale binary version (#27).

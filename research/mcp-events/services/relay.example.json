@@ -1,0 +1,8 @@
+{
+  "observation_file": "/ABSOLUTE/EXISTING/OBSERVER/latest-external.json",
+  "state_file": "/ABSOLUTE/PRIVATE/relay/state.json",
+  "poll_seconds": 15,
+  "transport": "https",
+  "ingest_url": "https://recovery.example.com/monitor/observations",
+  "bearer_token_file": "/ABSOLUTE/PRIVATE/relay/monitor-token"
+}

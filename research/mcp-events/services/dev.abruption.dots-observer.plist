@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>dev.abruption.dots-observer</string>
+<key>ProgramArguments</key><array>
+<string>/ABSOLUTE/PYTHON3</string><string>/ABSOLUTE/EXISTING/OBSERVER/observe.py</string>
+<string>--interval</string><string>60</string>
+</array>
+<key>EnvironmentVariables</key><dict>
+<key>TERM</key><string>xterm-256color</string>
+</dict>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+<key>ThrottleInterval</key><integer>30</integer>
+<key>Umask</key><integer>63</integer>
+</dict></plist>

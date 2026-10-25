@@ -1,0 +1,11 @@
+{
+  "origin": "https://dots-events.example.com",
+  "runtime_dir": "/home/operator/.local/share/dots-events-research",
+  "allowed_user": "operator",
+  "client_id": "dots-events-chatgpt-research",
+  "redirect_uri": "https://chatgpt.com/connector_platform_oauth_redirect",
+  "allowed_callback_origins": ["https://connectors.api.openai.com"],
+  "port": 18743,
+  "enable_recovery": false,
+  "monitor_token_sha256": null
+}

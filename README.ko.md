@@ -8,6 +8,10 @@ Dots 클라우드 컴퓨터에서 일반 사용자 권한으로 Tailscale과 Ope
 
 `/workspace`가 환경 교체 후 보존되는 환경을 대상으로 합니다. 새 환경에서는 start 명령을 실행해야 합니다. OpenAI 또는 Tailscale 공식 도구가 아닌 독립 프로젝트입니다.
 
+## 외부 연결 복구 실험 기능
+
+고급 사용자를 위한 [외부 복구 실험 안내](docs/experimental-recovery.ko.md)를 제공합니다. 외부 서버·개인 SSO·승인된 Dots 작업이 필요하며 일반 설치기로 활성화되지 않습니다. 다른 계정의 설치 재현과 임의의 VM 교체 후 복구는 아직 검증하지 않았습니다.
+
 ## 데모
 
 ![Dots 터미널에서 설치 상태와 Tailscale 버전 1.102.4를 확인하는 스크린샷](docs/assets/dots-tailscale-ssh-verification.png)
@@ -28,7 +32,7 @@ Linux x86_64, Git, Python 3, OpenSSH와 사용자 계정의 22번 포트 바인�
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.4.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.5.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install

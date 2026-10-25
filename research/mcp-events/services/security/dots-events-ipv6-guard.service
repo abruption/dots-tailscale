@@ -1,0 +1,19 @@
+[Unit]
+Description=Restricted IPv6 ingress for Dots events research host
+DefaultDependencies=no
+After=local-fs.target netfilter-persistent.service
+Before=network-pre.target caddy.service shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/dots-events-research/security_ipv6.py --apply
+RemainAfterExit=yes
+# Stopping the service deliberately does not remove filtering.
+# Rollback: disable the unit, then invoke the helper with --remove.
+User=root
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
