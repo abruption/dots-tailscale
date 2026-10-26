@@ -15,7 +15,7 @@ import ssl
 import sys
 from dataclasses import dataclass, asdict
 from urllib.parse import urlsplit
-from bounded_network import bounded_call
+from bounded_network import bounded_call, ERROR_KINDS
 import os
 from pathlib import Path
 import re
@@ -108,6 +108,8 @@ class TransportResult:
     accepted: bool
     failure_class: str = 'ok'
     subscription_active: bool | None = None
+    worker_error_kind: str | None = None
+    worker_exit_code: int | None = None
 
     def __bool__(self):
         return self.accepted
@@ -251,17 +253,26 @@ def https_transmit(config, observation, connection_factory=None):
         # TLS and body processing all run within the supervised wall deadline.
         return https_transmit_inline(config, observation, connection_factory)
     result = bounded_call(lambda: asdict(https_transmit_inline(config, observation)))
+    error_kind = getattr(result, 'error_kind', None)
+    if not isinstance(error_kind, str) or error_kind not in ERROR_KINDS:
+        error_kind = None
+    exit_code = getattr(result, 'exit_code', None)
+    if type(exit_code) is not int or not -255 <= exit_code <= 255:
+        exit_code = None
     if result.status == 'timeout':
-        return TransportResult(False, 'timeout')
+        return TransportResult(False, 'timeout', worker_error_kind=error_kind,
+                               worker_exit_code=exit_code)
     if result.status != 'completed' or not isinstance(result.value, dict):
-        return TransportResult(False, 'transport_failed')
+        return TransportResult(False, 'transport_failed', worker_error_kind=error_kind or 'invalid_worker_result',
+                               worker_exit_code=exit_code)
     value = result.value
     if type(value.get('accepted')) is not bool or not isinstance(value.get('failure_class'), str):
-        return TransportResult(False, 'transport_failed')
+        return TransportResult(False, 'transport_failed', worker_error_kind='invalid_worker_result', worker_exit_code=exit_code)
     subscription_active = value.get('subscription_active')
     if subscription_active is not None and type(subscription_active) is not bool:
-        return TransportResult(False, 'transport_failed')
-    return TransportResult(value['accepted'], value['failure_class'], subscription_active)
+        return TransportResult(False, 'transport_failed', worker_error_kind='invalid_worker_result', worker_exit_code=exit_code)
+    return TransportResult(value['accepted'], value['failure_class'], subscription_active,
+                           worker_exit_code=exit_code if not value['accepted'] else None)
 
 
 def ssh_failure(stderr):
@@ -334,8 +345,25 @@ def transmit(config, observation, runner=subprocess.run):
         return TransportResult(False, 'local_execution_failed')
 
 
+def runtime_diagnostics():
+    # Expose presence/version only, never interpreter paths or environment.
+    try:
+        present = Path(sys.prefix).is_dir()
+    except OSError:
+        present = False
+    return {'runtime_prefix_present': present,
+            'runtime_version': '.'.join(str(v) for v in sys.version_info[:3])}
+
+
+def worker_diagnostics(kind, code):
+    return {'worker_error_kind': kind if isinstance(kind, str) and kind in ERROR_KINDS else None,
+            'worker_exit_code': code if type(code) is int and -255 <= code <= 255 else None}
+
+
 def step(config, state, now=None, sender=transmit, diagnostics=None):
     now = time.time() if now is None else now
+    if diagnostics is not None:
+        diagnostics.update(runtime_diagnostics())
     try:
         row = sanitize(read_private(config['observation_file']), now)
     except (OSError, ValueError, TypeError):
@@ -348,6 +376,9 @@ def step(config, state, now=None, sender=transmit, diagnostics=None):
         diagnostics.update(last_attempt_at=dt.datetime.fromtimestamp(now, dt.timezone.utc).isoformat(),
                            failure_class=getattr(result, 'failure_class', 'ok' if result else 'transport_failed'),
                            subscription_active=getattr(result, 'subscription_active', None))
+        diagnostics.update(worker_diagnostics(
+            getattr(result, 'worker_error_kind', None) if not result else None,
+            getattr(result, 'worker_exit_code', None) if not result else None))
     if result:
         return {'delivered_at': row['observed_at']}, 'delivered'
     return state, 'transport_failed'
@@ -369,16 +400,24 @@ def update_health(previous, state, outcome, diagnostics, now):
             'failure_class': diagnostics.get('failure_class',
                 'observation_unavailable' if outcome == 'observation_unavailable' else 'ok'),
             'stale_delivery': stale,
-            'subscription_active': diagnostics.get('subscription_active', previous.get('subscription_active'))}
+            'subscription_active': diagnostics.get('subscription_active', previous.get('subscription_active')),
+            **worker_diagnostics(diagnostics.get('worker_error_kind') if failed else None,
+                                 diagnostics.get('worker_exit_code') if failed else None),
+            **runtime_diagnostics()}
 
 
 def emit_health_transition(previous, current):
     old = (previous.get('stale_delivery'), previous.get('failure_class'))
     new = (current['stale_delivery'], current['failure_class'])
-    if old != new and (new != (False, 'ok') or previous):
+    old_worker = worker_diagnostics(previous.get('worker_error_kind'), previous.get('worker_exit_code'))
+    new_worker = worker_diagnostics(current.get('worker_error_kind'), current.get('worker_exit_code'))
+    if (old != new or old_worker != new_worker) and (new != (False, 'ok') or previous):
         print(json.dumps({'relay_health': 'degraded' if new != (False, 'ok') else 'restored',
                           'failure_class': current['failure_class'],
-                          'stale_delivery': current['stale_delivery']}), file=sys.stderr, flush=True)
+                          'stale_delivery': current['stale_delivery'], **new_worker,
+                          'previous_worker_error_kind': old_worker['worker_error_kind'],
+                          'previous_worker_exit_code': old_worker['worker_exit_code'],
+                          **runtime_diagnostics()}), file=sys.stderr, flush=True)
 
 
 def main():
