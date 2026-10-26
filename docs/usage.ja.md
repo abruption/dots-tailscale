@@ -227,7 +227,7 @@ JSON では `package.declared_version`、`package.source_revision`、`package.in
 
 ## Tailscale バイナリの更新（開発中）
 
-`dots-ts runtime check/apply/status` は v0.5.0 には含まれません。対応するソース一式を先に導入し、独立した復旧用ターミナルを用意してください。初期インストールの固定バージョンは 1.102.4 のままです。更新後の外部 SSH・ping 確認と、実行後の自動ダウングレードを保証しない点は[更新ガイド（英語）](runtime-updates.md)を確認してください。
+`dots-ts runtime check/apply/status` は v0.5.0 には含まれません。対応するソース一式を先に導入し、独立した復旧用ターミナルを用意してください。初期インストールの固定バージョンは 1.102.4 のままです。更新後の外部 SSH・ping 確認と、実行後は自動ダウングレードを行わない点は[更新ガイド（英語）](runtime-updates.md)を確認してください。
 
 <a id="development-helpers"></a>
 

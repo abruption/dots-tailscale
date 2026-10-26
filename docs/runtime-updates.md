@@ -49,7 +49,8 @@ The CLI prints a transaction ID and flushes stdout before acknowledging the deta
 | `prepared` / `running` | Staging/acknowledgement or the worker is in progress. |
 | `applied` | Local readiness, identity/configuration checks and installed pair hashes passed. External SSH/ping verification is still pending; inspect any cleanup warning. |
 | `failed_rolled_back` | No candidate daemon execution was attempted; the previous pair was restored and checked. |
-| `rejected` | The operation was refused. Inspect the fixed error code and journal. |
+| `rejected` | This invocation was refused before a continuing transaction was acknowledged. Inspect the error and any transaction ID. |
+| `status_unavailable` / `ack_uncertain` | The result cannot be determined from this response. Keep the recovery terminal and use the returned valid ID to inspect the transaction; do not treat it as cancelled or resubmit apply. |
 | `manual_recovery_required` | Execution, process ownership, durable progress or state compatibility is uncertain. Use the independent terminal; do not repeat apply or remove the fence merely to make startup work. |
 
 After `applied`, open a fresh external SSH connection, run Tailscale ping, and check any application path you depend on. Resume external recovery jobs only after these checks. Local `Running` alone is not end-to-end recovery.
@@ -79,7 +80,7 @@ The updater does not copy, replace, print or reset node state or SSH private key
 
 `.runtime-update-block` is written before daemon shutdown. Mutating startup/proxy/package operations refuse this marker, including after interruption or a new boot. Only the worker's verified success or a verified pre-execution rollback clears its own marker. Check/status remain available. A missing process after a boot change does not authorize repeating a transaction.
 
-Once candidate daemon execution is attempted, the new binary may have changed its state format. A readiness/identity failure before the terminal commit attempts to stop that candidate and leaves Tailscale offline; if stopping cannot be confirmed, process/socket state remains unknown. After a verified pair and terminal journal are committed, a fence cleanup failure does not stop the healthy daemon. It records `cleanup_review` / `fence_cleanup_failed` when possible and tries to retain its own fence. The final directory sync and a storage failure can still require operator review. This tool does not assume backward compatibility or automatically restart old binaries against that state. A failure at or after that point leaves a fenced manual-recovery result and the code backups. Never restore an old state snapshot or reauthenticate just to hide this failure. Recovery requires inspecting the journal, paired binary hashes, daemon/socket identity and upstream state compatibility from the independent terminal.
+Once candidate daemon execution is attempted, the new binary may have changed its state format. A readiness/identity failure before the terminal commit attempts to stop that candidate and leaves Tailscale offline; if stopping cannot be confirmed, process/socket state remains unknown. After a verified pair and terminal journal are committed, a fence cleanup failure does not stop the healthy daemon. It records `cleanup_review` / `fence_cleanup_failed` when possible and tries to retain its own fence. The final directory sync and a storage failure can still require operator review. This tool does not assume backward compatibility or automatically restart old binaries against that state. A failure before the verified terminal commit leaves a fenced manual-recovery result and the code backups. A cleanup failure after that commit can leave `applied` with `cleanup_warning=fence_cleanup_failed`, with or without a restored fence; restoration is best effort and the verified daemon is kept running. Such a warning makes the CLI exit nonzero and requires cleanup review, not an automatic version change. Never restore an old state snapshot or reauthenticate just to hide this failure. Recovery requires inspecting the journal, paired binary hashes, daemon/socket identity and upstream state compatibility from the independent terminal.
 
 No live runtime upgrade or failure injection is established by offline tests. Future opt-in scheduling belongs to #31 and must reuse this transaction after its supported live paths are validated. VM replacement can remove the running updater itself; files surviving in `/workspace` do not guarantee an update worker will resume.
 
@@ -93,8 +94,10 @@ Take the same installation lock in the recovery shell and keep that shell open:
 
 ```bash
 D=/workspace/.dots-tailscale
-exec 9>"$D/.operation.lock"
-flock -n 9
+test -f "$D/.operation.lock" && test -O "$D/.operation.lock" &&
+  test ! -L "$D/.operation.lock" &&
+  test "$(stat -c '%a:%h' -- "$D/.operation.lock")" = '600:1' &&
+  exec 9<>"$D/.operation.lock" && flock -n 9
 ```
 
 Continue only if the lock was acquired. Use the transaction ID from status or the private `.runtime-transactions/` directory. Read its `journal.json` locally and inspect `phase`, `state_compatibility`, `worker`, `baseline_version`, `baseline_binary_hashes`, and `binary_hashes`. Missing fields are unknown, not permission to proceed. Compare boot ID and exact PID/start-time/UID/executable identity; a hidden `/proc` entry is not proof that a process exited. Confirm no updater worker remains. Never use broad `pkill` commands or delete an unidentified socket.
@@ -120,7 +123,7 @@ Only after the selected pair, version, process/socket state and permitted direct
 2. Write a private operator resolution note recording the ID, selected version/hashes and reasoning; keep the original journal unchanged.
 3. Create/verify a current-user-owned 0700 `$D/.runtime-resolved` directory. Move this transaction to the previously absent `$D/.runtime-resolved/TRANSACTION_ID` on the same filesystem; never delete it or overwrite another record. Moving it out of `.runtime-transactions` removes the abandoned record from the automatic prior-transaction gate. Flush the filesystem again before releasing a fence.
 4. If `.runtime-update-block` exists, read it without following links and verify its schema, transaction ID and stored boot ID exactly match the archived journal. Remove **only that matching marker**. A different, malformed or unreadable marker is a stop condition. Flush the directory/filesystem; on failure keep the verified pair and diagnose storage rather than changing versions.
-5. Release the shell lock (`flock -u 9`, then `exec 9>&-`). When no daemon is already running, run the installed `bash "$D/start.sh"` once. It will use the verified installed pair. Do not invoke old checkout scripts, which do not understand the runtime fence.
+5. Release the shell lock (`flock -u 9`, then `exec 9>&-`). When no daemon is already running, run the installed `bash "$D/start.sh"` once. It will use the verified installed pair. Do not invoke old checkout scripts or old copies of `dots-ts update`; they do not understand the runtime fence and can replace guarded source files.
 6. Confirm local readiness, a fresh external SSH connection and ping, then resume external jobs. Keep the archived journal and both code pairs until the result and rollback compatibility are understood.
 
 After archival, `runtime status --id` no longer looks up that record; inspect the private archived journal and resolution note instead. Releasing an abandoned transaction is an explicit operator decision, not an automatic claim that the old attempt succeeded. If the same candidate still cannot start, do not repeat indefinitely or restore old state: collect the private daemon log and seek compatibility guidance.
@@ -132,3 +135,5 @@ After archival, `runtime status --id` no longer looks up that record; inspect th
 - Transactions retain stage and backup binaries (about twice the uncompressed pair size). There is no automatic cleanup. Archive only resolved, inactive transactions as described above, and remove old code backups only after an operator-approved retention decision. Never sweep active transaction directories.
 - During the short spawn/worker-identity handoff, a status read can conservatively report manual review before the worker record is visible. Wait for the bounded acknowledgement window and reread status; do not mutate files because of this transient observation.
 - Real Dots upgrade/readiness timing and state downgrade compatibility remain unverified. The normal proxy readiness budget is bounded; a timeout is not proof that the version can never work. Resolve it through the independent terminal and the phase-specific procedure above.
+
+A staging KeyboardInterrupt is recorded as rejected when possible. Abrupt caller termination (including SIGHUP/SIGKILL) or storage failure can still leave an abandoned prepared transaction; use the pre-cutover row of the manual runbook after proving no worker remains. Once an acknowledgement is visible, ending the caller does not cancel the detached worker.

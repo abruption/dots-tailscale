@@ -1128,18 +1128,19 @@ class RuntimeUpdateError(ApplyError):
     def __init__(self, code, transaction_id=None):
         self.code = code if code in RUNTIME_ERRORS else 'worker_failed'
         self.transaction_id = transaction_id
-        super().__init__(self.code)
+        super().__init__(self.code, transaction_id)
 
 
-def runtime_error(error, identifier=None):
+def runtime_error(error, identifier=None, state='rejected'):
     code=error.code if isinstance(error,RuntimeUpdateError) else 'worker_failed'
     if type(error).__name__=='ProxyError':
         message=str(error)
         if 'runtime update fence' in message:code='recovery_fence_present'
         elif message=='another operation is running':code='operation_busy'
         else:code='baseline_unavailable'
-    return {'state': 'rejected', 'error': code,
-            'transaction_id': identifier or getattr(error, 'transaction_id', None)}
+    selected=identifier if identifier is not None else getattr(error,'transaction_id',None)
+    if not isinstance(selected,str) or not re.fullmatch('[0-9a-f]{32}',selected):selected=None
+    return {'state': state, 'error': code, 'transaction_id': selected}
 
 
 def runtime_version(version):
@@ -1345,6 +1346,17 @@ def runtime_identifier(identifier):
     return identifier
 
 
+
+def runtime_marker(directory):
+    value=parse_release_json(bounded_code_read(directory,RUNTIME_FENCE,4096))
+    if (not isinstance(value,dict) or set(value)!={'schema','transaction_id','boot_id'}
+            or type(value['schema']) is not int or value['schema']!=1
+            or not isinstance(value['transaction_id'],str) or not re.fullmatch('[0-9a-f]{32}',value['transaction_id'])
+            or not isinstance(value['boot_id'],str) or not re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',value['boot_id'])):
+        raise RuntimeUpdateError('invalid_transaction')
+    return value
+
+
 def runtime_status(directory, identifier):
     runtime_identifier(identifier);transaction=apply_private(pathlib.Path(directory)/RUNTIME_DIRECTORY/identifier)
     journal=parse_release_json(bounded_code_read(transaction,'journal.json',65536))
@@ -1354,8 +1366,8 @@ def runtime_status(directory, identifier):
     fenced=(pathlib.Path(directory)/RUNTIME_FENCE).exists() or (pathlib.Path(directory)/RUNTIME_FENCE).is_symlink()
     if state in ('applied','failed_rolled_back') and fenced:
         try:
-            marker=parse_release_json(bounded_code_read(directory,RUNTIME_FENCE,4096))
-            if not isinstance(marker,dict) or marker.get('transaction_id')==identifier:state='manual_recovery_required'
+            marker=runtime_marker(directory)
+            if marker['transaction_id']==identifier:state='manual_recovery_required'
         except Exception:state='manual_recovery_required'
     if state not in RUNTIME_TERMINAL:
         worker=journal.get('worker')
@@ -1371,11 +1383,13 @@ def runtime_status(directory, identifier):
     if error is not None and error not in RUNTIME_ERRORS:error='worker_failed'
     version=journal.get('version');runtime_version(version)
     phase=journal.get('phase')
-    if phase not in ('staging','awaiting_ack','baseline','stop_daemon','replace_tailscale','replace_tailscaled','candidate_exec_intent','candidate_readiness','complete','manual_recovery','cleanup_review'):phase='unknown'
+    if phase not in ('staging','awaiting_ack','baseline','stop_daemon','replace_tailscale','replace_tailscaled','candidate_exec_intent','candidate_readiness','complete','manual_recovery','cleanup_review','rollback_restore','rollback_readiness'):phase='unknown'
     compatibility=journal.get('state_compatibility','not_executed')
     if compatibility not in ('not_executed','unknown','current_version_only'):compatibility='unknown'
+    warning=journal.get('cleanup_warning')
+    if warning is not None:warning='fence_cleanup_failed'
     return {key:value for key,value in dict(state=state,transaction_id=identifier,version=version,
-        phase=phase,error=error,external_ssh='pending',
+        phase=phase,error=error,cleanup_warning=warning,external_ssh='pending',
         state_compatibility=compatibility).items() if value is not None}
 
 
@@ -1419,7 +1433,7 @@ def runtime_finish_cleanup(directory, transaction, journal):
     # Cleanup failure is never permission to stop it or restart older binaries.
     try:runtime_clear_fence(directory,journal)
     except BaseException:
-        apply_journal_best_effort(transaction,journal,phase='cleanup_review',error='fence_cleanup_failed')
+        apply_journal_best_effort(transaction,journal,phase='cleanup_review',cleanup_warning='fence_cleanup_failed')
 
 
 @contextlib.contextmanager
@@ -1529,11 +1543,13 @@ def runtime_transaction(directory, runtime, transaction, journal, proxy):
             try:
                 if proxy._daemon(directory,runtime) is not None or proxy._socket_identity(runtime) is not None:
                     raise RuntimeUpdateError('rollback_failed')
+                apply_journal_best_effort(transaction,journal,phase='rollback_restore',error=runtime_error(error)['error'])
                 for name in ('tailscale','tailscaled'):apply_write(directory/name,backup_bytes[name],0o700)
                 restored=proxy._launch(old['argv'],environment,log_fd)
+                apply_journal_best_effort(transaction,journal,phase='rollback_readiness',restored_pid=restored.pid)
                 runtime_ready(directory,runtime,proxy,restored,baseline,public,config,hostkey,before_version)
                 runtime_pair_integrity(directory,journal['baseline_binary_hashes'])
-                apply_journal(transaction,journal,state='failed_rolled_back',phase='complete',error='candidate_failed',state_compatibility='not_executed')
+                apply_journal(transaction,journal,state='failed_rolled_back',phase='complete',error=runtime_error(error)['error'],state_compatibility='not_executed')
             except BaseException:
                 apply_journal_best_effort(transaction,journal,state='manual_recovery_required',phase='manual_recovery',error='rollback_failed')
             else:
@@ -1568,8 +1584,15 @@ def runtime_worker(directory, runtime, transaction):
             runtime_transaction(directory,runtime,transaction,journal,proxy)
     except BaseException as error:
         fenced=(directory/RUNTIME_FENCE).exists() or (directory/RUNTIME_FENCE).is_symlink()
-        apply_journal_best_effort(transaction,journal,state='manual_recovery_required' if fenced else 'rejected',
-            error=error.code if isinstance(error,RuntimeUpdateError) else 'worker_failed')
+        manual=False
+        if fenced:
+            try:manual=runtime_marker(directory)['transaction_id']==identifier
+            except Exception:manual=True
+        # A different valid fence can reject this untouched worker at lock entry.
+        if journal.get('phase') in ('stop_daemon','replace_tailscale','replace_tailscaled','candidate_exec_intent','candidate_readiness','rollback_restore','rollback_readiness','manual_recovery'):
+            manual=True
+        apply_journal_best_effort(transaction,journal,state='manual_recovery_required' if manual else 'rejected',
+            error=runtime_error(error)['error'])
     return 0
 
 
@@ -1618,16 +1641,19 @@ def runtime_apply(directory, runtime, version, bundle=None, confirm=False, proxy
             'binary_hashes':{name:hashlib.sha256(body).hexdigest() for name,body in payload.items()},
             'worker_hashes':{name:hashlib.sha256(trusted[name]).hexdigest() for name in ('dots-ts','dots_proxy.py')},
             'package_hashes':{name:hashlib.sha256(body).hexdigest() for name,body in installed.items()},'external_ssh':'pending'}
-        apply_journal(transaction,journal)
         try:
+            apply_journal(transaction,journal)
             stage=apply_private(transaction/'stage',create=True)
             for name,body in payload.items():apply_write(stage/name,body,0o700)
             runtime_verify_pair(stage,version)
             supervisor=apply_private(transaction/'supervisor',create=True)
             for name in ('dots-ts','dots_proxy.py'):apply_write(supervisor/name,trusted[name],0o700)
-        except Exception as error:
-            code=error.code if isinstance(error,RuntimeUpdateError) else 'binary_probe_failed'
-            apply_journal_best_effort(transaction,journal,state='rejected',error=code);raise RuntimeUpdateError(code,identifier) from None
+        except BaseException as error:
+            code=error.code if isinstance(error,RuntimeUpdateError) else ('worker_interrupted' if not isinstance(error,Exception) else 'binary_probe_failed')
+            try:apply_journal_best_effort(transaction,journal,state='rejected',error=code)
+            except BaseException:pass
+            if not isinstance(error,Exception):raise
+            raise RuntimeUpdateError(code,identifier) from None
     try:
         with open(os.devnull,'ab') as log:
             worker=subprocess.Popen([sys.executable,'-E','-s','-B',str(supervisor/'dots-ts'),'_runtime-worker',str(directory),str(runtime),str(transaction)],
@@ -2098,16 +2124,23 @@ def main(argv=None):
         diagnostic.add_argument("--target")
         options = parser.parse_args(argv)
         if options.command=='runtime':
+            prepared=None
             try:
                 if options.runtime_command=='check':report=runtime_check(directory,runtime,options.version,options.proxy)
                 elif options.runtime_command=='status':report=runtime_status(directory,options.id)
-                else:report=runtime_apply(directory,runtime,options.version,options.bundle,options.confirm_recovery_terminal,options.proxy)
+                else:
+                    report=runtime_apply(directory,runtime,options.version,options.bundle,options.confirm_recovery_terminal,options.proxy)
+                    if report.get('state')=='prepared':prepared=report['transaction_id']
                 print(json.dumps(report,sort_keys=True),flush=True)
-                if options.runtime_command=='apply' and report.get('state')=='prepared':
-                    runtime_ack(directory,report['transaction_id'])
-                return int(report.get('state') in ('rejected','failed_rolled_back','manual_recovery_required'))
+                if prepared:runtime_ack(directory,prepared)
+                return int(bool(report.get('cleanup_warning')) or report.get('state') in ('rejected','failed_rolled_back','manual_recovery_required'))
             except Exception as error:
-                print(json.dumps(runtime_error(error),sort_keys=True),flush=True);return 1
+                if prepared:
+                    failure=runtime_error(error,prepared,state='ack_uncertain');failure['action']='inspect_transaction'
+                elif options.runtime_command=='status':
+                    failure=runtime_error(error,options.id,state='status_unavailable');failure['action']='inspect_transaction'
+                else:failure=runtime_error(error)
+                print(json.dumps(failure,sort_keys=True),flush=True);return 1
         if options.command == 'update' and options.update_command in ('apply', 'status'):
             try:
                 report = (apply_status(directory, options.id) if options.update_command == 'status' else

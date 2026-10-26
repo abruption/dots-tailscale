@@ -227,7 +227,7 @@ JSON 将 `package.declared_version`、`package.source_revision`、`package.integ
 
 ## Tailscale 二进制更新（开发中）
 
-`dots-ts runtime check/apply/status` 尚未包含在 v0.5.0 中。请先安装配套的完整工具源码，并准备独立的恢复终端。初次安装仍固定使用 1.102.4。更新后需另行检查外部 SSH 和 ping；新 daemon 启动后不保证自动降级。详见[更新指南（英文）](runtime-updates.md)。
+`dots-ts runtime check/apply/status` 尚未包含在 v0.5.0 中。请先安装配套的完整工具源码，并准备独立的恢复终端。初次安装仍固定使用 1.102.4。更新后需另行检查外部 SSH 和 ping；新 daemon 启动后不会自动降级。详见[更新指南（英文）](runtime-updates.md)。
 
 <a id="development-helpers"></a>
 

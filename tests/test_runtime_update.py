@@ -263,7 +263,7 @@ class RuntimeTransactionTests(unittest.TestCase):
         for name,body in package.items():
             path=self.directory/tool.CORE_FILES.get(name,name);path.parent.mkdir(mode=0o700,parents=True,exist_ok=True);path.write_bytes(body)
         self.package=package
-        self.journal={'schema':1,'transaction_id':'a'*32,'boot_id':'fixture-boot','state':'prepared','version':VERSION,
+        self.journal={'schema':1,'transaction_id':'a'*32,'boot_id':'11111111-1111-4111-8111-111111111111','state':'prepared','version':VERSION,
                       'binary_hashes':{n:hashlib.sha256(v).hexdigest() for n,v in self.new.items()},
                       'package_hashes':{n:hashlib.sha256(v).hexdigest() for n,v in package.items()}}
         self.baseline={name:{'pid':i,'ticks':str(i),'uid':os.getuid(),'exe':'/fixture'} for name,i in (('shim',101),('sshd',102),('tailscaled',103))}
@@ -478,8 +478,25 @@ class RuntimeTransactionTests(unittest.TestCase):
         self.assertTrue(fired);self.stop_child.assert_not_called();self.proxy._launch.assert_called_once()
         self.assertFalse((self.directory/tool.RUNTIME_FENCE).exists())
         durable=json.loads((self.tx/'journal.json').read_text())
-        self.assertEqual(durable['state'],'applied');self.assertEqual(durable['error'],'fence_cleanup_failed')
+        self.assertEqual(durable['state'],'applied');self.assertEqual(durable['cleanup_warning'],'fence_cleanup_failed')
         self.assertEqual(self.pair(),self.new);self.assert_preserved()
+
+    def test_rollback_journal_records_restore_and_readiness_before_terminal(self):
+        original_write=tool.apply_write;original_journal=tool.apply_journal;fired=[];phases=[]
+        def write(path,data,mode=0o600):
+            original_write(path,data,mode)
+            if path==self.directory/'tailscale' and not fired:
+                fired.append(True);raise OSError('fixture pre-exec replacement failure')
+        def journal(transaction,value,**changes):
+            original_journal(transaction,value,**changes)
+            if 'phase' in changes:phases.append(changes['phase'])
+        with mock.patch.object(tool,'apply_write',side_effect=write),mock.patch.object(tool,'apply_journal',side_effect=journal):
+            self.run_transaction()
+        self.assertEqual(self.journal['state'],'failed_rolled_back')
+        self.assertLess(phases.index('rollback_restore'),phases.index('rollback_readiness'))
+        self.assertLess(phases.index('rollback_readiness'),phases.index('complete'))
+        self.assertEqual(self.journal['restored_pid'],self.child.pid)
+        self.assertEqual(self.pair(),self.old);self.assert_preserved()
 
 
 class RuntimeStatusTests(unittest.TestCase):
@@ -488,14 +505,14 @@ class RuntimeStatusTests(unittest.TestCase):
         self.directory=Path(self.temp.name).resolve();self.identifier='b'*32
         self.tx=self.directory/tool.RUNTIME_DIRECTORY/self.identifier;self.tx.mkdir(mode=0o700,parents=True)
         self.worker={'pid':123,'ticks':'45','uid':os.getuid(),'exe':'/fixture'}
-        self.journal={'schema':1,'transaction_id':self.identifier,'state':'running','boot_id':'old-boot',
+        self.journal={'schema':1,'transaction_id':self.identifier,'state':'running','boot_id':'22222222-2222-4222-8222-222222222222',
                       'version':VERSION,'phase':'candidate_readiness','worker':self.worker,
                       'environment':'SECRET_ENV','argv':['SECRET_ARGUMENT'],'error':'SECRET_ERROR'}
         tool.apply_journal(self.tx,self.journal)
 
     def test_dead_worker_or_boot_change_requires_manual_and_status_is_readonly(self):
         before=(self.tx/'journal.json').read_bytes()
-        for boot,identity in (('new-boot',self.worker),('old-boot',None)):
+        for boot,identity in (('33333333-3333-4333-8333-333333333333',self.worker),('22222222-2222-4222-8222-222222222222',None)):
             with mock.patch.object(tool,'apply_boot',return_value=boot),mock.patch.object(tool,'apply_identity',return_value=identity):
                 result=tool.runtime_status(self.directory,self.identifier)
             self.assertEqual(result['state'],'manual_recovery_required');self.assertEqual(result['external_ssh'],'pending')
@@ -526,7 +543,7 @@ class RuntimeStatusTests(unittest.TestCase):
     def test_malformed_worker_metadata_is_manual_not_success(self):
         for worker in ({'pid':True}, {'pid':'123'}, {'pid':123,'uid':-1}, []):
             tool.apply_write(self.tx/'journal.json',json.dumps({**self.journal,'worker':worker}).encode())
-            with mock.patch.object(tool,'apply_boot',return_value='old-boot'):
+            with mock.patch.object(tool,'apply_boot',return_value='22222222-2222-4222-8222-222222222222'):
                 report=tool.runtime_status(self.directory,self.identifier)
             self.assertEqual(report['state'],'manual_recovery_required')
 
@@ -536,6 +553,15 @@ class RuntimeStatusTests(unittest.TestCase):
         tool.runtime_fence(self.directory,dict(self.journal,transaction_id='c'*32))
         report=tool.runtime_status(self.directory,self.identifier)
         self.assertEqual(report['state'],'applied');self.assertEqual(report['external_ssh'],'pending')
+
+    def test_invalid_other_fence_schema_never_allows_historical_success(self):
+        tool.apply_journal(self.tx,self.journal,state='applied',phase='complete')
+        valid={'schema':1,'transaction_id':'c'*32,'boot_id':'11111111-1111-4111-8111-111111111111'}
+        for changes in ({'schema':True},{'schema':2},{'boot_id':'invalid'},
+                        {'transaction_id':'not-an-id'},{'unexpected':True}):
+            tool.apply_write(self.directory/tool.RUNTIME_FENCE,json.dumps({**valid,**changes}).encode())
+            self.assertEqual(tool.runtime_status(self.directory,self.identifier)['state'],'manual_recovery_required')
+
 
 
 class RuntimeApplyWorkerTests(unittest.TestCase):
@@ -549,7 +575,7 @@ class RuntimeApplyWorkerTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(tool,'apply_bundle',return_value=self.package))
         self.stack.enter_context(mock.patch.object(tool,'runtime_verify_pair'))
         self.stack.enter_context(mock.patch.object(tool,'runtime_probe',return_value='1.102.4'))
-        self.stack.enter_context(mock.patch.object(tool,'apply_boot',return_value='fixture-boot'))
+        self.stack.enter_context(mock.patch.object(tool,'apply_boot',return_value='11111111-1111-4111-8111-111111111111'))
         self.proxy._operation.side_effect=lambda d:contextlib.nullcontext()
         self.stack.enter_context(mock.patch.dict(sys.modules,{'dots_proxy':self.proxy}))
         self.spawn=self.stack.enter_context(mock.patch.object(tool.subprocess,'Popen',return_value=mock.Mock(pid=301)))
@@ -659,3 +685,98 @@ class RuntimeApplyWorkerTests(unittest.TestCase):
             except (BrokenPipeError,SystemExit):pass
         apply.assert_called_once()
         ack.assert_not_called()
+
+    def test_cli_status_read_failure_preserves_id_and_is_not_terminal_rejection(self):
+        import io
+        output=io.StringIO()
+        with mock.patch.object(tool,'directories',return_value=(self.directory,self.runtime)), \
+             mock.patch.object(tool,'runtime_status',side_effect=tool.RuntimeUpdateError('invalid_transaction')), \
+             mock.patch.object(tool.sys,'stdout',output),mock.patch.object(tool.sys,'stderr',io.StringIO()):
+            result=tool.main(['runtime','status','--id','a'*32,'--json'])
+        report=json.loads(output.getvalue())
+        self.assertEqual(report['state'],'status_unavailable')
+        self.assertEqual(report['transaction_id'],'a'*32);self.assertNotEqual(result,0)
+
+    def test_cli_ack_visible_then_directory_fsync_failure_preserves_uncertainty_and_id(self):
+        import io,stat
+        prepared=self.apply();identifier=prepared['transaction_id'];tx=self.directory/tool.RUNTIME_DIRECTORY/identifier
+        original=tool.os.fsync;fired=[]
+        def sync(fd):
+            info=os.fstat(fd)
+            if stat.S_ISDIR(info.st_mode) and info.st_ino==tx.stat().st_ino and (tx/'ack').exists():
+                fired.append(True);raise OSError('fixture ack is visible but durability uncertain')
+            return original(fd)
+        output=io.StringIO()
+        with mock.patch.object(tool,'directories',return_value=(self.directory,self.runtime)), \
+             mock.patch.object(tool,'runtime_apply',return_value=prepared),mock.patch.object(tool.os,'fsync',side_effect=sync), \
+             mock.patch.object(tool.sys,'stdout',output),mock.patch.object(tool.sys,'stderr',io.StringIO()):
+            result=tool.main(['runtime','apply','--version',VERSION,'--confirm-recovery-terminal','--json'])
+        reports=[json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertTrue(fired);self.assertTrue((tx/'ack').exists())
+        self.assertEqual(reports[0]['state'],'prepared');self.assertEqual(reports[-1]['state'],'ack_uncertain')
+        self.assertEqual(reports[-1]['transaction_id'],identifier);self.assertNotEqual(result,0)
+        self.assertNotIn('rejected',[r['state'] for r in reports])
+
+    def test_staging_keyboard_interrupt_records_rejected_without_spawning(self):
+        with mock.patch.object(tool,'runtime_verify_pair',side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):self.apply()
+        transactions=list((self.directory/tool.RUNTIME_DIRECTORY).iterdir())
+        self.assertEqual(len(transactions),1)
+        journal=json.loads((transactions[0]/'journal.json').read_text())
+        self.assertEqual(journal['state'],'rejected');self.spawn.assert_not_called()
+        RuntimeTransactionTests.assert_preserved(self)
+
+    def test_other_workers_fence_does_not_claim_this_worker_mutated_runtime(self):
+        tx=self.worker_fixture()
+        other={'schema':1,'transaction_id':'f'*32,'boot_id':'11111111-1111-4111-8111-111111111111'}
+        tool.apply_write(self.directory/tool.RUNTIME_FENCE,json.dumps(other).encode())
+        self.proxy._operation.side_effect=RuntimeError('other operation fenced')
+        with mock.patch.object(tool,'runtime_transaction') as transaction:
+            tool.runtime_worker(self.directory,self.runtime,tx)
+        transaction.assert_not_called()
+        self.assertEqual(json.loads((tx/'journal.json').read_text())['state'],'rejected')
+        self.assertEqual(json.loads((self.directory/tool.RUNTIME_FENCE).read_text()),other)
+        RuntimeTransactionTests.assert_preserved(self)
+
+    def test_cli_status_cleanup_warning_preserves_original_error_and_nonzero_exit(self):
+        import io
+        status={'state':'failed_rolled_back','transaction_id':'a'*32,'version':VERSION,
+                'error':'candidate_failed','cleanup_warning':'fence_cleanup_failed','external_ssh':'pending'}
+        output=io.StringIO()
+        with mock.patch.object(tool,'directories',return_value=(self.directory,self.runtime)), \
+             mock.patch.object(tool,'runtime_status',return_value=status),mock.patch.object(tool.sys,'stdout',output):
+            code=tool.main(['runtime','status','--id','a'*32,'--json'])
+        report=json.loads(output.getvalue())
+        self.assertNotEqual(code,0);self.assertEqual(report['error'],'candidate_failed')
+        self.assertEqual(report['cleanup_warning'],'fence_cleanup_failed')
+
+    def test_staging_error_transaction_id_survives_exception_constructor_and_cli(self):
+        import io
+        identifier='d'*32
+        error=tool.RuntimeUpdateError('binary_probe_failed',identifier)
+        self.assertEqual(error.transaction_id,identifier)
+        self.assertEqual(tool.runtime_error(error)['transaction_id'],identifier)
+        output=io.StringIO()
+        with mock.patch.object(tool,'directories',return_value=(self.directory,self.runtime)), \
+             mock.patch.object(tool,'runtime_apply',side_effect=error),mock.patch.object(tool.sys,'stdout',output):
+            result=tool.main(['runtime','apply','--version',VERSION,'--confirm-recovery-terminal','--json'])
+        report=json.loads(output.getvalue())
+        self.assertEqual(report['transaction_id'],identifier);self.assertEqual(report['error'],'binary_probe_failed')
+        self.assertNotEqual(result,0)
+
+    def test_malformed_status_identifier_is_never_echoed(self):
+        import io
+        secret='SECRET_TOKEN_INVALID_IDENTIFIER'
+        for explicit,error in ((secret,tool.RuntimeUpdateError('invalid_transaction')),
+                               (None,tool.RuntimeUpdateError('invalid_transaction',secret))):
+            report=tool.runtime_error(error,explicit)
+            self.assertIsNone(report.get('transaction_id'));self.assertNotIn(secret,json.dumps(report))
+        output=io.StringIO();diagnostic=io.StringIO()
+        with mock.patch.object(tool,'directories',return_value=(self.directory,self.runtime)), \
+             mock.patch.object(tool.sys,'stdout',output),mock.patch.object(tool.sys,'stderr',diagnostic):
+            result=tool.main(['runtime','status','--id',secret,'--json'])
+        self.assertNotEqual(result,0)
+        self.assertNotIn(secret,output.getvalue()+diagnostic.getvalue())
+        report=json.loads(output.getvalue())
+        self.assertEqual(report['error'],'invalid_transaction')
+        self.assertIsNone(report.get('transaction_id'))

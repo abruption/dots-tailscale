@@ -49,7 +49,8 @@ CLI는 작업 ID를 출력하고 stdout을 비운 뒤 분리된 worker의 진행
 | `prepared` / `running` | 준비·실행 허가 대기 또는 worker 진행 중입니다. |
 | `applied` | 로컬 준비 상태·기존 identity/설정·설치 파일 해시 확인을 통과했습니다. 외부 SSH·ping은 별도로 확인해야 합니다. |
 | `failed_rolled_back` | 새 daemon 실행을 시도하기 전에 실패해 기존 바이너리 쌍을 복원하고 확인했습니다. |
-| `rejected` | 적용을 거부했습니다. 고정 오류 코드와 journal을 확인하세요. |
+| `rejected` | 계속 실행될 작업의 허가가 확인되기 전에 이번 호출을 거부했습니다. 오류와 작업 ID가 있으면 함께 확인하세요. |
+| `status_unavailable` / `ack_uncertain` | 이 응답만으로 결과를 확정할 수 없습니다. 복구 터미널을 유지하고 반환된 유효한 ID로 상태를 확인하세요. 취소된 것으로 여기거나 apply를 다시 제출하지 마세요. |
 | `manual_recovery_required` | 실행·프로세스 소유·진행 기록·state 호환성을 확정할 수 없습니다. 독립 터미널에서 확인하고, 재실행이나 차단 표식 삭제로 넘기지 마세요. |
 
 `applied` 이후 새 외부 SSH 연결과 Tailscale ping, 사용하는 애플리케이션 경로를 확인하세요. 그 뒤 외부 자동복구를 재개합니다. 로컬 `Running`만으로 전체 연결이 복구됐다고 판단하지 않습니다.
@@ -79,7 +80,7 @@ tailscale_1.104.2_amd64.tgz.sha256
 
 Daemon을 중지하기 전에 `.runtime-update-block` 표식을 만듭니다. 시작·프록시·패키지 변경 경로는 표식이 있으면 중단하므로, worker가 끊기거나 새로 부팅돼도 섞인 바이너리를 그대로 시작하지 않습니다. 정상 적용 또는 새 daemon 실행 전의 검증된 원복을 마친 worker만 자기 표식을 지웁니다. check/status는 계속 사용할 수 있습니다.
 
-새 daemon 실행을 시도한 뒤에는 state 형식이 바뀌었을 수 있습니다. 하위 호환성을 추정해 옛 바이너리를 자동으로 다시 실행하지 않습니다. 이 단계 이후 실패하면 백업과 표식을 남기고 수동 복구를 요구합니다. 과거 state 복원이나 재로그인으로 실패를 덮지 마세요. 독립 터미널에서 journal·바이너리 쌍의 해시·daemon/socket identity와 상위 버전의 state 호환성을 확인해야 합니다.
+새 daemon 실행을 시도한 뒤에는 state 형식이 바뀌었을 수 있습니다. 하위 호환성을 추정해 옛 바이너리를 자동으로 다시 실행하지 않습니다. 정상 쌍과 완료 journal을 저장하기 전 실패하면 백업과 표식을 남기고 수동 복구를 요구합니다. 완료 저장 뒤의 정리 실패는 표식 복원 여부와 관계없이 `applied`와 `cleanup_warning=fence_cleanup_failed`로 남을 수 있습니다. 표식 복원은 최선 노력으로 수행하고 정상 daemon은 유지합니다. 경고가 있으면 CLI는 0이 아닌 종료코드를 반환하므로 자동 버전 변경 대신 정리 상태를 확인하세요. 과거 state 복원이나 재로그인으로 실패를 덮지 마세요. 독립 터미널에서 journal·바이너리 쌍의 해시·daemon/socket identity와 상위 버전의 state 호환성을 확인해야 합니다.
 
 오프라인 테스트는 실제 Dots의 바이너리 갱신이나 장애 복구를 입증하지 않습니다. 선택적 자동화는 #31에서 이 경로의 실환경 검증 후 다룹니다. VM 교체로 updater 프로세스가 사라지면, `/workspace`에 파일이 남아 있다는 이유만으로 작업이 이어진다고 보장할 수 없습니다.
 
@@ -95,8 +96,10 @@ Daemon을 중지하기 전에 `.runtime-update-block` 표식을 만듭니다. �
 
 ```bash
 D=/workspace/.dots-tailscale
-exec 9>"$D/.operation.lock"
-flock -n 9
+test -f "$D/.operation.lock" && test -O "$D/.operation.lock" &&
+  test ! -L "$D/.operation.lock" &&
+  test "$(stat -c '%a:%h' -- "$D/.operation.lock")" = '600:1' &&
+  exec 9<>"$D/.operation.lock" && flock -n 9
 ```
 
 잠금 획득에 성공한 경우에만 계속합니다. 작업의 `journal.json`에서 `phase`, `state_compatibility`, `worker`, `baseline_version`, `baseline_binary_hashes`, `binary_hashes`를 확인하세요. 필드가 없으면 미확인입니다. 부팅 ID와 PID·시작 시각·UID·실행 파일을 대조해 updater worker가 확실히 종료됐는지 확인합니다. 접근 제한 때문에 `/proc`이 안 보이는 상황을 종료로 취급하지 마세요. 포괄적인 `pkill`이나 소유자를 모르는 소켓 삭제는 하지 않습니다.
@@ -122,7 +125,7 @@ flock -n 9
 2. 작업 ID, 선택한 버전·해시, 판단 근거를 사용자 전용 복구 메모로 남깁니다. 원래 journal은 수정하지 않습니다.
 3. 현재 사용자 소유·0700인 `$D/.runtime-resolved`를 준비하고, 해당 작업을 비어 있는 새 경로 `$D/.runtime-resolved/TRANSACTION_ID`로 같은 파일시스템 안에서 옮깁니다. 다른 기록을 덮거나 삭제하지 마세요. 활성 작업 디렉터리 밖으로 보관하면 이후 apply의 이전 작업 검사에서 제외됩니다. 파일시스템을 다시 반영한 뒤 표식을 해제합니다.
 4. `.runtime-update-block`이 있으면 링크를 따라가지 않고 읽어 schema·작업 ID·기록된 boot ID가 보관한 journal과 정확히 일치하는지 확인합니다. **그 작업의 표식만** 제거합니다. 다르거나 읽을 수 없는 표식은 중단 조건입니다. 디렉터리/파일시스템 반영이 실패하면 검증된 쌍을 유지하고 저장 장치 문제를 확인하세요.
-5. `flock -u 9`, `exec 9>&-`로 셸 잠금을 해제합니다. daemon이 이미 실행 중이지 않은 경우 설치된 `bash "$D/start.sh"`를 한 번 실행합니다. 표식을 모르는 구 checkout의 시작 스크립트는 사용하지 마세요.
+5. `flock -u 9`, `exec 9>&-`로 셸 잠금을 해제합니다. daemon이 이미 실행 중이지 않은 경우 설치된 `bash "$D/start.sh"`를 한 번 실행합니다. 표식을 모르는 구 checkout의 시작 스크립트나 구버전 `dots-ts update`도 사용하지 마세요. 보호 장치가 들어 있는 소스를 교체할 수 있습니다.
 6. 로컬 준비 상태와 새 외부 SSH·ping을 확인한 뒤 외부 작업을 재개합니다. 결과와 호환성을 확인하기 전까지 원래 journal과 두 코드 쌍을 보관합니다.
 
 보관한 작업은 `runtime status --id` 대신 보관 경로의 journal·복구 메모로 확인합니다. 이는 운영자의 명시적 해소 결정이며 옛 시도가 자동으로 성공 처리되는 것은 아닙니다. 같은 candidate가 계속 시작되지 않으면 반복 실행이나 옛 state 복원 대신 비공개 daemon 로그를 확인하고 호환성 지원을 요청하세요.
@@ -134,3 +137,5 @@ flock -n 9
 - 각 작업은 stage와 backup을 보관하므로 압축 해제된 바이너리 쌍 크기의 약 두 배가 필요합니다. 자동 정리는 없습니다. 활성 디렉터리를 일괄 삭제하지 말고, 해소된 작업만 위 절차로 보관한 뒤 보존 정책에 따라 정리하세요.
 - worker 생성과 identity 기록 사이의 짧은 구간에는 status가 보수적으로 수동 확인을 요구할 수 있습니다. 제한된 대기 시간이 지난 뒤 다시 조회하고, 일시적인 응답만으로 파일을 변경하지 마세요.
 - 실제 Dots의 업그레이드 기동 시간과 state 다운그레이드 호환성은 아직 검증하지 않았습니다. readiness timeout이 그 버전의 영구적인 사용 불가를 뜻하지는 않습니다. 독립 터미널과 단계별 절차로 판단해야 합니다.
+
+스테이징 중 KeyboardInterrupt는 가능한 경우 rejected로 기록합니다. SIGHUP/SIGKILL 같은 갑작스러운 종료나 저장소 오류는 prepared 작업을 남길 수 있습니다. worker가 없음을 확인한 뒤 수동 절차의 실행 전 항목으로 판단하세요. ack가 이미 보이는 시점에는 호출을 종료해도 detached worker가 취소되지 않습니다. 최종 디렉터리 동기화나 저장소 문제가 있으면 정상 쌍을 유지한 채 운영자가 확인해야 합니다.
