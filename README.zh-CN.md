@@ -12,6 +12,10 @@
 
 v0.5.0 包含实验代码和运维说明，可通过外部监控与 MCP Events 请求 Dots 执行已有的启动命令。普通安装不会启用这项功能，需要自行维护外部服务器、认证和监控。我们已多次观察到新启动后的连接恢复，但这不保证每次 VM 替换后都能恢复，也不保证立即执行。详见[实验功能运维指南（英文）](docs/experimental-recovery.md)。
 
+## Tailscale 二进制更新（开发中）
+
+正在准备手动更新已有 Tailscale 可执行文件的 `dots-ts runtime` 工具。v0.5.0 尚未包含此功能，也不会开启自动更新。请先阅读[更新指南（英文）](docs/runtime-updates.md)，了解前提、中断后的启动限制及恢复边界。
+
 ## 演示
 
 ![Dots 终端中的安装检查以及 Tailscale 版本 1.102.4 截图](docs/assets/dots-tailscale-ssh-verification.png)

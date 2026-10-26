@@ -225,6 +225,10 @@ JSON 将 `package.declared_version`、`package.source_revision`、`package.integ
 
 已于 2026-10-21 在 Dots 中测试经过审核的开发候选版本。正常应用、故意启动失败后的回滚、外部 SSH 验证及其范围，请参阅[更新验证记录](validation/v0.4.0-update-trial.md)。
 
+## Tailscale 二进制更新（开发中）
+
+`dots-ts runtime check/apply/status` 尚未包含在 v0.5.0 中。请先安装配套的完整工具源码，并准备独立的恢复终端。初次安装仍固定使用 1.102.4。更新后需另行检查外部 SSH 和 ping；新 daemon 启动后不会自动降级。详见[更新指南（英文）](runtime-updates.md)。
+
 <a id="development-helpers"></a>
 
 ## v0.4.0 辅助工具与可选应用代理

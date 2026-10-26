@@ -12,6 +12,10 @@ This setup targets environments that preserve `/workspace`. Processes still need
 
 Advanced users can review the [external recovery experiment](docs/experimental-recovery.md). It requires an external server, private SSO and an authorized Dots task; it is not enabled by the normal installer. Setup on another account and recovery after arbitrary VM replacement remain unverified.
 
+## Tailscale binary updates (development)
+
+A separate, manual `dots-ts runtime` updater is being prepared for existing Tailscale binaries. It is not in v0.5.0 and does not enable automatic updates. Read the [runtime update guide](docs/runtime-updates.md) for prerequisites, interrupted-update fences and recovery limits.
+
 ## Demo
 
 ![Dots terminal screenshot showing installation checks and Tailscale version 1.102.4](docs/assets/dots-tailscale-ssh-verification.png)

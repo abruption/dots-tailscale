@@ -244,6 +244,15 @@ def _operation(d):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise ProxyError("another operation is running") from error
+        marker = d / ".runtime-update-block"
+        try:
+            os.lstat(marker)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            raise ProxyError("cannot safely inspect runtime update fence") from error
+        else:
+            raise ProxyError("runtime update fence exists; inspect update status before proceeding")
         yield
     finally:
         os.close(fd)
