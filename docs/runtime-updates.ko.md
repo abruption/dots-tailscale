@@ -49,7 +49,7 @@ CLI는 작업 ID를 출력하고 stdout을 비운 뒤 분리된 worker의 진행
 | `prepared` / `running` | 준비·실행 허가 대기 또는 worker 진행 중입니다. |
 | `applied` | 로컬 준비 상태·기존 identity/설정·설치 파일 해시 확인을 통과했습니다. 외부 SSH·ping은 별도로 확인해야 합니다. |
 | `failed_rolled_back` | 새 daemon 실행을 시도하기 전에 실패해 기존 바이너리 쌍을 복원하고 확인했습니다. |
-| `rejected` | 계속 실행될 작업의 허가가 확인되기 전에 이번 호출을 거부했습니다. 오류와 작업 ID가 있으면 함께 확인하세요. |
+| `rejected` | 이 작업이 daemon을 중지하거나 설치된 바이너리 쌍을 교체하기 전에 거부됐습니다. 호출 단계뿐 아니라 ack 이후 worker에서도 거부될 수 있습니다. 오류와 작업 ID를 확인하세요. |
 | `status_unavailable` / `ack_uncertain` | 이 응답만으로 결과를 확정할 수 없습니다. 복구 터미널을 유지하고 반환된 유효한 ID로 상태를 확인하세요. 취소된 것으로 여기거나 apply를 다시 제출하지 마세요. |
 | `manual_recovery_required` | 실행·프로세스 소유·진행 기록·state 호환성을 확정할 수 없습니다. 독립 터미널에서 확인하고, 재실행이나 차단 표식 삭제로 넘기지 마세요. |
 
@@ -80,7 +80,7 @@ tailscale_1.104.2_amd64.tgz.sha256
 
 Daemon을 중지하기 전에 `.runtime-update-block` 표식을 만듭니다. 시작·프록시·패키지 변경 경로는 표식이 있으면 중단하므로, worker가 끊기거나 새로 부팅돼도 섞인 바이너리를 그대로 시작하지 않습니다. 정상 적용 또는 새 daemon 실행 전의 검증된 원복을 마친 worker만 자기 표식을 지웁니다. check/status는 계속 사용할 수 있습니다.
 
-새 daemon 실행을 시도한 뒤에는 state 형식이 바뀌었을 수 있습니다. 하위 호환성을 추정해 옛 바이너리를 자동으로 다시 실행하지 않습니다. 정상 쌍과 완료 journal을 저장하기 전 실패하면 백업과 표식을 남기고 수동 복구를 요구합니다. 완료 저장 뒤의 정리 실패는 표식 복원 여부와 관계없이 `applied`와 `cleanup_warning=fence_cleanup_failed`로 남을 수 있습니다. 표식 복원은 최선 노력으로 수행하고 정상 daemon은 유지합니다. 경고가 있으면 CLI는 0이 아닌 종료코드를 반환하므로 자동 버전 변경 대신 정리 상태를 확인하세요. 과거 state 복원이나 재로그인으로 실패를 덮지 마세요. 독립 터미널에서 journal·바이너리 쌍의 해시·daemon/socket identity와 상위 버전의 state 호환성을 확인해야 합니다.
+새 daemon 실행을 시도한 뒤에는 state 형식이 바뀌었을 수 있습니다. 하위 호환성을 추정해 옛 바이너리를 자동으로 다시 실행하지 않습니다. 정상 쌍과 완료 journal을 저장하기 전 실패하면 백업과 표식을 남기고 수동 복구를 요구합니다. 완료 저장 뒤에는 journal의 `applied` 또는 검증된 원복의 `failed_rolled_back`을 유지합니다. 정리 오류는 `fence_cleanup_failed`나 `worker_cleanup_failed` 경고로 남을 수 있습니다. 자기 표식이나 손상된 표식이 남으면 status는 `manual_recovery_required`로 표시하고, 그렇지 않으면 완료 상태와 경고를 함께 표시할 수 있습니다. 표식 복원은 최선 노력으로 수행하며 검증된 정상 daemon은 유지합니다. 경고가 있으면 CLI는 0이 아닌 종료코드를 반환하므로 자동 버전 변경 대신 정리 상태를 확인하세요. 과거 state 복원이나 재로그인으로 실패를 덮지 마세요. 독립 터미널에서 journal·바이너리 쌍의 해시·daemon/socket identity와 상위 버전의 state 호환성을 확인해야 합니다.
 
 오프라인 테스트는 실제 Dots의 바이너리 갱신이나 장애 복구를 입증하지 않습니다. 선택적 자동화는 #31에서 이 경로의 실환경 검증 후 다룹니다. VM 교체로 updater 프로세스가 사라지면, `/workspace`에 파일이 남아 있다는 이유만으로 작업이 이어진다고 보장할 수 없습니다.
 

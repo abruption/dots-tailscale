@@ -1121,7 +1121,7 @@ RUNTIME_ERRORS = frozenset(('invalid_version', 'unsupported_platform', 'invalid_
     'baseline_unavailable', 'preserved_component_changed', 'identity_changed', 'candidate_failed',
     'worker_interrupted', 'worker_not_acknowledged', 'worker_failed', 'journal_failed',
     'candidate_execution_uncertain', 'rollback_failed', 'source_changed', 'invalid_selection',
-    'operation_busy', 'staging_conflict', 'fence_cleanup_failed', 'daemon_log_unavailable'))
+    'operation_busy', 'staging_conflict', 'staging_failed', 'fence_cleanup_failed', 'worker_cleanup_failed', 'daemon_log_unavailable'))
 
 
 class RuntimeUpdateError(ApplyError):
@@ -1387,7 +1387,7 @@ def runtime_status(directory, identifier):
     compatibility=journal.get('state_compatibility','not_executed')
     if compatibility not in ('not_executed','unknown','current_version_only'):compatibility='unknown'
     warning=journal.get('cleanup_warning')
-    if warning is not None:warning='fence_cleanup_failed'
+    if warning is not None and warning not in ('fence_cleanup_failed','worker_cleanup_failed'):warning='worker_cleanup_failed'
     return {key:value for key,value in dict(state=state,transaction_id=identifier,version=version,
         phase=phase,error=error,cleanup_warning=warning,external_ssh='pending',
         state_compatibility=compatibility).items() if value is not None}
@@ -1433,7 +1433,8 @@ def runtime_finish_cleanup(directory, transaction, journal):
     # Cleanup failure is never permission to stop it or restart older binaries.
     try:runtime_clear_fence(directory,journal)
     except BaseException:
-        apply_journal_best_effort(transaction,journal,phase='cleanup_review',cleanup_warning='fence_cleanup_failed')
+        try:apply_journal_best_effort(transaction,journal,phase='cleanup_review',cleanup_warning='fence_cleanup_failed')
+        except BaseException:pass
 
 
 @contextlib.contextmanager
@@ -1472,7 +1473,7 @@ def runtime_ready(directory, runtime, proxy, child, baseline, public, config, ho
     runtime_verify_pair(directory,version)
 
 
-def runtime_transaction(directory, runtime, transaction, journal, proxy):
+def runtime_transaction(directory, runtime, transaction, journal, proxy, commit_outcome=None):
     installed=apply_bundle(directory,'installed')
     if {name:hashlib.sha256(body).hexdigest() for name,body in installed.items()}!=journal.get('package_hashes'):
         raise RuntimeUpdateError('source_changed')
@@ -1528,6 +1529,7 @@ def runtime_transaction(directory, runtime, transaction, journal, proxy):
             runtime_ready(directory,runtime,proxy,child,baseline,public,config,hostkey,journal['version'])
             runtime_pair_integrity(directory,journal['binary_hashes'])
             apply_journal(transaction,journal,state='applied',phase='complete',state_compatibility='current_version_only')
+            if commit_outcome is not None:commit_outcome['state']='applied'
         except BaseException as error:
             if exec_intent:
                 if child is not None:
@@ -1550,6 +1552,7 @@ def runtime_transaction(directory, runtime, transaction, journal, proxy):
                 runtime_ready(directory,runtime,proxy,restored,baseline,public,config,hostkey,before_version)
                 runtime_pair_integrity(directory,journal['baseline_binary_hashes'])
                 apply_journal(transaction,journal,state='failed_rolled_back',phase='complete',error=runtime_error(error)['error'],state_compatibility='not_executed')
+                if commit_outcome is not None:commit_outcome['state']='failed_rolled_back'
             except BaseException:
                 apply_journal_best_effort(transaction,journal,state='manual_recovery_required',phase='manual_recovery',error='rollback_failed')
             else:
@@ -1578,11 +1581,20 @@ def runtime_worker(directory, runtime, transaction):
             apply_journal(transaction,journal,state='rejected',error='worker_not_acknowledged');return 1
         time.sleep(.05)
     if bounded_code_read(transaction,'ack',8)!=b'1\n':raise RuntimeUpdateError('invalid_transaction')
+    commit_outcome={}
     try:
         with proxy._operation(directory):
             apply_journal(transaction,journal,worker=apply_identity(os.getpid()),phase='baseline')
-            runtime_transaction(directory,runtime,transaction,journal,proxy)
+            runtime_transaction(directory,runtime,transaction,journal,proxy,commit_outcome)
     except BaseException as error:
+        if commit_outcome.get('state') in ('applied','failed_rolled_back'):
+            # This proof is set only after the terminal journal write returned.
+            # Lock/log cleanup failure cannot turn a committed update into rejection.
+            try:
+                apply_journal_best_effort(transaction,journal,state=commit_outcome['state'],
+                    phase='cleanup_review',cleanup_warning='worker_cleanup_failed')
+            except BaseException:pass
+            return 0
         fenced=(directory/RUNTIME_FENCE).exists() or (directory/RUNTIME_FENCE).is_symlink()
         manual=False
         if fenced:
@@ -1632,7 +1644,8 @@ def runtime_apply(directory, runtime, version, bundle=None, confirm=False, proxy
                     raise RuntimeUpdateError('prior_transaction_requires_manual_review')
         root=apply_private(directory/RUNTIME_DIRECTORY,create=True)
         for previous in root.iterdir():
-            if runtime_status(directory,previous.name)['state'] not in ('applied','failed_rolled_back','rejected'):
+            previous_status=runtime_status(directory,previous.name)
+            if previous_status['state'] not in ('applied','failed_rolled_back','rejected') or previous_status.get('cleanup_warning'):
                 raise RuntimeUpdateError('prior_transaction_requires_manual_review')
         if runtime_version(version)<=runtime_version(runtime_probe(directory/'tailscale','version')):raise RuntimeUpdateError('downgrade_or_same_version')
         identifier=uuid.uuid4().hex;transaction=apply_private(root/identifier,create=True)
@@ -1649,7 +1662,7 @@ def runtime_apply(directory, runtime, version, bundle=None, confirm=False, proxy
             supervisor=apply_private(transaction/'supervisor',create=True)
             for name in ('dots-ts','dots_proxy.py'):apply_write(supervisor/name,trusted[name],0o700)
         except BaseException as error:
-            code=error.code if isinstance(error,RuntimeUpdateError) else ('worker_interrupted' if not isinstance(error,Exception) else 'binary_probe_failed')
+            code=error.code if isinstance(error,RuntimeUpdateError) else ('worker_interrupted' if not isinstance(error,Exception) else 'staging_failed')
             try:apply_journal_best_effort(transaction,journal,state='rejected',error=code)
             except BaseException:pass
             if not isinstance(error,Exception):raise

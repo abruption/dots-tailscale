@@ -636,7 +636,7 @@ class RuntimeApplyWorkerTests(unittest.TestCase):
 
     def test_worker_interruption_preserves_fence_and_reports_manual(self):
         tx=self.worker_fixture()
-        def interrupted(d,r,t,j,p):
+        def interrupted(d,r,t,j,p,commit_outcome=None):
             tool.runtime_fence(d,j)
             raise KeyboardInterrupt()
         with mock.patch.object(tool,'runtime_transaction',side_effect=interrupted):
@@ -780,3 +780,82 @@ class RuntimeApplyWorkerTests(unittest.TestCase):
         report=json.loads(output.getvalue())
         self.assertEqual(report['error'],'invalid_transaction')
         self.assertIsNone(report.get('transaction_id'))
+
+    def worker_lock_close_fault(self, rollback=False):
+        import sys
+        tx=self.worker_fixture()
+        loader=importlib.machinery.SourceFileLoader('runtime_real_proxy_close_fixture',str(ROOT/'dots_proxy.py'))
+        spec=importlib.util.spec_from_loader(loader.name,loader)
+        proxy=importlib.util.module_from_spec(spec);loader.exec_module(proxy)
+        proxy.__file__=str(tx/'supervisor'/'dots_proxy.py')
+        # Real _operation owns and releases a real flock/file descriptor. Only
+        # daemon/network operations below are mocked, never a live process.
+        for name in ('_daemon','_socket_owned','_environment','inspect_config','_flags','_remove_socket','_launch','_ready','_socket_identity'):
+            setattr(proxy,name,getattr(self.proxy,name))
+        actual_open=os.open;actual_close=os.close;actual_write=tool.apply_write
+        lock_fds=set();fault=[];replacement_fault=[]
+        def opening(path,flags,*args,**kwargs):
+            fd=actual_open(path,flags,*args,**kwargs)
+            if str(path)==str(self.directory/'.operation.lock'):lock_fds.add(fd)
+            return fd
+        def closing(fd):
+            actual_close(fd)
+            if fd in lock_fds and not fault:
+                fault.append(True)
+                raise OSError('fixture lock close result uncertain after real close')
+        def writing(path,data,mode=0o600):
+            actual_write(path,data,mode)
+            if rollback and path==self.directory/'tailscale' and not replacement_fault:
+                replacement_fault.append(True);raise OSError('fixture pre-exec replacement fault')
+        with mock.patch.dict(sys.modules,{'dots_proxy':proxy}),mock.patch.object(os,'open',side_effect=opening), \
+             mock.patch.object(os,'close',side_effect=closing),mock.patch.object(tool,'apply_write',side_effect=writing):
+            tool.runtime_worker(self.directory,self.runtime,tx)
+        self.assertTrue(fault)
+        journal=json.loads((tx/'journal.json').read_text())
+        self.assertEqual(journal['state'],'failed_rolled_back' if rollback else 'applied')
+        self.assertEqual(journal['cleanup_warning'],'worker_cleanup_failed')
+        self.assertFalse((self.directory/tool.RUNTIME_FENCE).exists())
+        self.stop_child.assert_not_called();self.proxy._launch.assert_called_once()
+        RuntimeTransactionTests.assert_preserved(self)
+        return journal
+
+    def test_real_operation_close_failure_preserves_committed_applied_outcome(self):
+        self.worker_lock_close_fault()
+
+    def test_real_operation_close_failure_preserves_committed_rollback_outcome(self):
+        self.worker_lock_close_fault(rollback=True)
+
+    def test_staging_io_error_is_not_reported_as_binary_probe_failure(self):
+        original=tool.apply_write
+        def write(path,data,mode=0o600):
+            if path.parent.name=='stage':raise OSError('fixture staging storage failure')
+            return original(path,data,mode)
+        with mock.patch.object(tool,'apply_write',side_effect=write):
+            with self.assertRaisesRegex(tool.RuntimeUpdateError,'staging_failed'):self.apply()
+        transactions=list((self.directory/tool.RUNTIME_DIRECTORY).iterdir())
+        self.assertEqual(len(transactions),1)
+        journal=json.loads((transactions[0]/'journal.json').read_text())
+        self.assertEqual(journal['state'],'rejected');self.assertEqual(journal['error'],'staging_failed')
+        self.spawn.assert_not_called()
+
+    def test_prior_terminal_cleanup_warning_blocks_next_runtime_apply(self):
+        result=self.apply();tx=self.directory/tool.RUNTIME_DIRECTORY/result['transaction_id']
+        journal=json.loads((tx/'journal.json').read_text())
+        tool.apply_journal(tx,journal,state='applied',phase='cleanup_review',cleanup_warning='worker_cleanup_failed')
+        self.spawn.reset_mock()
+        with self.assertRaisesRegex(tool.RuntimeUpdateError,'prior_transaction_requires_manual_review'):self.apply()
+        self.spawn.assert_not_called()
+
+    def test_mutated_terminal_journal_without_commit_proof_still_requires_manual(self):
+        tx=self.worker_fixture()
+        def uncertain(d,r,t,j,proxy,commit_outcome=None):
+            tool.runtime_fence(d,j)
+            tool.apply_journal(t,j,state='applied',phase='complete')
+            # Durable-write acknowledgement failed: no successful return from
+            # the commit operation, so the independent proof remains empty.
+            raise OSError('fixture terminal journal acknowledgement uncertain')
+        with mock.patch.object(tool,'runtime_transaction',side_effect=uncertain):
+            tool.runtime_worker(self.directory,self.runtime,tx)
+        self.assertEqual(json.loads((tx/'journal.json').read_text())['state'],'manual_recovery_required')
+        self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists())
+        RuntimeTransactionTests.assert_preserved(self)
