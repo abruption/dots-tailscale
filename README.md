@@ -4,34 +4,25 @@
 
 <p align="center">English · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a></p>
 
-Run Tailscale with user-level OpenSSH in a Dots cloud computer. Installation files, node state, and SSH identity live in `/workspace`; runtime sockets, PIDs, and logs are recreated in `/tmp`.
+Use Tailscale and SSH to reach your Dots cloud computer from your own devices. dots-tailscale installs the tools without root or systemd and keeps the installation, Tailscale node state and SSH identity under `/workspace` so you can reuse them when that directory survives an environment change.
 
-This setup targets environments that preserve `/workspace`. Processes still need a start command in each new environment. This project is independent and is not an official OpenAI or Tailscale tool.
+**Current release: [v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0).** It adds manual Tailscale binary updates and better diagnostics for the separately deployed recovery monitor. This is an independent project, not an official OpenAI or Tailscale tool.
 
-## Experimental external recovery
+## What you can do
 
-Advanced users can review the [external recovery experiment](docs/experimental-recovery.md). It requires an external server, private SSO and an authorized Dots task; it is not enabled by the normal installer. Setup on another account and recovery after arbitrary VM replacement remain unverified.
+| Task | How it helps |
+|---|---|
+| Install and reconnect | Run Tailscale with local OpenSSH; reuse existing state and keys when restarting a preserved installation. |
+| Check a connection | Inspect installation integrity, processes, socket and backend status with `dots-ts version` and `doctor`. |
+| Reach private services | Use tailnet connections and optional local SOCKS5/HTTP proxies for explicitly configured applications. |
+| Update the package | Check releases and manually update the scripts with `dots-ts update`; optionally enable cached local notices. |
+| Update Tailscale | Use `dots-ts runtime` to check and manually replace the CLI/daemon pair, with persistent progress and recovery records. |
 
-## Tailscale binary updates
-
-v0.6.0 includes the manual `dots-ts runtime` updater for the installed Tailscale binaries. The default installation pin stays at 1.102.4 for compatibility with the existing package updater; changing the binaries is a separate, explicit step. Automatic updates remain disabled. See the [runtime update guide](docs/runtime-updates.md) for prerequisites, interrupted-update fences and recovery limits.
-
-## Demo
-
-![Dots terminal screenshot showing installation checks and Tailscale version 1.102.4](docs/assets/dots-tailscale-ssh-verification.png)
-
-This screenshot, provided by the maintainer, shows the existing installation checks and status, plus Tailscale version 1.102.4, in the Dots desktop terminal. The image is used unchanged; it does not show a new installation or a VM replacement.
-
-```bash
-bash /workspace/.dots-tailscale/start.sh check
-/workspace/.dots-tailscale/tailscale version
-```
+Automatic startup and automatic updates are not enabled. The external recovery experiment described below is a separate setup.
 
 ## Quick start
 
-Requires Linux x86_64, Git, Python 3, OpenSSH, and permission to bind local port 22. Follow the [usage guide](docs/usage.md) for all dependencies and SSH setup.
-
-The clone command explicitly uses the Dots proxy because direct GitHub HTTPS failed in the tested Dots SSH environment. See [download connectivity and proxy settings](docs/usage.md#download-proxy) for diagnostics and the scope of these settings.
+For a **new installation**, use the Dots cloud terminal. You need Linux x86_64, Python 3, Git, OpenSSH and permission to bind local port 22; see the [full dependencies and SSH setup](docs/usage.md). Existing users should follow the next section instead of reinstalling.
 
 ```bash
 cd /workspace
@@ -43,34 +34,86 @@ bash tailscale-setup.sh install
 bash /workspace/.dots-tailscale/start.sh login
 ```
 
-The first login prints an approval URL. Add the client public key to the installed SSH `authorized_keys` file and verify the host-key fingerprint over the cloud computer's GUI terminal before connecting. After environment replacement, start the existing installation with `bash /workspace/.dots-tailscale/start.sh`. The scripts do not register automatic startup.
+Open the approval URL printed at first login. Add your client public key to the installed SSH `authorized_keys` file, and independently check the host-key fingerprint in the cloud terminal before connecting. The [usage guide](docs/usage.md) covers these steps.
 
-## Diagnostics and private HTTP access (since v0.4.0)
+The clone command explicitly uses the platform proxy because direct GitHub HTTPS failed in the tested Dots SSH environment. If downloads still fail, see [download diagnostics and transfer alternatives](docs/usage.md#download-proxy). Keep all four source files and their original `source-manifest.json` together.
 
-Install the four source files and `source-manifest.json` together from [v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0) to use these helpers.
+When the environment changes but the installation survives, start it again:
 
 ```bash
+bash /workspace/.dots-tailscale/start.sh
+```
+
+## Updating an existing installation
+
+There are two separate versions to manage:
+
+| Command | Updates | Does not update |
+|---|---|---|
+| `dots-ts update` | The dots-tailscale scripts and package metadata | Tailscale binaries |
+| `dots-ts runtime` | The installed `tailscale` and `tailscaled` pair | The dots-tailscale package |
+
+First check the installed package and available package release:
+
+```bash
+/workspace/.dots-tailscale/dots-ts version
+/workspace/.dots-tailscale/dots-ts update check --tag v0.6.0 --proxy http://browser-proxy:8889 --json
+```
+
+For a verified v0.4.0-or-later installation, follow [package update instructions](docs/usage.md#update-management) to install v0.6.0 first. Older installations without trusted package metadata need the guide's manual review procedure. Running only a new checkout's CLI against an older installed package is not a supported shortcut.
+
+Once the matching v0.6.0 tools are installed, check the official stable Tailscale version:
+
+```bash
+/workspace/.dots-tailscale/dots-ts runtime check --json
+```
+
+**New installations still start with Tailscale 1.102.4.** Keeping that default allows older package updaters to install the new tools; upgrading the package alone does not upgrade Tailscale. To change the binaries, review the reported version and upstream advisories, then follow the [manual runtime update guide](docs/runtime-updates.md). It covers explicit version selection, offline bundles and transaction status.
+
+Before applying an update, verify an independent cloud recovery terminal is usable. For runtime updates, pause external recovery jobs and resume them after fresh SSH/ping checks. Once execution of a candidate daemon has been attempted, even a failed startup does not permit automatic downgrade: uncertain failures require the guide's manual recovery procedure. Package code rollback and Tailscale state compatibility are different things.
+
+## Everyday commands
+
+```bash
+# Show package integrity and the separate Tailscale version
+/workspace/.dots-tailscale/dots-ts version
+# Diagnose local installation and connection state
 /workspace/.dots-tailscale/dots-ts doctor
+# Run the installed Tailscale CLI with its socket
 /workspace/.dots-tailscale/dots-ts cli status
+# Inspect optional application proxy settings
 /workspace/.dots-tailscale/dots-ts proxy show
 ```
 
-`doctor` reads local diagnostics without changing state. `cli` selects the installed Tailscale binary and socket. Optional loopback SOCKS5/HTTP proxies are disabled by default and require a separately reviewed daemon restart to enable. See the [usage guide](docs/usage.md#development-helpers) and [private HTTP API recipe](docs/private-http-api.md) for configuration, access policy, and validation limits. These proxies do not automatically configure ChatGPT connectors, MCP clients, or the Dots browser.
+Local SOCKS5/HTTP proxies are off by default. Enabling them requires an explicit daemon restart; they do not configure the Dots browser, ChatGPT connectors or MCP clients automatically. See the [proxy guide](docs/usage.md#development-helpers) and [private HTTPS API example](docs/private-http-api.md).
 
-## Installed package version and updates
+## What has been checked
 
-v0.4.0 adds `dots-ts version` and `dots-ts version --json` to show the dots-tailscale package version separately from the Tailscale binary version. These commands are not included in v0.3.1. See [package version and file verification](docs/usage.md#package-version).
+- A [live Dots trial](docs/validation/runtime-update-trial-20261026.md) upgraded Tailscale 1.102.4 to 1.104.2 with the reviewed development package, preserved node/SSH identity and confirmed fresh external SSH and relay ping afterward.
+- The [v0.6.0 release](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0) records final-commit core/research tests and isolated official-binary checks. These do not establish all future-version compatibility, live failure recovery or state downgrade safety.
+- `/workspace` preservation is a condition, not a platform guarantee. Runtime sockets, PIDs and logs are recreated in `/tmp`. A new environment still needs a way to execute the start command.
+- A local `Running` result is not proof of external reachability. Check a fresh SSH connection and the application paths you use. Upgrading to 1.104.2 is not a claim that Tailworm is fixed.
 
-v0.4.0 also includes stable-release checks, opt-in cached notifications and verified manual updates with code-only rollback. See [update management](docs/usage.md#update-management) for requirements, recovery-terminal confirmation and the separate external SSH check.
+![Historical Dots terminal showing installation checks and Tailscale 1.102.4](docs/assets/dots-tailscale-ssh-verification.png)
 
-## Included
+This maintainer-provided screenshot is a historical installation/status check, not a display of the current package version or proof of recovery after VM replacement. The dated trial above describes the later update test.
+
+## Experimental external recovery
+
+Advanced users can explore [Dots-assisted external recovery](docs/experimental-recovery.md). It uses an external monitor, an authenticated MCP Events server and an authorized Dots task to request a start command after a connection failure. The normal installer does not deploy this infrastructure or enable a recovery task.
+
+The current experiment requires external server/SSO setup. Event processing can be delayed; setup on another account and recovery after arbitrary VM replacement remain unverified. Watchdog coordination and opt-in automatic updates are follow-up work, not features enabled by v0.6.0.
+
+## Documentation and project files
+
+- [Usage and troubleshooting](docs/usage.md) · [Manual Tailscale updates](docs/runtime-updates.md)
+- [Private HTTPS API example](docs/private-http-api.md) · [Experimental recovery](docs/experimental-recovery.md)
+- [Release notes](docs/releases/v0.6.0.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
 
 | Path | Purpose |
 |---|---|
-| `tailscale-setup.sh`, `shim.py` | Check, install, and start Tailscale; configure local OpenSSH; authenticate Tailscale explicitly |
-| `dots-ts`, `dots_proxy.py` | CLI, diagnostics, and optional per-process outbound proxy configuration |
-| `source-manifest.json` | Package version and SHA-256 checksums for the four source files |
+| `tailscale-setup.sh`, `shim.py` | Installation/startup, local OpenSSH and proxy-compatible Tailscale transport |
+| `dots-ts`, `dots_proxy.py` | Diagnostics, package/runtime updates and optional application proxy settings |
+| `source-manifest.json` | Package version and checksums of the four source files |
 | `home-persistence-probe.py` | Record HOME and `/workspace` continuity markers |
-| `tests/` | Offline regression tests |
-
-See the [English usage guide](docs/usage.md), [Korean usage guide](docs/usage.ko.md), [Simplified Chinese usage guide](docs/usage.zh-CN.md), [Japanese usage guide](docs/usage.ja.md), and [MIT License](LICENSE).
+| `tests/`, `research/` | Regression tests and separately deployed research tools |

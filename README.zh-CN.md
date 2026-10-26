@@ -4,34 +4,25 @@
 
 <p align="center"><a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · 简体中文 · <a href="README.ja.md">日本語</a></p>
 
-在 Dots 云电脑上以普通用户权限运行 Tailscale 和 OpenSSH。安装文件、节点状态和 SSH 身份保存在 `/workspace`；运行时套接字、PID 和日志会在 `/tmp` 中重新创建。
+通过 Tailscale 和 SSH，你可以从自己的设备连接 Dots 云电脑。dots-tailscale 不需要 root 权限或 systemd，会将安装文件、Tailscale 节点状态和 SSH 身份信息保存在 `/workspace` 中。环境变化后，只要这个目录还在，就可以继续使用原来的安装和身份。
 
-本方案适用于会保留 `/workspace` 的环境。每次进入新环境后，仍需运行启动命令。本项目独立开发，并非 OpenAI 或 Tailscale 的官方工具。
+**当前版本：[v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)。** 这一版新增了 Tailscale 二进制文件的手动更新功能，并改进了单独部署的恢复监控工具的诊断信息。本项目独立开发，并非 OpenAI 或 Tailscale 的官方工具。
 
-## 实验性外部恢复
+## 可以做什么
 
-v0.5.0 包含实验代码和运维说明，可通过外部监控与 MCP Events 请求 Dots 执行已有的启动命令。普通安装不会启用这项功能，需要自行维护外部服务器、认证和监控。我们已多次观察到新启动后的连接恢复，但这不保证每次 VM 替换后都能恢复，也不保证立即执行。详见[实验功能运维指南（英文）](docs/experimental-recovery.md)。
+| 操作 | 用途 |
+|---|---|
+| 安装与重新连接 | 配合本地 OpenSSH 运行 Tailscale；重启保留下来的安装时，继续使用已有状态和密钥。 |
+| 检查连接 | 通过 `dots-ts version` 和 `doctor` 查看安装文件完整性、进程、套接字和后端状态。 |
+| 访问私有服务 | 使用 tailnet 连接，也可为单独配置的应用启用本地 SOCKS5/HTTP 代理。 |
+| 更新软件包 | 用 `dots-ts update` 检查版本并手动更新脚本，也可以选择开启使用缓存的本地通知。 |
+| 更新 Tailscale | 用 `dots-ts runtime` 检查版本，并成对更新 CLI 和守护进程；更新进度和恢复记录会保存在文件中。 |
 
-## Tailscale 二进制更新
-
-v0.6.0 提供 `dots-ts runtime`，可手动更新已安装的 Tailscale 程序。为兼容现有的软件包更新器，初次安装仍使用 1.102.4；二进制更新需要单独执行，不会开启自动更新。准备工作、中断后的恢复步骤和限制，请参阅[更新指南（英文）](docs/runtime-updates.md)。
-
-## 演示
-
-![Dots 终端中的安装检查以及 Tailscale 版本 1.102.4 截图](docs/assets/dots-tailscale-ssh-verification.png)
-
-这是维护者提供的 Dots 桌面终端截图，显示了已有安装的检查结果和状态，以及 Tailscale 版本 1.102.4。截图使用了原始图片，并未展示新安装或 VM 替换。
-
-```bash
-bash /workspace/.dots-tailscale/start.sh check
-/workspace/.dots-tailscale/tailscale version
-```
+默认不会启用自动启动或自动更新。下文介绍的外部恢复实验需要单独配置。
 
 ## 快速开始
 
-需要 Linux x86_64、Git、Python 3、OpenSSH，以及绑定本地 22 端口的权限。完整依赖和 SSH 设置请参阅[使用指南](docs/usage.zh-CN.md)。
-
-克隆命令明确使用 Dots 代理，因为在经过测试的 Dots SSH 环境中，直接通过 HTTPS 连接 GitHub 失败了。有关诊断方法和这些设置的适用范围，请参阅[下载连接与代理设置](docs/usage.zh-CN.md#download-proxy)。
+**首次安装**请在 Dots 云终端中操作。需要 Linux x86_64、Python 3、Git、OpenSSH，以及绑定本地 22 端口的权限；完整依赖和 SSH 设置请参阅[使用指南](docs/usage.zh-CN.md)。已经安装的用户请按下一节更新，不要重新安装。
 
 ```bash
 cd /workspace
@@ -43,34 +34,86 @@ bash tailscale-setup.sh install
 bash /workspace/.dots-tailscale/start.sh login
 ```
 
-首次登录时会显示一个授权链接。将客户端公钥添加到已安装 SSH 的 `authorized_keys` 文件中，并在连接前通过云电脑的 GUI 终端核对主机密钥指纹。环境替换后，使用 `bash /workspace/.dots-tailscale/start.sh` 启动现有安装。脚本不会注册自动启动项。
+打开首次登录时输出的授权链接。将客户端公钥加入安装目录中的 SSH `authorized_keys` 文件，并在连接前通过云终端独立核对主机密钥指纹。具体步骤见[使用指南](docs/usage.zh-CN.md)。
 
-## 诊断与私有 HTTP 访问（自 v0.4.0 起）
+在已测试的 Dots SSH 环境中，直接通过 HTTPS 访问 GitHub 失败，因此 clone 命令显式使用了平台代理。如果仍无法下载，请参阅[下载诊断与其他传输方式](docs/usage.zh-CN.md#download-proxy)。四个源文件必须与它们对应的原始 `source-manifest.json` 放在一起。
 
-要使用这些辅助工具，请从 [v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0) 一并安装全部四个源文件和 `source-manifest.json`。
+环境变化后，如果安装目录仍然保留，运行下面的命令即可重新启动：
 
 ```bash
+bash /workspace/.dots-tailscale/start.sh
+```
+
+## 更新已有安装
+
+需要分别管理两个版本：
+
+| 命令 | 更新内容 | 不会更新 |
+|---|---|---|
+| `dots-ts update` | dots-tailscale 脚本和软件包元数据 | Tailscale 二进制文件 |
+| `dots-ts runtime` | 已安装的 `tailscale` 和 `tailscaled` 文件对 | dots-tailscale 软件包 |
+
+先检查已安装的软件包和可用的软件包版本：
+
+```bash
+/workspace/.dots-tailscale/dots-ts version
+/workspace/.dots-tailscale/dots-ts update check --tag v0.6.0 --proxy http://browser-proxy:8889 --json
+```
+
+如果现有安装是经过验证的 v0.4.0 或更高版本，请先按照[软件包更新说明](docs/usage.zh-CN.md#update-management)安装 v0.6.0。缺少可信软件包元数据的旧安装，需要按指南进行手动检查。不能只运行新下载的 CLI，来绕过对旧安装的更新步骤。
+
+安装好配套的 v0.6.0 工具后，再检查 Tailscale 官方稳定版：
+
+```bash
+/workspace/.dots-tailscale/dots-ts runtime check --json
+```
+
+**新安装的 Tailscale 仍然从 1.102.4 开始。** 保持这个默认版本，是为了让旧的软件包更新器也能安装新工具；只更新软件包不会更新 Tailscale。若要替换二进制文件，请先核对查询到的版本和 Tailscale 官方公告，再按[手动更新指南（英文）](docs/runtime-updates.md)操作。指南包含明确指定版本、使用离线文件包和查看事务状态的方法。
+
+应用更新前，请确认可以操作一个不依赖 Tailscale 连接的云端恢复终端。更新 Tailscale 二进制文件时，应先暂停外部恢复任务，待新的 SSH 连接和 ping 检查通过后再恢复。一旦尝试执行候选守护进程，即使启动失败，也不会自动降级；失败后的状态不明确时，需要按指南手动恢复。回退软件包代码与 Tailscale 状态数据是否兼容，是两回事。
+
+## 常用命令
+
+```bash
+# 查看软件包完整性及独立的 Tailscale 版本
+/workspace/.dots-tailscale/dots-ts version
+# 诊断本地安装与连接状态
 /workspace/.dots-tailscale/dots-ts doctor
+# 使用对应套接字运行已安装的 Tailscale CLI
 /workspace/.dots-tailscale/dots-ts cli status
+# 查看可选的应用代理设置
 /workspace/.dots-tailscale/dots-ts proxy show
 ```
 
-`doctor` 读取本地诊断信息，不会更改状态。`cli` 会选择已安装的 Tailscale 二进制文件和套接字。可选的回环 SOCKS5/HTTP 代理默认关闭；启用前需要单独审查并重启守护进程。配置、访问策略和验证范围请参阅[使用指南](docs/usage.zh-CN.md#development-helpers)和[私有 HTTP API 配置示例](docs/private-http-api.zh-CN.md)。这些代理不会自动配置 ChatGPT 连接器、MCP 客户端或 Dots 浏览器。
+本地 SOCKS5/HTTP 代理默认关闭，启用时需要显式重启守护进程。它们不会自动配置 Dots 浏览器、ChatGPT 连接器或 MCP 客户端。详见[代理指南](docs/usage.zh-CN.md#development-helpers)和[私有 HTTPS API 示例](docs/private-http-api.zh-CN.md)。
 
-## 查看已安装的软件包版本与更新
+## 已验证的范围
 
-v0.4.0 新增了 `dots-ts version` 和 `dots-ts version --json`，可以分别查看 dots-tailscale 软件包版本和 Tailscale 程序版本。v0.3.1 不包含这些命令。详情见[软件包版本与文件校验](docs/usage.zh-CN.md#package-version)。
+- 一次 [Dots 实环境测试](docs/validation/runtime-update-trial-20261026.md)使用经过审核的开发版软件包，将 Tailscale 从 1.102.4 更新至 1.104.2。节点与 SSH 身份保持不变，随后通过了新的外部 SSH 连接和中继 ping 检查。
+- [v0.6.0 发布页](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)记录了最终提交的核心与研究测试，以及隔离环境中的官方二进制文件检查。这些结果不能证明所有未来版本都兼容，也不能证明实环境故障恢复或状态数据降级一定安全。
+- `/workspace` 能够保留是使用条件，并非平台保证。运行时的套接字、PID 和日志会在 `/tmp` 中重新创建。进入新环境后，仍需要某种方式来执行启动命令。
+- 本地显示 `Running` 不代表外部一定能够连接。请重新建立 SSH 连接，并检查实际使用的应用访问路径。更新到 1.104.2 并不意味着 Tailworm 已被修复。
 
-v0.4.0 还提供正式版本检查、可选的缓存通知，以及支持代码备份和回滚的手动更新。运行条件、独立恢复终端确认和单独的 SSH 验证，请参阅[更新说明](docs/usage.zh-CN.md#update-management)。
+![过去的 Dots 终端截图，显示安装检查和 Tailscale 1.102.4](docs/assets/dots-tailscale-ssh-verification.png)
 
-## 项目内容
+这张由维护者提供的截图是过去的安装与状态检查记录，不代表当前软件包版本，也不能证明 VM 替换后的恢复情况。之后的更新测试见上方带日期的记录。
+
+## 外部恢复实验
+
+具备外部服务运维条件的用户，可以了解[通过 Dots 执行外部恢复的实验（英文）](docs/experimental-recovery.md)。它结合外部监控、带认证的 MCP Events 服务器和已获授权的 Dots 任务，在连接故障后请求执行启动命令。普通安装程序不会部署这些服务，也不会启用恢复任务。
+
+目前的实验需要配置外部服务器和 SSO。事件处理可能有延迟；尚未验证其他账号能否复现设置，也未验证任意 VM 替换后都能恢复。watchdog 协同和主动开启的自动更新属于后续工作，不是 v0.6.0 已启用的功能。
+
+## 文档与项目文件
+
+- [使用与故障排查](docs/usage.zh-CN.md) · [手动更新 Tailscale（英文）](docs/runtime-updates.md)
+- [私有 HTTPS API 示例](docs/private-http-api.zh-CN.md) · [恢复实验（英文）](docs/experimental-recovery.md)
+- [发布说明](docs/releases/v0.6.0.md) · [更新记录](CHANGELOG.md) · [MIT 许可证](LICENSE)
 
 | 路径 | 用途 |
 |---|---|
-| `tailscale-setup.sh`, `shim.py` | 检查、安装和启动 Tailscale；配置本地 OpenSSH；Tailscale 身份验证需明确执行 |
-| `dots-ts`, `dots_proxy.py` | CLI、诊断，以及可选的按进程配置出站代理 |
-| `source-manifest.json` | 软件包版本及四个源文件的 SHA-256 校验和 |
-| `home-persistence-probe.py` | 记录 HOME 和 `/workspace` 的连续性标记 |
-| `tests/` | 离线回归测试 |
-
-另请参阅[英文使用指南](docs/usage.md)、[韩文使用指南](docs/usage.ko.md)、[简体中文使用指南](docs/usage.zh-CN.md)、[日语使用指南](docs/usage.ja.md)和 [MIT 许可证](LICENSE)。
+| `tailscale-setup.sh`, `shim.py` | 安装与启动、本地 OpenSSH，以及兼容代理的 Tailscale 通信 |
+| `dots-ts`, `dots_proxy.py` | 诊断、软件包与 Tailscale 更新，以及可选的应用代理设置 |
+| `source-manifest.json` | 软件包版本和四个源文件的校验和 |
+| `home-persistence-probe.py` | 记录 HOME 与 `/workspace` 的保留情况标记 |
+| `tests/`, `research/` | 回归测试和单独部署的研究工具 |
