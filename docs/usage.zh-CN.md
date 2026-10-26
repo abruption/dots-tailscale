@@ -6,7 +6,7 @@
 
 ## 已发布版本
 
-首次公开仓库的克隆与原始文件下载已与准备好的源文件核对确认。[版本 v0.4.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.4.0)包含 ZIP 和 tar.gz 压缩包，也提供 `tailscale-setup.sh`、`shim.py`、`dots-ts` 和 `dots_proxy.py` 四个单独的源文件，以及 `source-manifest.json`。安装示例将源版本固定为 `v0.4.0`。`SHA256SUMS` 提供发布文件的校验和。捆绑的 Tailscale 版本仍为 `1.102.4`。
+仓库首次公开时，已将克隆和原始文件下载结果与准备好的源文件核对。这是当时的验证记录，并不表示已验证 v0.6.0 的发布文件。[版本 v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)包含 ZIP 和 tar.gz 压缩包，也提供 `tailscale-setup.sh`、`shim.py`、`dots-ts` 和 `dots_proxy.py` 四个单独的源文件，以及 `source-manifest.json`。安装示例将源版本固定为 `v0.6.0`。`SHA256SUMS` 提供发布文件的校验和。捆绑的 Tailscale 版本仍为 `1.102.4`。
 
 <a id="download-proxy"></a>
 
@@ -46,12 +46,12 @@ done
 
 将仓库从 `https://github.com/abruption/dots-tailscale` 克隆到 `/workspace`，以便安装脚本和 `shim.py` 位于一起。克隆需要 Git，以及云计算机通过代理访问 GitHub HTTPS 的能力。安装程序需要 Linux x86_64、Python 3、`timeout`、`flock`、OpenSSL、`ssh-keygen` 和 `/usr/sbin/sshd`。此外，安装还需要 curl、tar 和 sha256sum。当前用户必须获准绑定端口 22；无需 root 或 systemd。
 
-对于 v0.4.0，请将以下四个源文件和 `source-manifest.json` 放在一起：`tailscale-setup.sh`、`shim.py`、`dots-ts` 和 `dots_proxy.py`。较旧的 v0.2.0 安装只使用原来的两个文件，不包含这些辅助工具。
+对于 v0.6.0，请将以下四个源文件和 `source-manifest.json` 放在一起：`tailscale-setup.sh`、`shim.py`、`dots-ts` 和 `dots_proxy.py`。较旧的 v0.2.0 安装只使用原来的两个文件，不包含这些辅助工具。
 
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.4.0 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
+  git clone --branch v0.6.0 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -167,7 +167,7 @@ JSON 将 `package.declared_version`、`package.source_revision`、`package.integ
 
 ```bash
 /workspace/.dots-tailscale/dots-ts update check --json
-/workspace/.dots-tailscale/dots-ts update check --tag v0.4.0 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.6.0 --proxy http://browser-proxy:8889 --json
 ```
 
 第二个示例会选择指定的稳定版本；只有该版本发布后才能使用。未指定 `--proxy` 时，检查会直接通过 HTTPS 连接，不会继承 shell 中的代理凭据。需要时请显式指定平台下载代理。这与 shim 代理以及应用 SOCKS/HTTP 代理相互独立。HTTPS 证书验证始终保持启用。无需 GitHub token。
@@ -193,11 +193,11 @@ JSON 将 `package.declared_version`、`package.source_revision`、`package.integ
 先检查并选定一个固定的稳定版本：
 
 ```bash
-/workspace/.dots-tailscale/dots-ts update apply --tag v0.4.1 --proxy http://browser-proxy:8889 --confirm-recovery-terminal --json
+/workspace/.dots-tailscale/dots-ts update apply --tag v0.6.0 --proxy http://browser-proxy:8889 --confirm-recovery-terminal --json
 /workspace/.dots-tailscale/dots-ts update status --id TRANSACTION_ID --json
 ```
 
-以上仅为示例，并不表示 v0.4.1 已经发布。请将 `TRANSACTION_ID` 替换为 `apply` 返回的 ID。如果发布下载受阻，或需要明确测试尚未发布的候选版本，也可以使用经过审查的本地源文件包：
+请在所选版本发布后再执行更新。请将 `TRANSACTION_ID` 替换为 `apply` 返回的 ID。如果发布下载受阻，或需要明确测试尚未发布的候选版本，也可以使用经过审查的本地源文件包：
 
 ```bash
 /workspace/.dots-tailscale/dots-ts update apply --bundle /workspace/reviewed-bundle --confirm-recovery-terminal --json
@@ -225,9 +225,9 @@ JSON 将 `package.declared_version`、`package.source_revision`、`package.integ
 
 已于 2026-10-21 在 Dots 中测试经过审核的开发候选版本。正常应用、故意启动失败后的回滚、外部 SSH 验证及其范围，请参阅[更新验证记录](validation/v0.4.0-update-trial.md)。
 
-## Tailscale 二进制更新（开发中）
+## Tailscale 二进制更新
 
-`dots-ts runtime check/apply/status` 尚未包含在 v0.5.0 中。请先安装配套的完整工具源码，并准备独立的恢复终端。初次安装仍固定使用 1.102.4。更新后需另行检查外部 SSH 和 ping；新 daemon 启动后不会自动降级。详见[更新指南（英文）](runtime-updates.md)。
+v0.6.0 包含独立于软件包更新的 `dots-ts runtime check/apply/status`。请先安装配套的完整源码，并准备独立的恢复终端。为兼容现有的软件包更新器，初次安装仍使用 1.102.4。二进制更新需要单独执行，不会开启自动更新。更新后请另行检查外部 SSH 和 ping。尝试执行候选 daemon 后，即使启动失败，也不会自动降级；恢复步骤和限制详见[更新指南（英文）](runtime-updates.md)。
 
 <a id="development-helpers"></a>
 
@@ -273,16 +273,16 @@ JSON 将 `package.declared_version`、`package.source_revision`、`package.integ
 
 应用代理会在 loopback 上监听，供显式配置的本地客户端使用。它们与守护进程的 TLS/WebSocket shim（位于 `127.0.0.1:18089`）不同。不要把该 shim 当作应用 HTTP 代理。请在单次 curl 请求或子进程上设置代理；代理设置不会传递到全局环境、浏览器、MCP 或 ChatGPT 连接器。能够访问 loopback 代理的本地进程都可以尝试使用它，因此仍需设置网络策略并进行 API 身份验证。
 
-### 不使用 Git 安装 v0.4.0
+### 不使用 Git 安装 v0.6.0
 
 将四个源文件和 `source-manifest.json` 下载到单独的源文件目录中。如果任一请求失败，请停止；安装前请检查文件和哈希：
 
 ```bash
 (
   set -euo pipefail
-  mkdir -p /workspace/dots-tailscale-v0.4.0
-  cd /workspace/dots-tailscale-v0.4.0
-  DOTS_TS_REF=v0.4.0
+  mkdir -p /workspace/dots-tailscale-v0.6.0
+  cd /workspace/dots-tailscale-v0.6.0
+  DOTS_TS_REF=v0.6.0
   for file in tailscale-setup.sh shim.py dots-ts dots_proxy.py source-manifest.json; do
     curl -fsSL --proxy http://browser-proxy:8889 --connect-timeout 5 --max-time 60 \
       "https://github.com/abruption/dots-tailscale/releases/download/${DOTS_TS_REF}/${file}" \
@@ -295,13 +295,13 @@ JSON 将 `package.declared_version`、`package.source_revision`、`package.integ
 所有文件下载成功且检查完毕后，对于全新安装，请运行以下命令：
 
 ```bash
-cd /workspace/dots-tailscale-v0.4.0
+cd /workspace/dots-tailscale-v0.6.0
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
 bash /workspace/.dots-tailscale/start.sh login
 ```
 
-运行安装程序前，请将四个源文件和 `source-manifest.json` 保存在同一目录中。如果发布资源主机不可用，请从 `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.4.0/` 下载相同标签和文件名的文件，或从另一台可信设备传输已检查的文件。现有 v0.4.0 安装请使用[更新管理](#update-management)，旧安装请先检查[旧版手动步骤](#restart-update)。`install` 不会覆盖内容不同的已安装源文件。
+运行安装程序前，请将四个源文件和 `source-manifest.json` 保存在同一目录中。如果发布资源主机不可用，请从 `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.6.0/` 下载相同标签和文件名的文件，或从另一台可信设备传输已检查的文件。现有 v0.4.0 及以上版本的安装请使用[更新管理](#update-management)，旧安装请先检查[旧版手动步骤](#restart-update)。`install` 不会覆盖内容不同的已安装源文件。
 
 ### 可选的非交互式身份验证
 

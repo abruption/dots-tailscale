@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.6.0 — release candidate
+
+- Add checksum-checked manual Tailscale CLI/daemon updates with explicit version selection, bounded official downloads or private bundles, paired staging, durable transaction status and recovery fences (#50, #51).
+- Preserve node state, SSH identity and the running shim/OpenSSH during a successful runtime cutover. Candidate execution failures require manual recovery rather than an assumed-safe state downgrade.
+- Preserve sanitized relay worker error/exit diagnostics and runtime health information in the separately deployed research monitor (#49).
+- Keep the installer default at Tailscale 1.102.4 for compatibility with existing package updates. Install the new tool package first, then explicitly select a Tailscale runtime update. No automatic update schedule is enabled.
+
+PR #51 executable sources (`2ef1c77`, installed as 0.6.0-dev through a reviewed local bundle) passed one live Dots transition from Tailscale 1.102.4 to 1.104.2 in the maintainer's environment, with fresh external SSH/ping and identity checks. The stable candidate changes package metadata and documentation only. This is not a Tailworm remediation claim or validation of state downgrade, failure injection, VM replacement or all future releases. See the [release notes](docs/releases/v0.6.0.md) and [dated trial](docs/validation/runtime-update-trial-20261026.md). Automatic updates and recovery coordination remain follow-up work. Publishing does not deploy to existing installations.
+
 ## v0.5.0 — 2026-10-25
 
 - Add opt-in MCP Events recovery research with authenticated external observations, durable single-use claims, explicit eligibility reasons and bounded reminders when a policy limit clears (#43).

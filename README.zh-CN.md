@@ -12,9 +12,9 @@
 
 v0.5.0 包含实验代码和运维说明，可通过外部监控与 MCP Events 请求 Dots 执行已有的启动命令。普通安装不会启用这项功能，需要自行维护外部服务器、认证和监控。我们已多次观察到新启动后的连接恢复，但这不保证每次 VM 替换后都能恢复，也不保证立即执行。详见[实验功能运维指南（英文）](docs/experimental-recovery.md)。
 
-## Tailscale 二进制更新（开发中）
+## Tailscale 二进制更新
 
-正在准备手动更新已有 Tailscale 可执行文件的 `dots-ts runtime` 工具。v0.5.0 尚未包含此功能，也不会开启自动更新。请先阅读[更新指南（英文）](docs/runtime-updates.md)，了解前提、中断后的启动限制及恢复边界。
+v0.6.0 提供 `dots-ts runtime`，可手动更新已安装的 Tailscale 程序。为兼容现有的软件包更新器，初次安装仍使用 1.102.4；二进制更新需要单独执行，不会开启自动更新。准备工作、中断后的恢复步骤和限制，请参阅[更新指南（英文）](docs/runtime-updates.md)。
 
 ## 演示
 
@@ -36,7 +36,7 @@ bash /workspace/.dots-tailscale/start.sh check
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.5.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.6.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -45,9 +45,9 @@ bash /workspace/.dots-tailscale/start.sh login
 
 首次登录时会显示一个授权链接。将客户端公钥添加到已安装 SSH 的 `authorized_keys` 文件中，并在连接前通过云电脑的 GUI 终端核对主机密钥指纹。环境替换后，使用 `bash /workspace/.dots-tailscale/start.sh` 启动现有安装。脚本不会注册自动启动项。
 
-## v0.4.0：诊断与私有 HTTP 访问
+## 诊断与私有 HTTP 访问（自 v0.4.0 起）
 
-要使用这些辅助工具，请从 [v0.4.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.4.0) 一并安装全部四个源文件和 `source-manifest.json`。
+要使用这些辅助工具，请从 [v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0) 一并安装全部四个源文件和 `source-manifest.json`。
 
 ```bash
 /workspace/.dots-tailscale/dots-ts doctor

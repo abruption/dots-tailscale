@@ -12,9 +12,9 @@ This setup targets environments that preserve `/workspace`. Processes still need
 
 Advanced users can review the [external recovery experiment](docs/experimental-recovery.md). It requires an external server, private SSO and an authorized Dots task; it is not enabled by the normal installer. Setup on another account and recovery after arbitrary VM replacement remain unverified.
 
-## Tailscale binary updates (development)
+## Tailscale binary updates
 
-A separate, manual `dots-ts runtime` updater is being prepared for existing Tailscale binaries. It is not in v0.5.0 and does not enable automatic updates. Read the [runtime update guide](docs/runtime-updates.md) for prerequisites, interrupted-update fences and recovery limits.
+v0.6.0 includes the manual `dots-ts runtime` updater for the installed Tailscale binaries. The default installation pin stays at 1.102.4 for compatibility with the existing package updater; changing the binaries is a separate, explicit step. Automatic updates remain disabled. See the [runtime update guide](docs/runtime-updates.md) for prerequisites, interrupted-update fences and recovery limits.
 
 ## Demo
 
@@ -36,7 +36,7 @@ The clone command explicitly uses the Dots proxy because direct GitHub HTTPS fai
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.5.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.6.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -45,9 +45,9 @@ bash /workspace/.dots-tailscale/start.sh login
 
 The first login prints an approval URL. Add the client public key to the installed SSH `authorized_keys` file and verify the host-key fingerprint over the cloud computer's GUI terminal before connecting. After environment replacement, start the existing installation with `bash /workspace/.dots-tailscale/start.sh`. The scripts do not register automatic startup.
 
-## v0.4.0: diagnostics and private HTTP access
+## Diagnostics and private HTTP access (since v0.4.0)
 
-Install the four source files and `source-manifest.json` together from [v0.4.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.4.0) to use these helpers.
+Install the four source files and `source-manifest.json` together from [v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0) to use these helpers.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts doctor
