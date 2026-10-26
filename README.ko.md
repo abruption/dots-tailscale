@@ -12,6 +12,10 @@ Dots 클라우드 컴퓨터에서 일반 사용자 권한으로 Tailscale과 Ope
 
 고급 사용자를 위한 [외부 복구 실험 안내](docs/experimental-recovery.ko.md)를 제공합니다. 외부 서버·개인 SSO·승인된 Dots 작업이 필요하며 일반 설치기로 활성화되지 않습니다. 다른 계정의 설치 재현과 임의의 VM 교체 후 복구는 아직 검증하지 않았습니다.
 
+## Tailscale 바이너리 업데이트 (개발 중)
+
+기존 Tailscale 실행 파일을 갱신하는 수동 `dots-ts runtime` 도구를 준비하고 있습니다. v0.5.0에는 없으며 자동 업데이트를 켜지 않습니다. 사전 조건·중단 시 차단·원복 한계는 [업데이트 가이드](docs/runtime-updates.ko.md)를 확인하세요.
+
 ## 데모
 
 ![Dots 터미널에서 설치 상태와 Tailscale 버전 1.102.4를 확인하는 스크린샷](docs/assets/dots-tailscale-ssh-verification.png)

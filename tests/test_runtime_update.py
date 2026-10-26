@@ -1,0 +1,530 @@
+"""Offline runtime-updater security fixtures; no real daemon or download.
+
+Synthetic ELF headers are validation inputs, not runnable Tailscale binaries.
+Lifecycle cases must explicitly mock daemon behavior; they do not establish a
+live pidfd shutdown, network recovery, or compatibility with real node state.
+"""
+import hashlib
+import importlib.machinery
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import struct
+import tarfile
+import tempfile
+import unittest
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+loader = importlib.machinery.SourceFileLoader('dots_ts_runtime_test', str(ROOT/'dots-ts'))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+tool = importlib.util.module_from_spec(spec)
+loader.exec_module(tool)
+VERSION = '1.104.0'
+ARCHIVE_NAME = 'tailscale_'+VERSION+'_amd64.tgz'
+
+
+def elf(machine=62, elf_class=2):
+    header = bytearray(64)
+    header[:7] = b'\x7fELF'+bytes((elf_class, 1, 1))
+    struct.pack_into('<HHI', header, 16, 2, machine, 1)
+    struct.pack_into('<H', header, 52, 64)
+    return bytes(header)+b'fixture-not-executable'
+
+
+def archive(extra=(), replacements=None, root_version=VERSION):
+    bodies = {'tailscale': elf(), 'tailscaled': elf()}
+    bodies.update(replacements or {})
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode='w:gz') as package:
+        for name, body in bodies.items():
+            entry = tarfile.TarInfo('tailscale_'+root_version+'_amd64/'+name)
+            entry.mode = 0o755
+            entry.size = len(body)
+            package.addfile(entry, io.BytesIO(body))
+        for entry, body in extra:
+            package.addfile(entry, io.BytesIO(body) if body is not None else None)
+    return output.getvalue()
+
+
+def parse(raw, version=VERSION, checksum=None):
+    return tool.runtime_archive(raw, version, checksum or hashlib.sha256(raw).hexdigest())
+
+
+class RuntimeArchiveTests(unittest.TestCase):
+    def test_exact_pair_and_checksum(self):
+        raw = archive()
+        result = parse(raw)
+        self.assertEqual(set(result), {'tailscale', 'tailscaled'})
+        self.assertEqual(result['tailscale'], elf())
+        self.assertEqual(result['tailscaled'], elf())
+        with self.assertRaises(tool.ApplyError):
+            parse(raw, checksum='0'*64)
+
+    def test_links_special_files_and_duplicate_binary_rejected(self):
+        prefix='tailscale_'+VERSION+'_amd64/'
+        for kind, name in ((tarfile.SYMTYPE, prefix+'link'), (tarfile.LNKTYPE, prefix+'hardlink'),
+                           (tarfile.FIFOTYPE, prefix+'pipe'), (tarfile.CHRTYPE, prefix+'device')):
+            with self.subTest(kind=kind):
+                entry=tarfile.TarInfo(name);entry.type=kind;entry.linkname='tailscale'
+                with self.assertRaises(tool.ApplyError):parse(archive([(entry,None)]))
+        duplicate=tarfile.TarInfo(prefix+'tailscale');duplicate.size=len(elf())
+        with self.assertRaises(tool.ApplyError):parse(archive([(duplicate,elf())]))
+
+    def test_traversal_absolute_and_wrong_version_tree_rejected(self):
+        for path in ('../outside','/tmp/outside','tailscale_'+VERSION+'_amd64/../../outside'):
+            entry=tarfile.TarInfo(path);entry.size=1
+            with self.subTest(path=path), self.assertRaises(tool.ApplyError):
+                parse(archive([(entry,b'x')]))
+        with self.assertRaises(tool.ApplyError):parse(archive(root_version='1.102.4'))
+
+    def test_wrong_architecture_nonelf_and_incomplete_pair_rejected(self):
+        for body in (b'#!/bin/sh\necho malicious\n', elf(machine=183), elf(elf_class=1), b'\x7fELF'):
+            with self.subTest(body=body[:8]), self.assertRaises(tool.ApplyError):
+                parse(archive(replacements={'tailscaled':body}))
+        raw=io.BytesIO()
+        with tarfile.open(fileobj=raw,mode='w:gz') as package:
+            entry=tarfile.TarInfo('tailscale_'+VERSION+'_amd64/tailscale');entry.size=len(elf())
+            package.addfile(entry,io.BytesIO(elf()))
+        with self.assertRaises(tool.ApplyError):parse(raw.getvalue())
+
+    def test_corruption_and_truncation_are_not_validated_by_matching_digest(self):
+        raw=archive()
+        for damaged in (raw[:20], raw[:len(raw)//2], raw[:-8], b'not gzip'):
+            with self.subTest(length=len(damaged)), self.assertRaises(tool.ApplyError):
+                parse(damaged)
+
+    def test_checksum_cannot_select_another_archive(self):
+        digest=hashlib.sha256(archive()).hexdigest()
+        self.assertEqual(tool.runtime_checksum(digest.encode(), ARCHIVE_NAME),digest)
+        self.assertEqual(tool.runtime_checksum((digest+'  '+ARCHIVE_NAME+'\n').encode(),ARCHIVE_NAME),digest)
+        for body in ((digest+'  another.tgz\n').encode(), (digest+'\n'+digest+'\n').encode(), b'x'*64):
+            with self.subTest(body=body[:12]), self.assertRaises(tool.ApplyError):
+                tool.runtime_checksum(body,ARCHIVE_NAME)
+
+    def test_stable_numeric_version_input(self):
+        self.assertGreater(tool.runtime_version('1.104.0'),tool.runtime_version('1.102.4'))
+        for value in ('v1.104.0','1.104','1.0104.0','1.104.0-rc1','../1.104.0',True,None):
+            with self.subTest(value=value), self.assertRaises(tool.ApplyError):
+                tool.runtime_version(value)
+
+    def test_known_upstream_systemd_extras_are_bounded_and_not_installed(self):
+        entries=[]
+        for name in ('tailscaled.service','tailscaled.defaults','tailscale-online.target','tailscale-wait-online.service'):
+            entry=tarfile.TarInfo('tailscale_'+VERSION+'_amd64/systemd/'+name)
+            body=b'# fixture unit, not executable';entry.size=len(body)
+            entries.append((entry,body))
+        self.assertEqual(set(parse(archive(entries))),{'tailscale','tailscaled'})
+        for name in ('systemd/unknown.service','systemd/extra-executable','bin/unexpected'):
+            unknown=tarfile.TarInfo('tailscale_'+VERSION+'_amd64/'+name)
+            body=b'#!/bin/sh\nexit 0\n';unknown.size=len(body);unknown.mode=0o755
+            with self.subTest(extra=name),self.assertRaises(tool.ApplyError):
+                parse(archive([(unknown,body)]))
+        entry=tarfile.TarInfo('tailscale_'+VERSION+'_amd64/systemd/tailscaled.service')
+        entry.size=65537
+        with self.assertRaises(tool.ApplyError):parse(archive([(entry,b'x'*entry.size)]))
+
+    def test_declared_oversized_binary_rejected_before_extraction(self):
+        import gzip
+        entry=tarfile.TarInfo('tailscale_'+VERSION+'_amd64/tailscale')
+        entry.size=128*1024*1024+1
+        raw=gzip.compress(entry.tobuf()+b'\0'*1024)
+        with mock.patch.object(tarfile.TarFile,'extractfile',side_effect=AssertionError('oversized payload extraction attempted')):
+            with self.assertRaises(tool.ApplyError):parse(raw)
+
+
+class RuntimeFenceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(prefix='runtime-fence-')
+        self.addCleanup(self.temp.cleanup)
+        self.directory=Path(self.temp.name).resolve()
+        loader=importlib.machinery.SourceFileLoader('runtime_fixture_proxy',str(ROOT/'dots_proxy.py'))
+        spec=importlib.util.spec_from_loader(loader.name,loader)
+        self.proxy=importlib.util.module_from_spec(spec);loader.exec_module(self.proxy)
+
+    def test_proxy_mutation_rejects_regular_and_dangling_fence(self):
+        marker=self.directory/'.runtime-update-block'
+        for dangling in (False,True):
+            if dangling:marker.symlink_to(self.directory/'missing')
+            else:marker.write_text('fixture transaction id')
+            try:
+                with self.assertRaisesRegex(self.proxy.ProxyError,'runtime update fence'):
+                    with self.proxy._operation(self.directory):
+                        self.fail('mutation lock yielded despite runtime fence')
+            finally:marker.unlink()
+        with self.proxy._operation(self.directory):pass
+
+    def test_setup_fence_fragment_blocks_without_touching_live_runtime(self):
+        import re
+        import subprocess
+        source=(ROOT/'tailscale-setup.sh').read_text()
+        fragment=re.search(r'if \[\[ -e "\$D/\.runtime-update-block".*?\nfi',source,re.S).group(0)
+        self.assertLess(source.index('flock -n 9'),source.index(fragment))
+        self.assertLess(source.index(fragment),source.index('if [[ "$MODE" = install ]]; then install_all'))
+        self.assertLess(source.index('if [[ "$MODE" = check ]]'),source.index(fragment))
+        # Execute only the guard fragment. Full setup would use /tmp/... UID
+        # runtime and is deliberately never invoked by this fixture.
+        command='D="$1"\nfail() { exit 19; }\n'+fragment+'\nprintf allowed'
+        marker=self.directory/'.runtime-update-block'
+        for dangling in (False,True):
+            if dangling:marker.symlink_to(self.directory/'missing')
+            else:marker.write_text('fixture')
+            result=subprocess.run(['bash','-c',command,'fixture',str(self.directory)],capture_output=True,timeout=3)
+            self.assertEqual(result.returncode,19)
+            self.assertNotIn(b'allowed',result.stdout)
+            marker.unlink()
+        result=subprocess.run(['bash','-c',command,'fixture',str(self.directory)],capture_output=True,timeout=3)
+        self.assertEqual(result.stdout,b'allowed')
+
+
+class RuntimeMetadataTests(unittest.TestCase):
+    def test_official_stable_metadata_and_reject_wrong_tarball_or_prerelease(self):
+        import json
+        valid={'Version':VERSION,'Tarballs':{'amd64':ARCHIVE_NAME}}
+        with mock.patch.object(tool,'runtime_fetch',return_value=json.dumps(valid).encode()) as fetch:
+            self.assertEqual(tool.runtime_latest(None,123),VERSION)
+            self.assertEqual(fetch.call_args.args[0],'https://pkgs.tailscale.com/stable/?mode=json')
+        for data in ({'Version':'1.105.0','Tarballs':{'amd64':'tailscale_1.105.0_amd64.tgz'}},
+                     {'Version':VERSION,'Tarballs':{'amd64':'https://evil.example/payload'}},
+                     {'Version':VERSION,'Tarballs':{'arm64':ARCHIVE_NAME}}, [],
+                     {'Version':'1.104.0-rc1','Tarballs':{'amd64':ARCHIVE_NAME}}):
+            with self.subTest(data=data), mock.patch.object(tool,'runtime_fetch',return_value=json.dumps(data).encode()):
+                with self.assertRaises(tool.RuntimeUpdateError):tool.runtime_latest(None,123)
+
+    def test_explicit_check_is_readonly_and_distinguishes_current_newer_downgrade(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory=Path(root);sentinel=directory/'untouched';sentinel.write_bytes(b'private fixture')
+            before=sentinel.stat().st_ino
+            for version,available in ((VERSION,True),('1.102.4',False),('1.100.0',False)):
+                with mock.patch.object(tool,'tailscale_version',return_value={'version':'1.102.4'}), mock.patch.object(tool,'runtime_latest') as network:
+                    result=tool.runtime_check(directory,directory,version)
+                self.assertEqual(result['upgrade_available'],available)
+                self.assertFalse(result['automatic_updates']);network.assert_not_called()
+            self.assertEqual(list(directory.iterdir()),[sentinel]);self.assertEqual(sentinel.stat().st_ino,before)
+            self.assertEqual(sentinel.read_bytes(),b'private fixture')
+
+    def test_fetch_rejects_unapproved_url_expired_deadline_and_worker_failures(self):
+        import subprocess,time,json,base64
+        for url in ('http://pkgs.tailscale.com/stable/'+ARCHIVE_NAME,
+                    'https://evil.example/'+ARCHIVE_NAME,'https://pkgs.tailscale.com/stable/../secret'):
+            with mock.patch.object(tool.subprocess,'run') as run:
+                with self.assertRaises(tool.RuntimeUpdateError):tool.runtime_fetch(url,None,100,time.monotonic()+1)
+                run.assert_not_called()
+        url='https://pkgs.tailscale.com/stable/'+ARCHIVE_NAME
+        with mock.patch.object(tool.subprocess,'run') as run:
+            with self.assertRaisesRegex(tool.RuntimeUpdateError,'network_timeout'):
+                tool.runtime_fetch(url,None,100,time.monotonic()-1)
+            run.assert_not_called()
+        with mock.patch.object(tool.subprocess,'run',side_effect=subprocess.TimeoutExpired('fixture',1)):
+            with self.assertRaisesRegex(tool.RuntimeUpdateError,'network_timeout'):tool.runtime_fetch(url,None,100,time.monotonic()+1)
+        for result in (mock.Mock(returncode=1,stdout=b'{}'),mock.Mock(returncode=0,stdout=b'not json'),
+                       mock.Mock(returncode=0,stdout=json.dumps({'data':base64.b64encode(b'x'*101).decode()}).encode())):
+            with mock.patch.object(tool.subprocess,'run',return_value=result):
+                with self.assertRaisesRegex(tool.RuntimeUpdateError,'network_failed'):tool.runtime_fetch(url,None,100,time.monotonic()+1)
+
+    def test_pair_version_probe_mismatch_is_not_accepted(self):
+        with mock.patch.object(tool,'runtime_probe',side_effect=[VERSION,'1.102.4']):
+            with self.assertRaisesRegex(tool.RuntimeUpdateError,'binary_version_mismatch'):tool.runtime_verify_pair(Path('/fixture'),VERSION)
+
+    def test_unknown_installed_version_does_not_report_no_upgrade(self):
+        with mock.patch.object(tool,'tailscale_version',return_value={'version':None,'status':'unavailable'}):
+            report=tool.runtime_check(Path('/fixture'),Path('/fixture'),VERSION)
+        self.assertIsNone(report['upgrade_available'])
+        self.assertNotEqual(report['installed_version_status'],'available')
+
+
+class RuntimeTransactionTests(unittest.TestCase):
+    def setUp(self):
+        import contextlib
+        self.temp=tempfile.TemporaryDirectory(prefix='runtime-transaction-');self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name).resolve();self.directory=self.root/'install';self.directory.mkdir(mode=0o700)
+        self.runtime=self.root/'runtime';self.runtime.mkdir(mode=0o700)
+        self.tx=self.root/'transaction';self.tx.mkdir(mode=0o700);(self.tx/'stage').mkdir(mode=0o700)
+        self.old={name:elf()+b'OLD' for name in ('tailscale','tailscaled')}
+        self.new={name:elf()+b'NEW' for name in ('tailscale','tailscaled')}
+        for name in self.old:
+            (self.directory/name).write_bytes(self.old[name]);(self.directory/name).chmod(0o700)
+            (self.tx/'stage'/name).write_bytes(self.new[name]);(self.tx/'stage'/name).chmod(0o700)
+        self.protected={}
+        for name in ('state/tailscaled.state','sshd/ssh_host_ed25519_key','sshd/ssh_host_ed25519_key.pub',
+                     'shim/ca.key','outbound-proxy.json'):
+            p=self.directory/name;p.parent.mkdir(mode=0o700,exist_ok=True);p.write_bytes(b'fixture only '+name.encode());p.chmod(0o600)
+            self.protected[name]=(p.stat().st_ino,p.read_bytes())
+        package={name:('fixture package '+name).encode() for name in tool.CORE_FILES}
+        manifest={'schema_version':1,'package_version':'0.5.0','files':{n:hashlib.sha256(b).hexdigest() for n,b in package.items()}}
+        package[tool.MANIFEST]=json.dumps(manifest).encode()
+        for name,body in package.items():
+            path=self.directory/tool.CORE_FILES.get(name,name);path.parent.mkdir(mode=0o700,parents=True,exist_ok=True);path.write_bytes(body)
+        self.package=package
+        self.journal={'schema':1,'transaction_id':'a'*32,'boot_id':'fixture-boot','state':'prepared','version':VERSION,
+                      'binary_hashes':{n:hashlib.sha256(v).hexdigest() for n,v in self.new.items()},
+                      'package_hashes':{n:hashlib.sha256(v).hexdigest() for n,v in package.items()}}
+        self.baseline={name:{'pid':i,'ticks':str(i),'uid':os.getuid(),'exe':'/fixture'} for name,i in (('shim',101),('sshd',102),('tailscaled',103))}
+        self.baseline['_socket']={'inode':1}
+        self.config={'restart_required':False,'daemon_running':True,'desired':{'socks_port':1080,'http_port':None}}
+        self.argv=[str(self.directory/'tailscaled'),'--tun=userspace-networking','--statedir='+str(self.directory/'state'),
+                   '--socket='+str(self.runtime/'tailscaled.sock'),'--port=0','--socks5-server=127.0.0.1:1080']
+        self.proxy=mock.Mock();self.proxy._daemon.return_value={'argv':self.argv};self.proxy._socket_owned.return_value=True
+        self.proxy._environment.return_value={'FIXTURE':'private environment not exposed'}
+        self.proxy.inspect_config.return_value=self.config;self.proxy._flags.return_value=self.argv[-1:]
+        self.child=mock.Mock(pid=201);self.proxy._launch.return_value=self.child
+        self.stack=contextlib.ExitStack();self.addCleanup(self.stack.close)
+        self.stack.enter_context(mock.patch.object(tool,'apply_components',return_value=self.baseline))
+        self.stack.enter_context(mock.patch.object(tool,'apply_identity',side_effect=lambda pid:next((v for v in self.baseline.values() if v.get('pid')==pid),None)))
+        self.public=self.stack.enter_context(mock.patch.object(tool,'apply_public_identity',return_value='same-public-node'))
+        self.stop=self.stack.enter_context(mock.patch.object(tool,'apply_stop',side_effect=lambda process:setattr(self.proxy._daemon,'return_value',None)))
+        self.proxy._socket_identity.return_value=None
+        self.stop_child=self.stack.enter_context(mock.patch.object(tool,'apply_stop_child'))
+        self.probe=self.stack.enter_context(mock.patch.object(tool,'runtime_probe',side_effect=lambda path,arg:VERSION if Path(path).read_bytes().endswith(b'NEW') else '1.102.4'))
+
+    def run_transaction(self):tool.runtime_transaction(self.directory,self.runtime,self.tx,self.journal,self.proxy)
+    def assert_preserved(self):
+        for name,expected in self.protected.items():
+            p=self.directory/name;self.assertEqual((p.stat().st_ino,p.read_bytes()),expected,name)
+    def pair(self):return {n:(self.directory/n).read_bytes() for n in self.old}
+
+    def test_success_updates_pair_only_retains_node_ssh_proxy_and_no_external_success(self):
+        self.run_transaction();self.assertEqual(self.journal['state'],'applied');self.assertEqual(self.pair(),self.new)
+        self.assertFalse((self.directory/tool.RUNTIME_FENCE).exists());self.assert_preserved()
+        self.stop.assert_called_once_with(self.baseline['tailscaled']);self.proxy._launch.assert_called_once()
+        self.assertEqual(self.proxy._launch.call_args.args[0],self.argv)
+        self.assertEqual(self.journal['state_compatibility'],'current_version_only')
+
+    def test_preexec_failure_rolls_back_exact_pair_and_preserves_state(self):
+        original=tool.apply_write;fired=[]
+        def fail(path,data,mode=0o600):
+            original(path,data,mode)
+            if path==self.directory/'tailscale' and not fired:fired.append(True);raise OSError('fixture write fault')
+        with mock.patch.object(tool,'apply_write',side_effect=fail):self.run_transaction()
+        self.assertEqual(self.journal['state'],'failed_rolled_back');self.assertEqual(self.pair(),self.old)
+        self.assertFalse((self.directory/tool.RUNTIME_FENCE).exists());self.assert_preserved()
+        self.proxy._launch.assert_called_once()  # Only restored old daemon, mocked.
+
+    def test_postexec_readiness_failure_never_relaunches_old_daemon(self):
+        self.proxy._ready.side_effect=RuntimeError('fixture readiness failure')
+        self.run_transaction();self.assertEqual(self.journal['state'],'manual_recovery_required')
+        self.assertEqual(self.pair(),self.new);self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists())
+        self.assertEqual(self.proxy._launch.call_count,1);self.stop_child.assert_called_once_with(self.child);self.assert_preserved()
+
+    def test_launch_exception_is_uncertain_execution_and_never_rolls_back(self):
+        self.proxy._launch.side_effect=OSError('fixture launch uncertainty')
+        self.run_transaction();self.assertEqual(self.journal['state'],'manual_recovery_required')
+        self.assertEqual(self.pair(),self.new);self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists());self.assert_preserved()
+
+    def test_stop_uncertainty_keeps_fence_and_original_pair(self):
+        self.stop.side_effect=tool.ApplyError('fixture stop uncertainty')
+        self.run_transaction();self.assertEqual(self.journal['state'],'manual_recovery_required')
+        self.proxy._launch.assert_not_called();self.assertEqual(self.pair(),self.old)
+        self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists());self.assert_preserved()
+
+    def test_candidate_source_tamper_and_unsafe_installed_symlink_stop_before_signal(self):
+        (self.tx/'stage'/'tailscaled').write_bytes(elf()+b'changed')
+        with self.assertRaisesRegex(tool.RuntimeUpdateError,'source_changed'):self.run_transaction()
+        self.stop.assert_not_called();self.assert_preserved()
+        (self.tx/'stage'/'tailscaled').write_bytes(self.new['tailscaled'])
+        (self.directory/'tailscale').unlink();(self.directory/'tailscale').symlink_to(self.tx/'stage'/'tailscale')
+        with self.assertRaises(tool.ApplyError):self.run_transaction()
+        self.stop.assert_not_called();self.assert_preserved()
+
+    def test_same_version_and_downgrade_rejected_before_signal(self):
+        for version in ('1.102.4','1.100.0'):
+            self.journal['version']=version
+            with self.assertRaisesRegex(tool.RuntimeUpdateError,'downgrade_or_same_version'):self.run_transaction()
+        self.stop.assert_not_called();self.assert_preserved()
+
+    def test_changed_public_node_after_candidate_start_requires_manual(self):
+        self.public.side_effect=['old-node','different-node']
+        self.run_transaction();self.assertEqual(self.journal['state'],'manual_recovery_required')
+        self.proxy._launch.assert_called_once();self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists());self.assert_preserved()
+
+    def test_candidate_journal_failure_keeps_fence(self):
+        original=tool.apply_journal
+        def failing(transaction,journal,**changes):
+            if changes.get('phase')=='candidate_readiness':raise OSError('fixture journal failure')
+            return original(transaction,journal,**changes)
+        with mock.patch.object(tool,'apply_journal',side_effect=failing):self.run_transaction()
+        self.assertEqual(self.journal['state'],'manual_recovery_required');self.proxy._launch.assert_called_once()
+        self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists());self.assert_preserved()
+
+    def test_unknown_socket_after_stop_blocks_old_binary_restart(self):
+        self.proxy._remove_socket.side_effect=RuntimeError('socket changed owner')
+        self.proxy._socket_identity.return_value={'inode':999}
+        self.run_transaction()
+        self.assertEqual(self.journal['state'],'manual_recovery_required')
+        self.assertEqual(self.journal['error'],'rollback_failed')
+        self.proxy._launch.assert_not_called()
+        self.assertEqual(self.pair(),self.old);self.assert_preserved()
+        self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists())
+
+    def test_proxy_config_drift_after_candidate_start_requires_manual(self):
+        self.proxy.inspect_config.side_effect=[self.config,{**self.config,'restart_required':True}]
+        self.run_transaction()
+        self.assertEqual(self.journal['state'],'manual_recovery_required')
+        self.proxy._launch.assert_called_once();self.assert_preserved()
+
+    def test_preserved_ssh_process_identity_change_requires_manual(self):
+        with mock.patch.object(tool,'apply_identity',return_value=None):self.run_transaction()
+        self.assertEqual(self.journal['state'],'manual_recovery_required')
+        self.proxy._launch.assert_called_once();self.assert_preserved()
+
+
+class RuntimeStatusTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(prefix='runtime-status-');self.addCleanup(self.temp.cleanup)
+        self.directory=Path(self.temp.name).resolve();self.identifier='b'*32
+        self.tx=self.directory/tool.RUNTIME_DIRECTORY/self.identifier;self.tx.mkdir(mode=0o700,parents=True)
+        self.worker={'pid':123,'ticks':'45','uid':os.getuid(),'exe':'/fixture'}
+        self.journal={'schema':1,'transaction_id':self.identifier,'state':'running','boot_id':'old-boot',
+                      'version':VERSION,'phase':'candidate_readiness','worker':self.worker,
+                      'environment':'SECRET_ENV','argv':['SECRET_ARGUMENT'],'error':'SECRET_ERROR'}
+        tool.apply_journal(self.tx,self.journal)
+
+    def test_dead_worker_or_boot_change_requires_manual_and_status_is_readonly(self):
+        before=(self.tx/'journal.json').read_bytes()
+        for boot,identity in (('new-boot',self.worker),('old-boot',None)):
+            with mock.patch.object(tool,'apply_boot',return_value=boot),mock.patch.object(tool,'apply_identity',return_value=identity):
+                result=tool.runtime_status(self.directory,self.identifier)
+            self.assertEqual(result['state'],'manual_recovery_required');self.assertEqual(result['external_ssh'],'pending')
+            self.assertNotIn('SECRET',json.dumps(result));self.assertEqual((self.tx/'journal.json').read_bytes(),before)
+
+    def test_terminal_success_with_stale_fence_is_not_reported_applied(self):
+        tool.apply_journal(self.tx,self.journal,state='applied',phase='complete')
+        marker=self.directory/tool.RUNTIME_FENCE;marker.symlink_to(self.directory/'missing')
+        result=tool.runtime_status(self.directory,self.identifier)
+        self.assertEqual(result['state'],'manual_recovery_required');self.assertEqual(result['external_ssh'],'pending')
+
+    def test_status_rejects_path_traversal_symlink_and_wrong_journal_id(self):
+        for identifier in ('../outside','a'*31,'A'*32,'b'*32+'/extra'):
+            with self.assertRaises(tool.ApplyError):tool.runtime_status(self.directory,identifier)
+        tool.apply_journal(self.tx,self.journal,transaction_id='c'*32)
+        with self.assertRaises(tool.ApplyError):tool.runtime_status(self.directory,self.identifier)
+        journal=self.tx/'journal.json';journal.unlink();journal.symlink_to(self.directory/'missing')
+        with self.assertRaises((tool.ApplyError,ValueError,OSError)):tool.runtime_status(self.directory,self.identifier)
+
+    def test_fence_is_only_cleared_for_own_exact_transaction(self):
+        tool.runtime_fence(self.directory,self.journal)
+        other=dict(self.journal,transaction_id='c'*32)
+        with self.assertRaises(tool.ApplyError):tool.runtime_clear_fence(self.directory,other)
+        self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists())
+        tool.runtime_clear_fence(self.directory,self.journal)
+        self.assertFalse((self.directory/tool.RUNTIME_FENCE).exists())
+
+    def test_malformed_worker_metadata_is_manual_not_success(self):
+        for worker in ({'pid':True}, {'pid':'123'}, {'pid':123,'uid':-1}, []):
+            tool.apply_write(self.tx/'journal.json',json.dumps({**self.journal,'worker':worker}).encode())
+            with mock.patch.object(tool,'apply_boot',return_value='old-boot'):
+                report=tool.runtime_status(self.directory,self.identifier)
+            self.assertEqual(report['state'],'manual_recovery_required')
+
+
+
+class RuntimeApplyWorkerTests(unittest.TestCase):
+    def setUp(self):
+        import contextlib,sys
+        RuntimeTransactionTests.setUp(self)
+        self.bundle=self.root/'bundle';self.bundle.mkdir(mode=0o700)
+        raw=archive();(self.bundle/ARCHIVE_NAME).write_bytes(raw);(self.bundle/ARCHIVE_NAME).chmod(0o600)
+        (self.bundle/(ARCHIVE_NAME+'.sha256')).write_text(hashlib.sha256(raw).hexdigest());(self.bundle/(ARCHIVE_NAME+'.sha256')).chmod(0o600)
+        self.stack.enter_context(mock.patch.object(tool,'runtime_platform'))
+        self.stack.enter_context(mock.patch.object(tool,'apply_bundle',return_value=self.package))
+        self.stack.enter_context(mock.patch.object(tool,'runtime_verify_pair'))
+        self.stack.enter_context(mock.patch.object(tool,'runtime_probe',return_value='1.102.4'))
+        self.stack.enter_context(mock.patch.object(tool,'apply_boot',return_value='fixture-boot'))
+        self.proxy._operation.side_effect=lambda d:contextlib.nullcontext()
+        self.stack.enter_context(mock.patch.dict(sys.modules,{'dots_proxy':self.proxy}))
+        self.spawn=self.stack.enter_context(mock.patch.object(tool.subprocess,'Popen',return_value=mock.Mock(pid=301)))
+
+    def apply(self,**overrides):
+        return tool.runtime_apply(self.directory,self.runtime,VERSION,bundle=self.bundle,confirm=True,**overrides)
+
+    def test_detached_worker_is_frozen_and_waits_for_id_ack(self):
+        result=self.apply();identifier=result['transaction_id'];tx=self.directory/tool.RUNTIME_DIRECTORY/identifier
+        self.assertEqual(result['state'],'prepared');self.assertEqual(result['external_ssh'],'pending')
+        self.assertFalse((tx/'ack').exists())
+        argv=self.spawn.call_args.args[0];options=self.spawn.call_args.kwargs
+        self.assertIn(str(tx/'supervisor'/'dots-ts'),argv)
+        self.assertTrue(options['start_new_session']);self.assertTrue(options['close_fds'])
+        self.assertEqual((tx/'supervisor'/'dots-ts').read_bytes(),self.package['dots-ts'])
+        self.assertEqual({n:(self.directory/n).read_bytes() for n in self.old},self.old)
+        tool.runtime_ack(self.directory,identifier);self.assertEqual((tx/'ack').read_bytes(),b'1\n')
+        RuntimeTransactionTests.assert_preserved(self)
+
+    def test_confirmation_unsafe_bundle_and_bundle_symlink_fail_before_spawn(self):
+        with self.assertRaisesRegex(tool.ApplyError,'confirmation_required'):
+            tool.runtime_apply(self.directory,self.runtime,VERSION,bundle=self.bundle,confirm=False)
+        self.bundle.chmod(0o755)
+        with self.assertRaisesRegex(tool.ApplyError,'unsafe_bundle'):self.apply()
+        self.bundle.chmod(0o700)
+        archive_path=self.bundle/ARCHIVE_NAME;archive_path.unlink();archive_path.symlink_to(self.directory/'tailscale')
+        with self.assertRaisesRegex(tool.ApplyError,'unsafe_bundle'):self.apply()
+        self.spawn.assert_not_called();RuntimeTransactionTests.assert_preserved(self)
+
+    def test_prior_unresolved_runtime_transaction_blocks_second_spawn(self):
+        self.apply();self.spawn.reset_mock()
+        with self.assertRaisesRegex(tool.ApplyError,'prior_transaction_requires_manual_review'):self.apply()
+        self.spawn.assert_not_called()
+
+    def worker_fixture(self,ack=True):
+        result=self.apply();identifier=result['transaction_id'];tx=self.directory/tool.RUNTIME_DIRECTORY/identifier
+        if ack:tool.runtime_ack(self.directory,identifier)
+        self.proxy.__file__=str(tx/'supervisor'/'dots_proxy.py')
+        self.stack.enter_context(mock.patch.object(tool,'__file__',str(tx/'supervisor'/'dots-ts')))
+        return tx
+
+    def test_worker_ack_timeout_never_enters_transaction(self):
+        tx=self.worker_fixture(ack=False)
+        with mock.patch.object(tool.time,'monotonic',side_effect=[0,31]),mock.patch.object(tool,'runtime_transaction') as execute:
+            self.assertEqual(tool.runtime_worker(self.directory,self.runtime,tx),1)
+            execute.assert_not_called()
+        self.assertEqual(tool.apply_read_journal(tx)['error'],'worker_not_acknowledged')
+
+    def test_worker_frozen_code_tamper_or_boot_change_is_rejected_before_transaction(self):
+        tx=self.worker_fixture()
+        with mock.patch.object(tool,'apply_boot',return_value='different-boot'),mock.patch.object(tool,'runtime_transaction') as execute:
+            with self.assertRaises(tool.ApplyError):tool.runtime_worker(self.directory,self.runtime,tx)
+            execute.assert_not_called()
+        (tx/'supervisor'/'dots-ts').write_bytes(b'changed frozen worker')
+        with mock.patch.object(tool,'runtime_transaction') as execute:
+            with self.assertRaisesRegex(tool.ApplyError,'source_changed'):tool.runtime_worker(self.directory,self.runtime,tx)
+            execute.assert_not_called()
+
+    def test_worker_interruption_preserves_fence_and_reports_manual(self):
+        tx=self.worker_fixture()
+        def interrupted(d,r,t,j,p):
+            tool.runtime_fence(d,j)
+            raise KeyboardInterrupt()
+        with mock.patch.object(tool,'runtime_transaction',side_effect=interrupted):
+            tool.runtime_worker(self.directory,self.runtime,tx)
+        self.assertEqual(json.loads((tx/'journal.json').read_text())['state'],'manual_recovery_required')
+        self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists());RuntimeTransactionTests.assert_preserved(self)
+
+    def test_bundle_writable_file_is_rejected_before_worker(self):
+        (self.bundle/ARCHIVE_NAME).chmod(0o666)
+        with self.assertRaisesRegex(tool.ApplyError,'unsafe_bundle'):self.apply()
+        self.spawn.assert_not_called()
+
+    def test_bundle_foreign_owner_is_rejected_before_worker(self):
+        from types import SimpleNamespace
+        original=Path.stat
+        original_fstat=os.fstat
+        target=self.bundle/ARCHIVE_NAME
+        target_info=target.stat()
+        def stat_file(path,*args,**kwargs):
+            info=original(path,*args,**kwargs)
+            if path==target:
+                values={name:getattr(info,name) for name in dir(info) if name.startswith('st_')}
+                values['st_uid']=os.getuid()+1
+                return SimpleNamespace(**values)
+            return info
+        def fstat_file(fd):
+            info=original_fstat(fd)
+            if (info.st_dev,info.st_ino)==(target_info.st_dev,target_info.st_ino):
+                values={name:getattr(info,name) for name in dir(info) if name.startswith('st_')}
+                values['st_uid']=os.getuid()+1
+                return SimpleNamespace(**values)
+            return info
+        with mock.patch.object(Path,'stat',stat_file),mock.patch.object(os,'fstat',fstat_file):
+            with self.assertRaisesRegex(tool.ApplyError,'unsafe_bundle'):self.apply()
+        self.spawn.assert_not_called()

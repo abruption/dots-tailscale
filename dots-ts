@@ -1106,6 +1106,475 @@ def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, prox
     raise ApplyError('worker_acknowledgement_timeout_inspect_transaction')
 
 
+
+# Runtime binary updates are separate from source-package updates.
+RUNTIME_DIRECTORY = '.runtime-transactions'
+RUNTIME_FENCE = '.runtime-update-block'
+RUNTIME_ARCHIVE_LIMIT = 64 * 1024 * 1024
+RUNTIME_BINARY_LIMIT = 128 * 1024 * 1024
+RUNTIME_TERMINAL = ('applied', 'failed_rolled_back', 'rejected', 'manual_recovery_required')
+RUNTIME_ERRORS = frozenset(('invalid_version', 'unsupported_platform', 'invalid_proxy', 'network_failed',
+    'network_timeout', 'invalid_metadata', 'invalid_checksum', 'checksum_mismatch', 'invalid_archive',
+    'invalid_binary', 'binary_version_mismatch', 'binary_probe_failed', 'unsafe_bundle',
+    'invalid_transaction', 'prior_transaction_requires_manual_review', 'recovery_fence_present',
+    'confirmation_required', 'package_integrity_failed', 'downgrade_or_same_version',
+    'baseline_unavailable', 'preserved_component_changed', 'identity_changed', 'candidate_failed',
+    'worker_interrupted', 'worker_not_acknowledged', 'worker_failed', 'journal_failed',
+    'candidate_execution_uncertain', 'rollback_failed', 'source_changed', 'invalid_selection'))
+
+
+class RuntimeUpdateError(ApplyError):
+    def __init__(self, code, transaction_id=None):
+        self.code = code if code in RUNTIME_ERRORS else 'worker_failed'
+        self.transaction_id = transaction_id
+        super().__init__(self.code)
+
+
+def runtime_error(error, identifier=None):
+    return {'state': 'rejected', 'error': error.code if isinstance(error, RuntimeUpdateError) else 'worker_failed',
+            'transaction_id': identifier or getattr(error, 'transaction_id', None)}
+
+
+def runtime_version(version):
+    try:
+        value = stable_version(version)
+        if value[1] % 2: raise ValueError()
+        return value
+    except (UpdateError, ValueError): raise RuntimeUpdateError('invalid_version') from None
+
+
+def runtime_proxy(value):
+    if value == 'direct': return None
+    if value in (None, 'platform'): value = os.environ.get('UPSTREAM_PROXY', 'http://browser-proxy:8889')
+    try: return validate_proxy(value)
+    except UpdateError: raise RuntimeUpdateError('invalid_proxy') from None
+
+
+def runtime_url(url):
+    if url == 'https://pkgs.tailscale.com/stable/?mode=json': return url
+    if isinstance(url, str) and re.fullmatch(r'https://pkgs\.tailscale\.com/stable/tailscale_[0-9]+\.[0-9]+\.[0-9]+_amd64\.tgz(?:\.sha256)?', url): return url
+    raise RuntimeUpdateError('invalid_metadata')
+
+
+def runtime_network(url, proxy, limit):
+    runtime_url(url); validate_proxy(proxy)
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs): raise RuntimeUpdateError('network_failed')
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({'https': proxy} if proxy else {}),
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()), NoRedirect())
+    request = urllib.request.Request(url, headers={'User-Agent': 'dots-ts-runtime', 'Accept-Encoding': 'identity'})
+    with opener.open(request, timeout=15) as response:
+        if response.status != 200: raise RuntimeUpdateError('network_failed')
+        length = response.headers.get('Content-Length')
+        if length and (not length.isdigit() or int(length) > limit): raise RuntimeUpdateError('network_failed')
+        data = response.read(limit + 1)
+        if len(data) > limit: raise RuntimeUpdateError('network_failed')
+        return data
+
+
+def runtime_fetch(url, proxy, limit, deadline):
+    runtime_url(url)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0: raise RuntimeUpdateError('network_timeout')
+    try:
+        result = subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve()), '_runtime-fetch'],
+            input=json.dumps({'url':url, 'proxy':proxy, 'limit':limit}).encode(), stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=remaining)
+        reply = parse_release_json(result.stdout)
+        if result.returncode or not isinstance(reply, dict) or 'data' not in reply: raise RuntimeUpdateError('network_failed')
+        raw = base64.b64decode(reply['data'], validate=True)
+        if len(raw) > limit: raise RuntimeUpdateError('network_failed')
+        return raw
+    except subprocess.TimeoutExpired: raise RuntimeUpdateError('network_timeout') from None
+    except (ValueError, OSError, KeyError, UpdateError): raise RuntimeUpdateError('network_failed') from None
+
+
+def runtime_latest(proxy, deadline):
+    try:
+        data = parse_release_json(runtime_fetch('https://pkgs.tailscale.com/stable/?mode=json', proxy, 262144, deadline))
+        version = data['Version']; runtime_version(version)
+        if data.get('Tarballs', {}).get('amd64') != 'tailscale_'+version+'_amd64.tgz': raise ValueError()
+        return version
+    except (UpdateError, ValueError, KeyError, TypeError, AttributeError): raise RuntimeUpdateError('invalid_metadata') from None
+
+
+
+def runtime_owned_read(directory, name, limit):
+    root=os.open(str(directory),os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=root)
+        with os.fdopen(fd,'rb') as stream:
+            info=os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o022 or info.st_nlink!=1:
+                raise RuntimeUpdateError('unsafe_bundle')
+            data=stream.read(limit+1)
+            if len(data)>limit:raise RuntimeUpdateError('unsafe_bundle')
+            return data
+    finally:os.close(root)
+
+
+def runtime_checksum(raw, archive_name):
+    try:
+        text = raw.decode('ascii').strip()
+        match = re.fullmatch(r'([a-fA-F0-9]{64})(?:  '+re.escape(archive_name)+r'| \*'+re.escape(archive_name)+r')?', text)
+        if not match: raise ValueError()
+        return match[1].lower()
+    except (UnicodeError, ValueError, AttributeError): raise RuntimeUpdateError('invalid_checksum') from None
+
+
+def runtime_elf(data):
+    import struct
+    if (len(data) < 64 or data[:7] != b'\x7fELF\x02\x01\x01'
+            or struct.unpack_from('<H', data, 16)[0] not in (2,3)
+            or struct.unpack_from('<H', data, 18)[0] != 62):
+        raise RuntimeUpdateError('invalid_binary')
+
+
+def runtime_archive(raw, version, checksum):
+    import io
+    import gzip
+    runtime_version(version)
+    if not isinstance(raw, bytes) or len(raw)>RUNTIME_ARCHIVE_LIMIT: raise RuntimeUpdateError('invalid_archive')
+    if not isinstance(checksum,str) or not re.fullmatch('[0-9a-f]{64}',checksum): raise RuntimeUpdateError('invalid_checksum')
+    if hashlib.sha256(raw).hexdigest()!=checksum: raise RuntimeUpdateError('checksum_mismatch')
+    root='tailscale_'+version+'_amd64'; seen=set(); binaries={}; total=0
+    directories={root,root+'/systemd'}
+    allowed=directories|{root+'/tailscale',root+'/tailscaled',root+'/systemd/tailscaled.service',root+'/systemd/tailscaled.defaults',
+                         root+'/systemd/tailscale-online.target',root+'/systemd/tailscale-wait-online.service'}
+    # Parse the small ustar subset directly: tarfile transparently processes PAX
+    # extension sizes before yielding an entry, defeating a pre-read size bound.
+    def number(field):
+        value=field.strip(b' \0')
+        if not value or any(x not in b'01234567' for x in value):raise RuntimeUpdateError('invalid_archive')
+        return int(value,8)
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:
+            while True:
+                header=stream.read(512)
+                if len(header)!=512:raise RuntimeUpdateError('invalid_archive')
+                if header==b'\0'*512:
+                    if stream.read(512)!=b'\0'*512:raise RuntimeUpdateError('invalid_archive')
+                    # Drain bounded zero padding to force gzip CRC/length/trailer verification.
+                    tail=stream.read(1024*1024+1)
+                    if len(tail)>1024*1024 or tail.strip(b'\0'):raise RuntimeUpdateError('invalid_archive')
+                    break
+                if number(header[148:156])!=sum(header[:148])+8*32+sum(header[156:]):raise RuntimeUpdateError('invalid_archive')
+                name=header[:100].split(b'\0',1)[0].decode('ascii')
+                prefix=header[345:500].split(b'\0',1)[0].decode('ascii')
+                if prefix:name=prefix+'/'+name
+                name=name.rstrip('/')
+                size=number(header[124:136]);kind=header[156:157]
+                if name not in allowed or name in seen or len(seen)>=16:raise RuntimeUpdateError('invalid_archive')
+                seen.add(name)
+                if name in directories:
+                    if kind!=b'5' or size:raise RuntimeUpdateError('invalid_archive')
+                    continue
+                if kind not in (b'0',b'\0') or size<=0:raise RuntimeUpdateError('invalid_archive')
+                binary=name in (root+'/tailscale',root+'/tailscaled')
+                if size>(RUNTIME_BINARY_LIMIT if binary else 65536):raise RuntimeUpdateError('invalid_archive')
+                total+=size
+                if total>192*1024*1024:raise RuntimeUpdateError('invalid_archive')
+                content=stream.read(size)
+                if len(content)!=size:raise RuntimeUpdateError('invalid_archive')
+                padding=(-size)%512
+                if stream.read(padding)!=b'\0'*padding:raise RuntimeUpdateError('invalid_archive')
+                if binary:runtime_elf(content);binaries[name.rsplit('/',1)[1]]=content
+        if set(binaries)!={'tailscale','tailscaled'}:raise RuntimeUpdateError('invalid_archive')
+        return binaries
+    except (EOFError,OSError,ValueError,UnicodeError):raise RuntimeUpdateError('invalid_archive') from None
+
+
+def runtime_probe(path, argument):
+    process=None
+    try:
+        process=subprocess.Popen([str(path),argument],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+            env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent'},close_fds=True)
+        deadline=time.monotonic()+5; data=bytearray()
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout,selectors.EVENT_READ)
+            while True:
+                remaining=deadline-time.monotonic()
+                if remaining<=0 or not selector.select(remaining): raise RuntimeUpdateError('binary_probe_failed')
+                chunk=os.read(process.stdout.fileno(),4097-len(data))
+                if not chunk:break
+                data.extend(chunk)
+                if len(data)>4096:raise RuntimeUpdateError('binary_probe_failed')
+        if process.wait(timeout=max(.001,deadline-time.monotonic())):raise RuntimeUpdateError('binary_probe_failed')
+        first=bytes(data).decode('ascii').splitlines()[0];runtime_version(first);return first
+    except (OSError,ValueError,IndexError,UnicodeError,subprocess.SubprocessError):raise RuntimeUpdateError('binary_probe_failed') from None
+    finally:
+        if process is not None:
+            if process.poll() is None:process.kill()
+            process.wait();process.stdout.close()
+
+
+def runtime_verify_pair(stage, version):
+    for name,arg in (('tailscale','version'),('tailscaled','--version')):
+        if runtime_probe(pathlib.Path(stage)/name,arg)!=version: raise RuntimeUpdateError('binary_version_mismatch')
+
+
+def runtime_platform():
+    import platform
+    import signal
+    if sys.platform!='linux' or platform.machine() not in ('x86_64','amd64') or not hasattr(os,'pidfd_open') or not hasattr(signal,'pidfd_send_signal'):
+        raise RuntimeUpdateError('unsupported_platform')
+
+
+def runtime_check(directory, runtime, version=None, proxy_url=None):
+    selected=version or runtime_latest(runtime_proxy(proxy_url),time.monotonic()+30)
+    runtime_version(selected)
+    current=tailscale_version(pathlib.Path(directory));comparison=None
+    status=current['status'] if current.get('status') in ('available','timeout','invalid_response','unavailable') else 'unavailable'
+    if current.get('version'):
+        try:comparison=runtime_version(selected)>runtime_version(current['version'])
+        except RuntimeUpdateError:status='unsupported_version'
+    return {'state':'checked','installed_version':current.get('version'),'installed_version_status':status,'selected_version':selected,
+        'upgrade_available':comparison,'selection':'explicit' if version else 'official_stable','automatic_updates':False}
+
+
+def runtime_identifier(identifier):
+    if not isinstance(identifier,str) or not re.fullmatch('[0-9a-f]{32}',identifier):raise RuntimeUpdateError('invalid_transaction')
+    return identifier
+
+
+def runtime_status(directory, identifier):
+    runtime_identifier(identifier);transaction=apply_private(pathlib.Path(directory)/RUNTIME_DIRECTORY/identifier)
+    journal=parse_release_json(bounded_code_read(transaction,'journal.json',65536))
+    if not isinstance(journal,dict) or journal.get('transaction_id')!=identifier:raise RuntimeUpdateError('invalid_transaction')
+    state=journal.get('state')
+    if state not in ('prepared','running')+RUNTIME_TERMINAL:raise RuntimeUpdateError('invalid_transaction')
+    fenced=(pathlib.Path(directory)/RUNTIME_FENCE).exists() or (pathlib.Path(directory)/RUNTIME_FENCE).is_symlink()
+    if state in ('applied','failed_rolled_back') and fenced:
+        try:
+            marker=parse_release_json(bounded_code_read(directory,RUNTIME_FENCE,4096))
+            if not isinstance(marker,dict) or marker.get('transaction_id')==identifier:state='manual_recovery_required'
+        except Exception:state='manual_recovery_required'
+    if state not in RUNTIME_TERMINAL:
+        worker=journal.get('worker')
+        valid_worker=(isinstance(worker,dict) and set(worker)=={'pid','ticks','uid','exe'}
+            and type(worker.get('pid')) is int and worker['pid']>0 and type(worker.get('uid')) is int
+            and worker['uid']==os.getuid() and isinstance(worker.get('ticks'),str) and worker['ticks'].isdigit()
+            and isinstance(worker.get('exe'),str))
+        try:alive=valid_worker and apply_identity(worker['pid'])==worker
+        except (ApplyError,OSError,ValueError):alive=False
+        if journal.get('boot_id')!=apply_boot() or not alive:state='manual_recovery_required'
+    # Only a fixed public projection; argv, environment and daemon output are never returned.
+    error=journal.get('error')
+    if error is not None and error not in RUNTIME_ERRORS:error='worker_failed'
+    version=journal.get('version');runtime_version(version)
+    phase=journal.get('phase')
+    if phase not in ('staging','awaiting_ack','baseline','stop_daemon','replace_tailscale','replace_tailscaled','candidate_exec_intent','candidate_readiness','complete','manual_recovery'):phase='unknown'
+    compatibility=journal.get('state_compatibility','not_executed')
+    if compatibility not in ('not_executed','unknown','current_version_only'):compatibility='unknown'
+    return {key:value for key,value in dict(state=state,transaction_id=identifier,version=version,
+        phase=phase,error=error,external_ssh='pending',
+        state_compatibility=compatibility).items() if value is not None}
+
+
+def runtime_ack(directory, identifier):
+    runtime_identifier(identifier);transaction=apply_private(pathlib.Path(directory)/RUNTIME_DIRECTORY/identifier)
+    apply_write(transaction/'ack',b'1\n')
+
+
+def runtime_fence(directory, journal):
+    target=pathlib.Path(directory)/RUNTIME_FENCE
+    if target.exists() or target.is_symlink():raise RuntimeUpdateError('recovery_fence_present')
+    apply_write(target,json.dumps({'schema':1,'transaction_id':journal['transaction_id'],'boot_id':journal['boot_id']}).encode())
+
+
+def runtime_clear_fence(directory, journal):
+    target=pathlib.Path(directory)/RUNTIME_FENCE
+    value=parse_release_json(bounded_code_read(directory,RUNTIME_FENCE,4096))
+    if value!={'schema':1,'transaction_id':journal['transaction_id'],'boot_id':journal['boot_id']}:raise RuntimeUpdateError('recovery_fence_present')
+    target.unlink();fd=os.open(str(directory),os.O_RDONLY|os.O_DIRECTORY)
+    try:os.fsync(fd)
+    finally:os.close(fd)
+
+
+def runtime_ready(directory, runtime, proxy, child, baseline, public, config, hostkey, version):
+    proxy._ready(directory,runtime,config['desired'],child)
+    for name in ('shim','sshd'):
+        if apply_identity(baseline[name]['pid'])!=baseline[name]:raise RuntimeUpdateError('preserved_component_changed')
+    if apply_public_identity(directory,runtime)!=public:raise RuntimeUpdateError('identity_changed')
+    if bounded_code_read(directory,'sshd/ssh_host_ed25519_key.pub',16384)!=hostkey:raise RuntimeUpdateError('identity_changed')
+    if proxy.inspect_config(directory,runtime)!=config:raise RuntimeUpdateError('identity_changed')
+    runtime_verify_pair(directory,version)
+
+
+def runtime_transaction(directory, runtime, transaction, journal, proxy):
+    installed=apply_bundle(directory,'installed')
+    if {name:hashlib.sha256(body).hexdigest() for name,body in installed.items()}!=journal.get('package_hashes'):
+        raise RuntimeUpdateError('source_changed')
+    baseline=apply_components(directory,runtime,proxy);old=proxy._daemon(directory,runtime)
+    if not old or not proxy._socket_owned(old,runtime):raise RuntimeUpdateError('baseline_unavailable')
+    if [a for a in old['argv'][1:] if a.startswith('--tun')]!=['--tun=userspace-networking']:raise RuntimeUpdateError('baseline_unavailable')
+    environment=proxy._environment(old,directory);public=apply_public_identity(directory,runtime)
+    hostkey=bounded_code_read(directory,'sshd/ssh_host_ed25519_key.pub',16384)
+    config=proxy.inspect_config(directory,runtime)
+    if config.get('restart_required') or not config.get('daemon_running'):raise RuntimeUpdateError('baseline_unavailable')
+    expected_argv=[str(directory/'tailscaled'),'--tun=userspace-networking','--statedir='+str(directory/'state'),
+                   '--socket='+str(runtime/'tailscaled.sock'),'--port=0']+proxy._flags(config['desired'])
+    if old['argv'][0]!=expected_argv[0] or sorted(old['argv'][1:])!=sorted(expected_argv[1:]):
+        raise RuntimeUpdateError('baseline_unavailable')
+    before_version=runtime_probe(directory/'tailscale','version');runtime_verify_pair(directory,before_version)
+    if runtime_version(journal['version'])<=runtime_version(before_version):raise RuntimeUpdateError('downgrade_or_same_version')
+    backup=apply_private(transaction/'backup',create=True);candidate_bytes={};backup_bytes={};binary_identity={}
+    for name in ('tailscale','tailscaled'):
+        info=(directory/name).lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_mode&0o022 or info.st_nlink!=1:
+            raise RuntimeUpdateError('baseline_unavailable')
+        binary_identity[name]=(info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns)
+        data=bounded_code_read(directory,name,RUNTIME_BINARY_LIMIT);runtime_elf(data);apply_write(backup/name,data,0o700)
+        backup_bytes[name]=data
+        staged=bounded_code_read(transaction/'stage',name,RUNTIME_BINARY_LIMIT)
+        if hashlib.sha256(staged).hexdigest()!=journal['binary_hashes'][name]:raise RuntimeUpdateError('source_changed')
+        candidate_bytes[name]=staged
+    runtime_verify_pair(transaction/'stage',journal['version'])
+    for name in ('tailscale','tailscaled'):
+        current=(directory/name).lstat()
+        if (current.st_dev,current.st_ino,current.st_size,current.st_mtime_ns)!=binary_identity[name] or bounded_code_read(directory,name,RUNTIME_BINARY_LIMIT)!=backup_bytes[name]:
+            raise RuntimeUpdateError('source_changed')
+    runtime_fence(directory,journal)
+    stopped=False;exec_intent=False;child=None
+    try:
+        apply_journal(transaction,journal,state='running',phase='stop_daemon',state_compatibility='not_executed')
+        apply_stop(baseline['tailscaled']);stopped=True
+        proxy._remove_socket(directory,runtime,old,baseline['_socket'])
+        for name in ('tailscale','tailscaled'):
+            apply_journal(transaction,journal,phase='replace_'+name)
+            apply_write(directory/name,candidate_bytes[name],0o700)
+        apply_journal(transaction,journal,phase='candidate_exec_intent',state_compatibility='unknown')
+        exec_intent=True
+        with open(os.devnull,'ab') as log:
+            child=proxy._launch(old['argv'],environment,log.fileno())
+        apply_journal(transaction,journal,phase='candidate_readiness',candidate_pid=child.pid)
+        runtime_ready(directory,runtime,proxy,child,baseline,public,config,hostkey,journal['version'])
+        for name in ('tailscale','tailscaled'):
+            info=(directory/name).lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or stat.S_IMODE(info.st_mode)!=0o700 or info.st_nlink!=1:
+                raise RuntimeUpdateError('source_changed')
+            if hashlib.sha256(bounded_code_read(directory,name,RUNTIME_BINARY_LIMIT)).hexdigest()!=journal['binary_hashes'][name]:
+                raise RuntimeUpdateError('source_changed')
+        apply_journal(transaction,journal,state='applied',phase='complete',state_compatibility='current_version_only')
+        runtime_clear_fence(directory,journal)
+    except BaseException as error:
+        if exec_intent:
+            if child is not None:
+                try:apply_stop_child(child)
+                except Exception:pass
+            apply_journal_best_effort(transaction,journal,state='manual_recovery_required',phase='manual_recovery',
+                error='candidate_execution_uncertain',state_compatibility='unknown')
+            # Never restart old binaries against state a newer daemon may have written.
+            return
+        if not stopped:
+            apply_journal_best_effort(transaction,journal,state='manual_recovery_required',phase='manual_recovery',error='worker_interrupted')
+            return
+        try:
+            if proxy._daemon(directory,runtime) is not None or proxy._socket_identity(runtime) is not None:
+                raise RuntimeUpdateError('rollback_failed')
+            for name in ('tailscale','tailscaled'):apply_write(directory/name,backup_bytes[name],0o700)
+            with open(os.devnull,'ab') as log:restored=proxy._launch(old['argv'],environment,log.fileno())
+            runtime_ready(directory,runtime,proxy,restored,baseline,public,config,hostkey,before_version)
+            apply_journal(transaction,journal,state='failed_rolled_back',phase='complete',error='candidate_failed')
+            runtime_clear_fence(directory,journal)
+        except BaseException:
+            apply_journal_best_effort(transaction,journal,state='manual_recovery_required',phase='manual_recovery',error='rollback_failed')
+
+
+def runtime_worker(directory, runtime, transaction):
+    runtime_platform();apply_private(directory);apply_private(transaction);apply_private(transaction.parent)
+    identifier=runtime_identifier(transaction.name)
+    if transaction.parent!=directory/RUNTIME_DIRECTORY:raise RuntimeUpdateError('invalid_transaction')
+    journal=parse_release_json(bounded_code_read(transaction,'journal.json',65536))
+    if journal.get('boot_id')!=apply_boot() or journal.get('state')!='prepared' or journal.get('transaction_id')!=identifier:raise RuntimeUpdateError('invalid_transaction')
+    supervisor=apply_private(transaction/'supervisor')
+    if pathlib.Path(__file__).resolve()!=supervisor/'dots-ts':raise RuntimeUpdateError('invalid_transaction')
+    for name in ('dots-ts','dots_proxy.py'):
+        if hashlib.sha256(bounded_code_read(supervisor,name,8*1024*1024)).hexdigest()!=journal.get('worker_hashes',{}).get(name):
+            raise RuntimeUpdateError('source_changed')
+    import dots_proxy as proxy
+    if pathlib.Path(proxy.__file__).resolve()!=supervisor/'dots_proxy.py':raise RuntimeUpdateError('source_changed')
+    deadline=time.monotonic()+30
+    while not (transaction/'ack').exists():
+        if time.monotonic()>=deadline:
+            apply_journal(transaction,journal,state='rejected',error='worker_not_acknowledged');return 1
+        time.sleep(.05)
+    if bounded_code_read(transaction,'ack',8)!=b'1\n':raise RuntimeUpdateError('invalid_transaction')
+    try:
+        with proxy._operation(directory):
+            apply_journal(transaction,journal,worker=apply_identity(os.getpid()),phase='baseline')
+            runtime_transaction(directory,runtime,transaction,journal,proxy)
+    except BaseException as error:
+        fenced=(directory/RUNTIME_FENCE).exists() or (directory/RUNTIME_FENCE).is_symlink()
+        apply_journal_best_effort(transaction,journal,state='manual_recovery_required' if fenced else 'rejected',
+            error=error.code if isinstance(error,RuntimeUpdateError) else 'worker_failed')
+    return 0
+
+
+def runtime_apply(directory, runtime, version, bundle=None, confirm=False, proxy_url=None):
+    import uuid
+    import dots_proxy as proxy
+    runtime_platform();runtime_version(version)
+    if not confirm:raise RuntimeUpdateError('confirmation_required')
+    directory=apply_private(directory);runtime=apply_private(runtime)
+    caller=pathlib.Path(__file__).resolve().parent
+    layout='source' if (caller/'tailscale-setup.sh').is_file() else 'installed'
+    try:
+        trusted=apply_bundle(caller,layout);installed=apply_bundle(directory,'installed')
+        if trusted!=installed:raise ValueError('different package')
+    except Exception:raise RuntimeUpdateError('package_integrity_failed') from None
+    filename='tailscale_'+version+'_amd64.tgz'
+    if bundle:
+        try:
+            source=apply_private(pathlib.Path(bundle))
+            raw=runtime_owned_read(source,filename,RUNTIME_ARCHIVE_LIMIT)
+            checksum=runtime_checksum(runtime_owned_read(source,filename+'.sha256',4096),filename)
+        except (OSError,ApplyError,ValueError):raise RuntimeUpdateError('unsafe_bundle') from None
+    else:
+        proxy_url=runtime_proxy(proxy_url);deadline=time.monotonic()+180
+        if runtime_latest(proxy_url,deadline)!=version:raise RuntimeUpdateError('invalid_selection')
+        base='https://pkgs.tailscale.com/stable/'+filename
+        checksum=runtime_checksum(runtime_fetch(base+'.sha256',proxy_url,4096,deadline),filename)
+        raw=runtime_fetch(base,proxy_url,RUNTIME_ARCHIVE_LIMIT,deadline)
+    payload=runtime_archive(raw,version,checksum)
+    with proxy._operation(directory):
+        package_transactions=directory/APPLY_DIRECTORY
+        if package_transactions.exists() or package_transactions.is_symlink():
+            apply_private(package_transactions)
+            for previous in package_transactions.iterdir():
+                if apply_status(directory,previous.name).get('state') not in ('applied','failed_rolled_back','rejected'):
+                    raise RuntimeUpdateError('prior_transaction_requires_manual_review')
+        root=apply_private(directory/RUNTIME_DIRECTORY,create=True)
+        for previous in root.iterdir():
+            if runtime_status(directory,previous.name)['state'] not in ('applied','failed_rolled_back','rejected'):
+                raise RuntimeUpdateError('prior_transaction_requires_manual_review')
+        if runtime_version(version)<=runtime_version(runtime_probe(directory/'tailscale','version')):raise RuntimeUpdateError('downgrade_or_same_version')
+        identifier=uuid.uuid4().hex;transaction=apply_private(root/identifier,create=True)
+        journal={'schema':1,'transaction_id':identifier,'boot_id':apply_boot(),'state':'prepared','version':version,
+            'phase':'staging','selection':'operator_trusted_bundle' if bundle else 'official_stable',
+            'binary_hashes':{name:hashlib.sha256(body).hexdigest() for name,body in payload.items()},
+            'worker_hashes':{name:hashlib.sha256(trusted[name]).hexdigest() for name in ('dots-ts','dots_proxy.py')},
+            'package_hashes':{name:hashlib.sha256(body).hexdigest() for name,body in installed.items()},'external_ssh':'pending'}
+        apply_journal(transaction,journal)
+        try:
+            stage=apply_private(transaction/'stage',create=True)
+            for name,body in payload.items():apply_write(stage/name,body,0o700)
+            runtime_verify_pair(stage,version)
+            supervisor=apply_private(transaction/'supervisor',create=True)
+            for name in ('dots-ts','dots_proxy.py'):apply_write(supervisor/name,trusted[name],0o700)
+        except Exception:
+            apply_journal_best_effort(transaction,journal,state='rejected',error='binary_probe_failed');raise RuntimeUpdateError('binary_probe_failed',identifier) from None
+    try:
+        with open(os.devnull,'ab') as log:
+            worker=subprocess.Popen([sys.executable,'-E','-s','-B',str(supervisor/'dots-ts'),'_runtime-worker',str(directory),str(runtime),str(transaction)],
+                stdin=subprocess.DEVNULL,stdout=log,stderr=log,close_fds=True,start_new_session=True)
+        # Persist worker identity while it waits for the caller's flushed response.
+        apply_journal(transaction,journal,worker=apply_identity(worker.pid),phase='awaiting_ack')
+    except Exception:
+        apply_journal_best_effort(transaction,journal,state='rejected',error='worker_failed');raise RuntimeUpdateError('worker_failed',identifier) from None
+    return {'state':'prepared','transaction_id':identifier,'version':version,'external_ssh':'pending'}
+
+
 def directories():
     directory = pathlib.Path(os.environ.get("DOTS_TS_DIR", str(pathlib.Path(__file__).resolve().parent)))
     if not directory.is_absolute():
@@ -1463,6 +1932,19 @@ class SafeParser(argparse.ArgumentParser):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     try:
+        if argv and argv[0] == '_runtime-worker':
+            if len(argv)!=4:raise ValueError('invalid_arguments')
+            return runtime_worker(*(pathlib.Path(value) for value in argv[1:]))
+        if argv == ['_runtime-fetch']:
+            try:
+                request=parse_release_json(sys.stdin.buffer.read(16385))
+                if not isinstance(request,dict) or set(request)!={'url','proxy','limit'} or type(request['limit']) is not int or not 1<=request['limit']<=RUNTIME_ARCHIVE_LIMIT:
+                    raise RuntimeUpdateError('invalid_metadata')
+                data=runtime_network(request['url'],request['proxy'],request['limit'])
+                print(json.dumps({'data':base64.b64encode(data).decode('ascii')}))
+            except Exception:
+                print(json.dumps({'error':'network_failed'}))
+            return 0
         if argv and argv[0] == '_update-worker':
             if len(argv) != 4: raise ValueError('invalid_worker_arguments')
             return apply_worker(*(pathlib.Path(value) for value in argv[1:]))
@@ -1499,6 +1981,21 @@ def main(argv=None):
                 return 1
         parser = SafeParser(description="Local CLI forwarding and read-only diagnostics.")
         commands = parser.add_subparsers(dest="command", required=True)
+        runtime_parser=commands.add_parser('runtime',help='separate, manual Tailscale binary updates')
+        runtime_commands=runtime_parser.add_subparsers(dest='runtime_command',required=True)
+        runtime_check_parser=runtime_commands.add_parser('check')
+        runtime_check_parser.add_argument('--version')
+        runtime_check_parser.add_argument('--proxy',choices=('platform','direct'),default='platform')
+        runtime_check_parser.add_argument('--json',action='store_true')
+        runtime_apply_parser=runtime_commands.add_parser('apply')
+        runtime_apply_parser.add_argument('--version',required=True)
+        runtime_apply_parser.add_argument('--bundle',type=pathlib.Path)
+        runtime_apply_parser.add_argument('--confirm-recovery-terminal',action='store_true')
+        runtime_apply_parser.add_argument('--proxy',choices=('platform','direct'),default='platform')
+        runtime_apply_parser.add_argument('--json',action='store_true')
+        runtime_status_parser=runtime_commands.add_parser('status')
+        runtime_status_parser.add_argument('--id',required=True)
+        runtime_status_parser.add_argument('--json',action='store_true')
         update = commands.add_parser("update", help="check stable releases without changing code or services")
         update_commands = update.add_subparsers(dest="update_command", required=True)
         check = update_commands.add_parser("check")
@@ -1536,6 +2033,17 @@ def main(argv=None):
         diagnostic.add_argument("--json", action="store_true")
         diagnostic.add_argument("--target")
         options = parser.parse_args(argv)
+        if options.command=='runtime':
+            try:
+                if options.runtime_command=='check':report=runtime_check(directory,runtime,options.version,options.proxy)
+                elif options.runtime_command=='status':report=runtime_status(directory,options.id)
+                else:report=runtime_apply(directory,runtime,options.version,options.bundle,options.confirm_recovery_terminal,options.proxy)
+                print(json.dumps(report,sort_keys=True),flush=True)
+                if options.runtime_command=='apply' and report.get('state')=='prepared':
+                    runtime_ack(directory,report['transaction_id'])
+                return int(report.get('state') in ('rejected','failed_rolled_back','manual_recovery_required'))
+            except Exception as error:
+                print(json.dumps(runtime_error(error),sort_keys=True),flush=True);return 1
         if options.command == 'update' and options.update_command in ('apply', 'status'):
             try:
                 report = (apply_status(directory, options.id) if options.update_command == 'status' else

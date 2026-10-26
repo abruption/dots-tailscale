@@ -227,6 +227,10 @@ JSON では `package.declared_version`、`package.source_revision`、`package.in
 
 <a id="development-helpers"></a>
 
+## Tailscale バイナリの更新（開発中）
+
+`dots-ts runtime check/apply/status` は v0.5.0 には含まれません。対応するソース一式を先に導入し、独立した復旧用ターミナルを用意してください。初期インストールの固定バージョンは 1.102.4 のままです。更新後の外部 SSH・ping 確認と、実行後の自動ダウングレードを保証しない点は[更新ガイド（英語）](runtime-updates.md)を確認してください。
+
 ## v0.4.0 ヘルパーと任意のアプリケーションプロキシ
 
 これらのコマンドは v0.4.0 と v0.3.1 に含まれます。v0.2.0 では利用できません。`dots-ts` は Python 3 の標準ライブラリを使い、自身の場所からインストール先を特定します。グローバルな `tailscale` コマンド、ソケットのシンボリックリンク、シェルプロファイルの変更は不要です。

@@ -401,6 +401,9 @@ private_dir "$D"; private_dir "$R"
 [[ ! -L "$D/.operation.lock" ]] || fail 'lock symlink refused'
 exec 9> "$D/.operation.lock"
 flock -n 9 || fail 'another operation is running'
+if [[ -e "$D/.runtime-update-block" || -L "$D/.runtime-update-block" ]]; then
+  fail 'runtime update fence exists; inspect update status before proceeding'
+fi
 if [[ "$MODE" = install ]]; then install_all; exit 0; fi
 AUTH_COMMAND_STATUS=0
 start_all

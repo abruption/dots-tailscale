@@ -12,6 +12,10 @@ Dots のクラウドコンピューターで、ユーザー権限の OpenSSH と
 
 v0.5.0 には、外部監視と MCP Events で Dots に既存の起動コマンドの実行を依頼する実験コードと運用手順を含めています。通常のインストールでは有効になりません。外部サーバーと認証・監視の運用が必要です。再起動後の接続復旧は複数回確認していますが、すべての VM 交換での復旧や即時実行を保証するものではありません。[実験機能の運用ガイド（英語）](docs/experimental-recovery.md)をご覧ください。
 
+## Tailscale バイナリの更新（開発中）
+
+既存の Tailscale 実行ファイルを手動で更新する `dots-ts runtime` を準備しています。v0.5.0 には含まれず、自動更新も有効にしません。中断時の起動制限と復旧の条件は[更新ガイド（英語）](docs/runtime-updates.md)をご覧ください。
+
 ## デモ
 
 ![Dots ターミナルでインストール状況と Tailscale バージョン 1.102.4 を確認する画面](docs/assets/dots-tailscale-ssh-verification.png)
