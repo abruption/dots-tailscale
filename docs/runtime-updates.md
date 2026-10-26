@@ -48,7 +48,7 @@ The CLI prints a transaction ID and flushes stdout before acknowledging the deta
 |---|---|
 | `prepared` / `running` | Staging/acknowledgement or the worker is in progress. |
 | `applied` | Local readiness, identity/configuration checks and installed pair hashes passed. External SSH/ping verification is still pending; inspect any cleanup warning. |
-| `failed_rolled_back` | No candidate daemon execution was attempted; the previous pair was restored and checked. |
+| `failed_rolled_back` | No candidate daemon execution was attempted; the previous pair was restored and checked. Inspect any cleanup warning. |
 | `rejected` | This transaction was refused before stopping the daemon or replacing the installed binary pair; this can happen in the caller or in an acknowledged worker. Inspect the error and any transaction ID. |
 | `status_unavailable` / `ack_uncertain` | The result cannot be determined from this response. Keep the recovery terminal and use the returned valid ID to inspect the transaction; do not treat it as cancelled or resubmit apply. |
 | `manual_recovery_required` | Execution, process ownership, durable progress or state compatibility is uncertain. Use the independent terminal; do not repeat apply or remove the fence merely to make startup work. |
@@ -111,7 +111,7 @@ For both installed binaries, and any stage/backup pair you intend to use, verify
 | Worker died before cutover; no candidate execution intent; current approved pair and daemon are unchanged | Keep the pair/process. Resolve only the abandoned transaction after verifying no worker remains. |
 | Valid journal proves `not_executed`; daemon/socket absence is positively established | Restore **both** verified backup binaries, then resume the baseline version. Do not infer this case merely from a missing journal or fence. |
 | Candidate daemon execution may have happened (`unknown`, readiness failure, interrupted post-intent work) | Keep or restore **both** binaries of the same candidate version from the verified stage. Do not start old binaries against this state. If the candidate is incompatible, retain the fence and obtain an upstream-supported recovery plan. |
-| A verified terminal commit exists but fence cleanup needs review | If the installed pair and running daemon match the committed version, leave that healthy daemon running and resolve only the stale fence/record. |
+| A verified terminal commit exists with `fence_cleanup_failed` or `worker_cleanup_failed` | If the installed pair and running daemon match the committed version, leave that healthy daemon running and use step 3 to archive the reviewed record and remove only its own remaining fence, if any. |
 
 If a daemon or socket belongs to an unknown process, stop here. If binaries must be restored, first establish that no daemon is running; copy each selected file to a new private temporary filename, validate it, then atomically rename both while holding the operation lock and fence. Do not overwrite a running executable's inode. Remove a leftover `.new` file only after proving that it belongs to this abandoned operation and is not used by a worker.
 

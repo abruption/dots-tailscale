@@ -1,6 +1,6 @@
 {
   "files": {
-    "dots-ts": "9cdda2da8eb46d7e74a57af81e62ac53f9b95a8bac69c6d1caeab717a7d9347a",
+    "dots-ts": "2cbd60327a6596157a0da26c2d0247a80805e6a251be3f97915f5262974fdfe1",
     "dots_proxy.py": "6d94613bc546e297b657064ecae7b93db5da2d8c277d43b3e71b2c53f681c68d",
     "shim.py": "c0c55c45fbd9126e860b56d0d0359c0c87f8b39ef5d4da4a9560522452ac8c65",
     "tailscale-setup.sh": "11a24835827eee458a1caac15c2092f779ef6263dc554f5081883041c0456b49"

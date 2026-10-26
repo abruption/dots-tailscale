@@ -1450,8 +1450,8 @@ def runtime_daemon_log(runtime):
         raise RuntimeUpdateError('daemon_log_unavailable') from None
     try:yield fd
     finally:
-        # A close error after a durable commit cannot undo that verified state.
-        with contextlib.suppress(OSError):os.close(fd)
+        # The worker preserves committed outcomes and records any close error.
+        os.close(fd)
 
 
 def runtime_pair_integrity(directory, hashes):
@@ -1592,7 +1592,7 @@ def runtime_worker(directory, runtime, transaction):
             # Lock/log cleanup failure cannot turn a committed update into rejection.
             try:
                 apply_journal_best_effort(transaction,journal,state=commit_outcome['state'],
-                    phase='cleanup_review',cleanup_warning='worker_cleanup_failed')
+                    phase='cleanup_review',cleanup_warning=journal.get('cleanup_warning') or 'worker_cleanup_failed')
             except BaseException:pass
             return 0
         fenced=(directory/RUNTIME_FENCE).exists() or (directory/RUNTIME_FENCE).is_symlink()
