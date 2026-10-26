@@ -12,9 +12,9 @@ Dots のクラウドコンピューターで、ユーザー権限の OpenSSH と
 
 v0.5.0 には、外部監視と MCP Events で Dots に既存の起動コマンドの実行を依頼する実験コードと運用手順を含めています。通常のインストールでは有効になりません。外部サーバーと認証・監視の運用が必要です。再起動後の接続復旧は複数回確認していますが、すべての VM 交換での復旧や即時実行を保証するものではありません。[実験機能の運用ガイド（英語）](docs/experimental-recovery.md)をご覧ください。
 
-## Tailscale バイナリの更新（開発中）
+## Tailscale バイナリの更新
 
-既存の Tailscale 実行ファイルを手動で更新する `dots-ts runtime` を準備しています。v0.5.0 には含まれず、自動更新も有効にしません。中断時の起動制限と復旧の条件は[更新ガイド（英語）](docs/runtime-updates.md)をご覧ください。
+v0.6.0 では、インストール済みの Tailscale 実行ファイルを `dots-ts runtime` で手動更新できます。既存のパッケージ更新ツールとの互換性を保つため、初期インストールは 1.102.4 のままです。バイナリの更新は別途実行してください。自動更新は有効になりません。事前準備や中断時の復旧手順・制限は[更新ガイド（英語）](docs/runtime-updates.md)をご覧ください。
 
 ## デモ
 
@@ -36,7 +36,7 @@ Linux x86_64、Git、Python 3、OpenSSH、およびローカルポート 22 を�
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.5.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.6.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -45,9 +45,9 @@ bash /workspace/.dots-tailscale/start.sh login
 
 初回ログインでは承認用 URL が表示されます。クライアントの公開鍵をインストール済み SSH の `authorized_keys` ファイルに追加し、接続する前にクラウドコンピューターの GUI ターミナルでホスト鍵のフィンガープリントを確認してください。環境が入れ替わった後は、`bash /workspace/.dots-tailscale/start.sh` で既存のインストールを起動します。スクリプトは自動起動を登録しません。
 
-## v0.4.0: 診断とプライベート HTTP 接続
+## 診断とプライベート HTTP 接続（v0.4.0 以降）
 
-これらのヘルパーを使うには、[v0.4.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.4.0) のソースファイル 4 つと `source-manifest.json` をまとめてインストールしてください。
+これらのヘルパーを使うには、[v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0) のソースファイル 4 つと `source-manifest.json` をまとめてインストールしてください。
 
 ```bash
 /workspace/.dots-tailscale/dots-ts doctor

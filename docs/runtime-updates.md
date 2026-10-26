@@ -1,8 +1,8 @@
-# Manual Tailscale binary updates (development)
+# Manual Tailscale binary updates
 
 [한국어](runtime-updates.ko.md)
 
-This feature is under development for #50, identified as `0.6.0-dev`, and is not in the v0.5.0 release. It updates the installed `tailscale` and `tailscaled` binaries together. `dots-ts update` continues to manage the dots-tailscale source package; `dots-ts runtime` manages the Tailscale pair. Neither command enables automatic updates.
+Available in dots-tailscale v0.6.0 (#50); v0.5.0 and earlier do not include this command. It updates the installed `tailscale` and `tailscaled` binaries together. `dots-ts update` continues to manage the dots-tailscale source package; `dots-ts runtime` manages the Tailscale pair. Neither command enables automatic updates.
 
 ## Install the matching tool first
 

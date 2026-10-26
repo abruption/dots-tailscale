@@ -1,8 +1,8 @@
-# Tailscale 바이너리 수동 업데이트 (개발 중)
+# Tailscale 바이너리 수동 업데이트
 
 [English](runtime-updates.md)
 
-이 기능은 #50에서 준비 중인 `0.6.0-dev` 기능이며 v0.5.0 릴리스에는 없습니다. 설치된 `tailscale`과 `tailscaled`를 한 쌍으로 갱신합니다. `dots-ts update`는 dots-tailscale 소스 패키지를, `dots-ts runtime`은 Tailscale 실행 파일을 관리합니다. 자동 업데이트를 켜지는 않습니다.
+dots-tailscale v0.6.0에 추가된 기능입니다(#50). v0.5.0 이하에는 이 명령이 없습니다. 설치된 `tailscale`과 `tailscaled`를 한 쌍으로 갱신합니다. `dots-ts update`는 dots-tailscale 소스 패키지를, `dots-ts runtime`은 Tailscale 실행 파일을 관리합니다. 자동 업데이트를 켜지는 않습니다.
 
 ## 먼저 같은 버전의 도구를 설치하세요
 

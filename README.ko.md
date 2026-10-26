@@ -12,9 +12,9 @@ Dots 클라우드 컴퓨터에서 일반 사용자 권한으로 Tailscale과 Ope
 
 고급 사용자를 위한 [외부 복구 실험 안내](docs/experimental-recovery.ko.md)를 제공합니다. 외부 서버·개인 SSO·승인된 Dots 작업이 필요하며 일반 설치기로 활성화되지 않습니다. 다른 계정의 설치 재현과 임의의 VM 교체 후 복구는 아직 검증하지 않았습니다.
 
-## Tailscale 바이너리 업데이트 (개발 중)
+## Tailscale 바이너리 업데이트
 
-기존 Tailscale 실행 파일을 갱신하는 수동 `dots-ts runtime` 도구를 준비하고 있습니다. v0.5.0에는 없으며 자동 업데이트를 켜지 않습니다. 사전 조건·중단 시 차단·원복 한계는 [업데이트 가이드](docs/runtime-updates.ko.md)를 확인하세요.
+v0.6.0에서는 `dots-ts runtime`으로 설치된 Tailscale 실행 파일을 직접 업데이트할 수 있습니다. 기존 패키지 업데이터와의 호환성을 위해 기본 설치 버전은 1.102.4를 유지하며, 바이너리 업데이트는 별도로 실행해야 합니다. 자동 업데이트는 켜지지 않습니다. 사전 조건과 중단 시 복구 절차·한계는 [업데이트 가이드](docs/runtime-updates.ko.md)를 확인하세요.
 
 ## 데모
 
@@ -36,7 +36,7 @@ Linux x86_64, Git, Python 3, OpenSSH와 사용자 계정의 22번 포트 바인�
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.5.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.6.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -45,9 +45,9 @@ bash /workspace/.dots-tailscale/start.sh login
 
 최초 로그인 URL을 승인한 뒤 SSH 공개키를 설치 경로의 `authorized_keys`에 등록하세요. 호스트 키 지문은 클라우드 컴퓨터의 GUI 터미널에서 확인한 후 SSH로 접속합니다. 환경이 교체되면 `bash /workspace/.dots-tailscale/start.sh`로 기존 설치를 직접 실행해야 합니다. 스크립트는 자동 시작을 등록하지 않습니다.
 
-## v0.4.0: 진단과 비공개 HTTP 접속
+## 진단과 비공개 HTTP 접속 (v0.4.0부터)
 
-아래 도구를 사용하려면 [v0.4.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.4.0)의 소스 파일 네 개와 `source-manifest.json`을 함께 설치하세요.
+아래 도구를 사용하려면 [v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)의 소스 파일 네 개와 `source-manifest.json`을 함께 설치하세요.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts doctor
