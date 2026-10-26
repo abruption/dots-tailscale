@@ -1,0 +1,43 @@
+name: Runtime artifact smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_version:
+        description: Canonical baseline Tailscale version
+        default: '1.102.4'
+        required: true
+      target_version:
+        description: Canonical target Tailscale version
+        default: '1.104.2'
+        required: true
+  push:
+    paths:
+      - 'scripts/runtime_artifact_smoke.py'
+      - '.github/workflows/runtime-artifact-smoke.yml'
+
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  artifact:
+    name: Isolated Linux amd64 version probes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Check manifest
+        run: python scripts/source_manifest.py --check
+      - name: Verify official archives and run version-only probes without networking
+        env:
+          BASELINE_VERSION: ${{ inputs.baseline_version || '1.102.4' }}
+          TARGET_VERSION: ${{ inputs.target_version || '1.104.2' }}
+        run: python scripts/runtime_artifact_smoke.py --versions "$BASELINE_VERSION" "$TARGET_VERSION"

@@ -225,11 +225,11 @@ After an interrupted transaction, a manual recovery can be concluded without del
 
 The reviewed development candidate was tested in Dots on 2026-10-21. See the [dated update validation report](validation/v0.4.0-update-trial.md) for normal apply, intentional failure/rollback, external SSH evidence and limits.
 
-<a id="development-helpers"></a>
-
 ## Tailscale binary updater (development)
 
 The separate `dots-ts runtime check/apply/status` workflow is not in v0.5.0. First install the matching reviewed tool package; keep an independent recovery terminal available and verify external SSH/ping after a change. The default installation pin remains 1.102.4. See the [runtime update guide](runtime-updates.md).
+
+<a id="development-helpers"></a>
 
 ## v0.4.0 helpers and optional application proxies
 

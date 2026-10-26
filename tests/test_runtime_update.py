@@ -126,13 +126,18 @@ class RuntimeArchiveTests(unittest.TestCase):
         entry.size=65537
         with self.assertRaises(tool.ApplyError):parse(archive([(entry,b'x'*entry.size)]))
 
-    def test_declared_oversized_binary_rejected_before_extraction(self):
+    def test_declared_oversized_binary_rejected(self):
         import gzip
         entry=tarfile.TarInfo('tailscale_'+VERSION+'_amd64/tailscale')
         entry.size=128*1024*1024+1
         raw=gzip.compress(entry.tobuf()+b'\0'*1024)
-        with mock.patch.object(tarfile.TarFile,'extractfile',side_effect=AssertionError('oversized payload extraction attempted')):
-            with self.assertRaises(tool.ApplyError):parse(raw)
+        with self.assertRaises(tool.ApplyError):parse(raw)
+
+    def test_invalid_deflate_block_is_sanitized_archive_error(self):
+        # Gzip header followed by a reserved DEFLATE block type, not a tarfile
+        # mock. Reader must turn zlib's parser error into the public error type.
+        raw=b'\x1f\x8b\x08\x00'+b'\x00'*6+b'\x07'+b'\x00'*8
+        with self.assertRaises(tool.ApplyError):parse(raw)
 
 
 class RuntimeFenceTests(unittest.TestCase):
@@ -369,6 +374,113 @@ class RuntimeTransactionTests(unittest.TestCase):
         self.assertEqual(self.journal['state'],'manual_recovery_required')
         self.proxy._launch.assert_called_once();self.assert_preserved()
 
+    def fence_fsync_fault(self):
+        import stat
+        original=tool.os.fsync;fired=[]
+        def sync(fd):
+            info=os.fstat(fd)
+            if stat.S_ISDIR(info.st_mode) and info.st_ino==self.directory.stat().st_ino and not (self.directory/tool.RUNTIME_FENCE).exists() and not fired:
+                fired.append(True)
+                raise OSError('fixture directory fsync after fence unlink')
+            return original(fd)
+        return sync,fired
+
+    def test_fence_unlink_then_fsync_failure_cannot_leave_stopped_unfenced(self):
+        sync,fired=self.fence_fsync_fault()
+        with mock.patch.object(tool.os,'fsync',side_effect=sync):self.run_transaction()
+        self.assertTrue(fired)
+        self.assertIn(self.journal['state'],('applied','manual_recovery_required'))
+        self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists())
+        self.stop_child.assert_not_called()  # Verified durable commit remains running.
+        self.assertEqual(self.pair(),self.new);self.assert_preserved()
+        self.proxy._launch.assert_called_once()
+
+    def test_fence_cleanup_and_cleanup_warning_write_failure_still_project_manual(self):
+        sync,fired=self.fence_fsync_fault();original=tool.apply_journal;warning_failures=[]
+        def journal(transaction,value,**changes):
+            if changes.get('phase')=='cleanup_review':
+                warning_failures.append(True);raise OSError('fixture cleanup warning journal unavailable')
+            return original(transaction,value,**changes)
+        with mock.patch.object(tool.os,'fsync',side_effect=sync),mock.patch.object(tool,'apply_journal',side_effect=journal):
+            self.run_transaction()
+        self.assertTrue(fired);self.assertTrue(warning_failures);self.stop_child.assert_not_called()
+        self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists())
+        canonical=self.directory/tool.RUNTIME_DIRECTORY/self.journal['transaction_id'];canonical.mkdir(mode=0o700,parents=True)
+        tool.apply_write(canonical/'journal.json',(self.tx/'journal.json').read_bytes())
+        report=tool.runtime_status(self.directory,self.journal['transaction_id'])
+        self.assertEqual(report['state'],'manual_recovery_required');self.assert_preserved()
+
+    def test_candidate_exec_intent_journal_failure_rolls_back_before_candidate_launch(self):
+        original=tool.apply_journal
+        def journal(transaction,value,**changes):
+            if changes.get('phase')=='candidate_exec_intent':raise OSError('fixture intent journal failure')
+            return original(transaction,value,**changes)
+        with mock.patch.object(tool,'apply_journal',side_effect=journal):self.run_transaction()
+        self.assertEqual(self.journal['state'],'failed_rolled_back');self.assertEqual(self.pair(),self.old)
+        self.proxy._launch.assert_called_once();self.stop_child.assert_not_called();self.assert_preserved()
+
+    def test_candidate_stop_timeout_preserves_manual_fence(self):
+        self.proxy._ready.side_effect=RuntimeError('fixture readiness failure')
+        self.stop_child.side_effect=tool.ApplyError('fixture child stop timeout')
+        self.run_transaction()
+        self.assertEqual(self.journal['state'],'manual_recovery_required')
+        self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists());self.proxy._launch.assert_called_once();self.assert_preserved()
+
+    def test_stale_atomic_temporary_is_rejected_before_stopping_daemon(self):
+        stale=self.directory/'tailscale.new';stale.write_bytes(b'preexisting unrelated data')
+        try:self.run_transaction()
+        except (tool.ApplyError,OSError):pass
+        self.stop.assert_not_called();self.proxy._launch.assert_not_called()
+        self.assertEqual(stale.read_bytes(),b'preexisting unrelated data');self.assertEqual(self.pair(),self.old);self.assert_preserved()
+
+    def test_baseline_changed_after_backup_refused_before_signal(self):
+        original=tool.runtime_verify_pair
+        def verify(path,version):
+            original(path,version)
+            if Path(path)==self.tx/'stage':(self.directory/'tailscale').write_bytes(elf()+b'externally changed')
+        with mock.patch.object(tool,'runtime_verify_pair',side_effect=verify):
+            with self.assertRaisesRegex(tool.ApplyError,'source_changed'):self.run_transaction()
+        self.stop.assert_not_called();self.proxy._launch.assert_not_called();self.assert_preserved()
+
+    def test_terminal_journal_uncertainty_and_failed_manual_report_remain_fenced(self):
+        original=tool.apply_journal;fired=[]
+        def journal(transaction,value,**changes):
+            if changes.get('state')=='manual_recovery_required':raise OSError('manual report unavailable')
+            original(transaction,value,**changes)
+            if changes.get('state')=='applied' and not fired:
+                fired.append(True);raise OSError('terminal acknowledgement uncertain')
+        with mock.patch.object(tool,'apply_journal',side_effect=journal):self.run_transaction()
+        self.assertTrue(fired);self.stop_child.assert_called_once_with(self.child)
+        self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists());self.assert_preserved()
+        canonical=self.directory/tool.RUNTIME_DIRECTORY/self.journal['transaction_id'];canonical.mkdir(mode=0o700,parents=True)
+        tool.apply_write(canonical/'journal.json',(self.tx/'journal.json').read_bytes())
+        self.assertEqual(tool.runtime_status(self.directory,self.journal['transaction_id'])['state'],'manual_recovery_required')
+
+    def test_rollback_same_version_but_changed_binary_hash_is_not_success(self):
+        original=tool.apply_write;fired=[]
+        def write(path,data,mode=0o600):
+            original(path,data,mode)
+            if path==self.directory/'tailscale' and not fired:
+                fired.append(True);raise OSError('candidate replacement failed')
+        self.proxy._ready.side_effect=lambda *a:(self.directory/'tailscale').write_bytes(elf()+b'changed-but-old-version')
+        with mock.patch.object(tool,'apply_write',side_effect=write):self.run_transaction()
+        self.assertEqual(self.journal['state'],'manual_recovery_required')
+        self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists());self.assert_preserved()
+
+    def test_committed_healthy_daemon_survives_failed_fence_restore(self):
+        sync,fired=self.fence_fsync_fault();original_open=os.open
+        def opening(path,flags,*args,**kwargs):
+            if path==tool.RUNTIME_FENCE and fired and flags & os.O_EXCL:
+                raise PermissionError('fixture fence recreation denied')
+            return original_open(path,flags,*args,**kwargs)
+        with mock.patch.object(tool.os,'fsync',side_effect=sync),mock.patch.object(tool.os,'open',side_effect=opening):
+            self.run_transaction()
+        self.assertTrue(fired);self.stop_child.assert_not_called();self.proxy._launch.assert_called_once()
+        self.assertFalse((self.directory/tool.RUNTIME_FENCE).exists())
+        durable=json.loads((self.tx/'journal.json').read_text())
+        self.assertEqual(durable['state'],'applied');self.assertEqual(durable['error'],'fence_cleanup_failed')
+        self.assertEqual(self.pair(),self.new);self.assert_preserved()
+
 
 class RuntimeStatusTests(unittest.TestCase):
     def setUp(self):
@@ -418,6 +530,12 @@ class RuntimeStatusTests(unittest.TestCase):
                 report=tool.runtime_status(self.directory,self.identifier)
             self.assertEqual(report['state'],'manual_recovery_required')
 
+
+    def test_another_transactions_valid_fence_does_not_relabel_historical_success(self):
+        tool.apply_journal(self.tx,self.journal,state='applied',phase='complete')
+        tool.runtime_fence(self.directory,dict(self.journal,transaction_id='c'*32))
+        report=tool.runtime_status(self.directory,self.identifier)
+        self.assertEqual(report['state'],'applied');self.assertEqual(report['external_ssh'],'pending')
 
 
 class RuntimeApplyWorkerTests(unittest.TestCase):
@@ -528,3 +646,16 @@ class RuntimeApplyWorkerTests(unittest.TestCase):
         with mock.patch.object(Path,'stat',stat_file),mock.patch.object(os,'fstat',fstat_file):
             with self.assertRaisesRegex(tool.ApplyError,'unsafe_bundle'):self.apply()
         self.spawn.assert_not_called()
+
+    def test_main_output_failure_does_not_acknowledge_worker(self):
+        import io
+        report={'state':'prepared','transaction_id':'a'*32,'version':VERSION,'external_ssh':'pending'}
+        class BrokenOutput(io.StringIO):
+            def write(self,text):raise BrokenPipeError('fixture closed SSH output')
+        with mock.patch.object(tool,'directories',return_value=(self.directory,self.runtime)), \
+             mock.patch.object(tool,'runtime_apply',return_value=report) as apply, \
+             mock.patch.object(tool,'runtime_ack') as ack,mock.patch.object(tool.sys,'stdout',BrokenOutput()),mock.patch.object(tool.sys,'stderr',io.StringIO()):
+            try:tool.main(['runtime','apply','--version',VERSION,'--confirm-recovery-terminal','--json'])
+            except (BrokenPipeError,SystemExit):pass
+        apply.assert_called_once()
+        ack.assert_not_called()

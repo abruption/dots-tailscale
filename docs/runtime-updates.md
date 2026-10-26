@@ -2,7 +2,7 @@
 
 [한국어](runtime-updates.ko.md)
 
-This feature is under development for #50 and is not in the v0.5.0 release. It updates the installed `tailscale` and `tailscaled` binaries together. `dots-ts update` continues to manage the dots-tailscale source package; `dots-ts runtime` manages the Tailscale pair. Neither command enables automatic updates.
+This feature is under development for #50, identified as `0.6.0-dev`, and is not in the v0.5.0 release. It updates the installed `tailscale` and `tailscaled` binaries together. `dots-ts update` continues to manage the dots-tailscale source package; `dots-ts runtime` manages the Tailscale pair. Neither command enables automatic updates.
 
 ## Install the matching tool first
 
@@ -32,7 +32,7 @@ For example, after reviewing `runtime check` and the upstream advisory:
   --confirm-recovery-terminal --json
 ```
 
-The version is an example, not a claim that 1.104.2 resolves Tailworm. That report tested 1.104.2 itself. Check the current [Tailscale security bulletins](https://tailscale.com/security-bulletins) before selecting a version.
+The version is an example, not a claim that 1.104.2 resolves Tailworm. The [Tailworm report](https://tailworm.com/) tested 1.104.2 itself. Check the current [Tailscale security bulletins](https://tailscale.com/security-bulletins) before selecting a version.
 
 Apply requires Linux amd64, Python pidfd support, a private writable installation/runtime context, a complete verified source package, and a uniquely identified running daemon/shim/OpenSSH with the expected configuration. It stages and checks the archive before stopping anything, verifies both version commands, and backs up both existing binaries. The same operation lock coordinates startup, proxy apply and package updates.
 
@@ -47,7 +47,7 @@ The CLI prints a transaction ID and flushes stdout before acknowledging the deta
 | State | Meaning |
 |---|---|
 | `prepared` / `running` | Staging/acknowledgement or the worker is in progress. |
-| `applied` | Local readiness, identity/configuration checks and installed pair hashes passed. External SSH/ping verification is still pending. |
+| `applied` | Local readiness, identity/configuration checks and installed pair hashes passed. External SSH/ping verification is still pending; inspect any cleanup warning. |
 | `failed_rolled_back` | No candidate daemon execution was attempted; the previous pair was restored and checked. |
 | `rejected` | The operation was refused. Inspect the fixed error code and journal. |
 | `manual_recovery_required` | Execution, process ownership, durable progress or state compatibility is uncertain. Use the independent terminal; do not repeat apply or remove the fence merely to make startup work. |
@@ -79,6 +79,56 @@ The updater does not copy, replace, print or reset node state or SSH private key
 
 `.runtime-update-block` is written before daemon shutdown. Mutating startup/proxy/package operations refuse this marker, including after interruption or a new boot. Only the worker's verified success or a verified pre-execution rollback clears its own marker. Check/status remain available. A missing process after a boot change does not authorize repeating a transaction.
 
-Once candidate daemon execution is attempted, the new binary may have changed its state format. This tool does not assume backward compatibility or automatically restart old binaries against that state. A failure at or after that point leaves a fenced manual-recovery result and the code backups. Never restore an old state snapshot or reauthenticate just to hide this failure. Recovery requires inspecting the journal, paired binary hashes, daemon/socket identity and upstream state compatibility from the independent terminal.
+Once candidate daemon execution is attempted, the new binary may have changed its state format. A readiness/identity failure before the terminal commit attempts to stop that candidate and leaves Tailscale offline; if stopping cannot be confirmed, process/socket state remains unknown. After a verified pair and terminal journal are committed, a fence cleanup failure does not stop the healthy daemon. It records `cleanup_review` / `fence_cleanup_failed` when possible and tries to retain its own fence. The final directory sync and a storage failure can still require operator review. This tool does not assume backward compatibility or automatically restart old binaries against that state. A failure at or after that point leaves a fenced manual-recovery result and the code backups. Never restore an old state snapshot or reauthenticate just to hide this failure. Recovery requires inspecting the journal, paired binary hashes, daemon/socket identity and upstream state compatibility from the independent terminal.
 
 No live runtime upgrade or failure injection is established by offline tests. Future opt-in scheduling belongs to #31 and must reuse this transaction after its supported live paths are validated. VM replacement can remove the running updater itself; files surviving in `/workspace` do not guarantee an update worker will resume.
+
+## Manual resolution runbook
+
+This procedure requires the independent cloud terminal, an operator who can inspect the relevant process namespace, and all external recovery/update jobs paused. A valid old or candidate archive is not enough to determine whether downgrading its state is safe. Unknown process/socket visibility, damaged journals, or mismatching hashes are stop conditions: retain the files and ask for maintainer/upstream help rather than guessing.
+
+### 1. Freeze competing work and inspect evidence
+
+Take the same installation lock in the recovery shell and keep that shell open:
+
+```bash
+D=/workspace/.dots-tailscale
+exec 9>"$D/.operation.lock"
+flock -n 9
+```
+
+Continue only if the lock was acquired. Use the transaction ID from status or the private `.runtime-transactions/` directory. Read its `journal.json` locally and inspect `phase`, `state_compatibility`, `worker`, `baseline_version`, `baseline_binary_hashes`, and `binary_hashes`. Missing fields are unknown, not permission to proceed. Compare boot ID and exact PID/start-time/UID/executable identity; a hidden `/proc` entry is not proof that a process exited. Confirm no updater worker remains. Never use broad `pkill` commands or delete an unidentified socket.
+
+For both installed binaries, and any stage/backup pair you intend to use, verify ordinary non-symlink files, current-user ownership, one link, mode 0700, expected SHA-256 and matching version outputs. These are binary/public metadata checks; do not open state or private keys. The candidate pair must match `binary_hashes`; the old pair must match `baseline_binary_hashes`. If those records are unavailable, establish provenance from a trusted official artifact before proceeding.
+
+### 2. Choose the permitted recovery direction
+
+| Durable evidence and actual state | Permitted operator action |
+|---|---|
+| Worker died before cutover; no candidate execution intent; current approved pair and daemon are unchanged | Keep the pair/process. Resolve only the abandoned transaction after verifying no worker remains. |
+| Valid journal proves `not_executed`; daemon/socket absence is positively established | Restore **both** verified backup binaries, then resume the baseline version. Do not infer this case merely from a missing journal or fence. |
+| Candidate daemon execution may have happened (`unknown`, readiness failure, interrupted post-intent work) | Keep or restore **both** binaries of the same candidate version from the verified stage. Do not start old binaries against this state. If the candidate is incompatible, retain the fence and obtain an upstream-supported recovery plan. |
+| A verified terminal commit exists but fence cleanup needs review | If the installed pair and running daemon match the committed version, leave that healthy daemon running and resolve only the stale fence/record. |
+
+If a daemon or socket belongs to an unknown process, stop here. If binaries must be restored, first establish that no daemon is running; copy each selected file to a new private temporary filename, validate it, then atomically rename both while holding the operation lock and fence. Do not overwrite a running executable's inode. Remove a leftover `.new` file only after proving that it belongs to this abandoned operation and is not used by a worker.
+
+### 3. Preserve the transaction and release the fence
+
+Only after the selected pair, version, process/socket state and permitted direction above are established:
+
+1. Flush the installed files and installation filesystem (`sync -f "$D"` on the supported Linux environment). If this fails, leave the fence and stop.
+2. Write a private operator resolution note recording the ID, selected version/hashes and reasoning; keep the original journal unchanged.
+3. Create/verify a current-user-owned 0700 `$D/.runtime-resolved` directory. Move this transaction to the previously absent `$D/.runtime-resolved/TRANSACTION_ID` on the same filesystem; never delete it or overwrite another record. Moving it out of `.runtime-transactions` removes the abandoned record from the automatic prior-transaction gate. Flush the filesystem again before releasing a fence.
+4. If `.runtime-update-block` exists, read it without following links and verify its schema, transaction ID and stored boot ID exactly match the archived journal. Remove **only that matching marker**. A different, malformed or unreadable marker is a stop condition. Flush the directory/filesystem; on failure keep the verified pair and diagnose storage rather than changing versions.
+5. Release the shell lock (`flock -u 9`, then `exec 9>&-`). When no daemon is already running, run the installed `bash "$D/start.sh"` once. It will use the verified installed pair. Do not invoke old checkout scripts, which do not understand the runtime fence.
+6. Confirm local readiness, a fresh external SSH connection and ping, then resume external jobs. Keep the archived journal and both code pairs until the result and rollback compatibility are understood.
+
+After archival, `runtime status --id` no longer looks up that record; inspect the private archived journal and resolution note instead. Releasing an abandoned transaction is an explicit operator decision, not an automatic claim that the old attempt succeeded. If the same candidate still cannot start, do not repeat indefinitely or restore old state: collect the private daemon log and seek compatibility guidance.
+
+## Operation notes
+
+- SSH invocation is intentionally allowed because cutover uses a detached worker and explicit independent-terminal acknowledgement. Unlike proxy apply, this command is designed to survive loss of its initiating SSH session. The acknowledgement does not verify that a second terminal exists.
+- `tailscaled` output remains in the validated private runtime `tailscaled.log`; status does not expose raw output. Keep this log private when diagnosing a failed startup.
+- Transactions retain stage and backup binaries (about twice the uncompressed pair size). There is no automatic cleanup. Archive only resolved, inactive transactions as described above, and remove old code backups only after an operator-approved retention decision. Never sweep active transaction directories.
+- During the short spawn/worker-identity handoff, a status read can conservatively report manual review before the worker record is visible. Wait for the bounded acknowledgement window and reread status; do not mutate files because of this transient observation.
+- Real Dots upgrade/readiness timing and state downgrade compatibility remain unverified. The normal proxy readiness budget is bounded; a timeout is not proof that the version can never work. Resolve it through the independent terminal and the phase-specific procedure above.

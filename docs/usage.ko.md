@@ -174,11 +174,11 @@ setup과 proxy apply가 사용하는 작업 잠금을 유지한 채 소스 파�
 
 검토된 개발 후보를 2026-10-21에 Dots에서 시험했습니다. 정상 적용, 의도적인 실패 후 원복, 외부 SSH 확인 결과와 한계는 [날짜별 업데이트 검증 기록](validation/v0.4.0-update-trial.md)을 참고하세요.
 
-<a id="development-helpers"></a>
-
 ## Tailscale 바이너리 갱신 (개발 중)
 
 별도의 `dots-ts runtime check/apply/status` 기능은 v0.5.0에 포함돼 있지 않습니다. 먼저 해당 기능이 들어 있는 검토된 소스 묶음을 설치하고, 독립 복구 터미널을 확보하세요. 기본 설치 버전은 1.102.4를 유지하며, 적용 후 외부 SSH·ping을 따로 확인해야 합니다. [바이너리 업데이트 가이드](runtime-updates.ko.md)를 참고하세요.
+
+<a id="development-helpers"></a>
 
 ## v0.4.0 도구와 선택적 애플리케이션 프록시
 
