@@ -53,12 +53,16 @@ v0.7.0으로 새로 설치할 때는 파일 체크섬, 제한된 압축 파일 �
 5. 릴리스 checkout에 들어 있는 명시적 소스 전환 명령을 실행하세요.
 
 ```bash
-python3 /workspace/reviewed-v0.7.0/dots-ts update migrate-baseline \
+DOTS_TS_DIR=/workspace/.dots-tailscale \
+  python3 /workspace/reviewed-v0.7.0/dots-ts update migrate-baseline \
   --bundle /workspace/reviewed-v0.7.0 \
   --confirm-recovery-terminal --json
-python3 /workspace/reviewed-v0.7.0/dots-ts update status \
+DOTS_TS_DIR=/workspace/.dots-tailscale \
+  python3 /workspace/reviewed-v0.7.0/dots-ts update status \
   --id PACKAGE_TRANSACTION_ID --json
 ```
+
+`--bundle`은 가져올 소스 묶음을 선택하고, `DOTS_TS_DIR`은 갱신하거나 상태를 조회할 **기존 설치 경로**를 지정합니다. 새 소스의 CLI는 별도 지정이 없으면 자신의 디렉터리를 대상으로 삼으므로, 위 두 명령에는 설치 경로를 명시해야 합니다. 다른 경로에 설치했다면 두 명령의 `/workspace/.dots-tailscale`을 실제 설치 경로로 바꾸세요. `/workspace/reviewed-v0.7.0`은 검토한 소스 디렉터리로 따로 유지합니다.
 
 일반 `update apply`의 기본 버전 선언 비교는 그대로 남으며, 이처럼 기본값이 바뀌는 업데이트는 `binary_update_unsupported`로 거부합니다. `migrate-baseline`은 별도로 선택하는 제한된 작업입니다. 실행한 릴리스 checkout과 선택한 묶음이 같고 기존 패키지의 무결성이 확인돼야 합니다. 지원하는 선언 전환, CLI·데몬·백엔드 버전 일치, 예상한 userspace·소켓·프록시 구성, 미해결 패키지·실행 파일 작업과 차단 표식의 부재도 확인합니다. 고정된 worker가 공통 작업 잠금을 잡은 뒤 소스를 바꾸기 전에 조건을 다시 검사합니다.
 

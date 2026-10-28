@@ -53,12 +53,16 @@ If both installed binaries and the running backend are already 1.104.4, skip `ru
 5. Run the release checkout's explicit source-only migration command:
 
 ```bash
-python3 /workspace/reviewed-v0.7.0/dots-ts update migrate-baseline \
+DOTS_TS_DIR=/workspace/.dots-tailscale \
+  python3 /workspace/reviewed-v0.7.0/dots-ts update migrate-baseline \
   --bundle /workspace/reviewed-v0.7.0 \
   --confirm-recovery-terminal --json
-python3 /workspace/reviewed-v0.7.0/dots-ts update status \
+DOTS_TS_DIR=/workspace/.dots-tailscale \
+  python3 /workspace/reviewed-v0.7.0/dots-ts update status \
   --id PACKAGE_TRANSACTION_ID --json
 ```
+
+`--bundle` selects the source bundle to adopt; `DOTS_TS_DIR` selects the **existing installation** to update or inspect. A CLI run from a separate source checkout otherwise targets its own directory, so both commands must explicitly identify the installed target. For a custom installation, replace `/workspace/.dots-tailscale` in both commands with its actual path. Keep `/workspace/reviewed-v0.7.0` as the separate reviewed source directory.
 
 The usual `update apply` command keeps its binary-declaration equality guard and still refuses this cross-baseline transition with `binary_update_unsupported`. `migrate-baseline` is a separate, explicit guarded operation. It requires the invoking release checkout to match the selected bundle, a verified installed package, the exact supported declaration transition, CLI/daemon/backend version agreement, the expected userspace/socket/proxy setup, and no unresolved package/runtime transaction or fence. The frozen worker repeats the migration checks under the shared operation lock before changing sources.
 
