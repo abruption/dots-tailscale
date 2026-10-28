@@ -8,6 +8,8 @@
 
 **当前版本：[v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)。** 这一版新增了 Tailscale 二进制文件的手动更新功能，并改进了单独部署的恢复监控工具的诊断信息。本项目独立开发，并非 OpenAI 或 Tailscale 的官方工具。
 
+**开发候选版说明：** 尚未发布的 `0.7.0-dev` 源码将新安装的默认 Tailscale 版本改为 **1.104.4**。下方 v0.6.0 命令仍安装已发布版本。默认版本为 1.102.4 的现有软件包，需要先单独更新 Tailscale，再执行[明确的安全基线迁移（英文）](docs/security-baseline.md)。普通 `update apply` 仍保留跨基线变更检查。
+
 ## 可以做什么
 
 | 操作 | 用途 |
@@ -68,7 +70,7 @@ bash /workspace/.dots-tailscale/start.sh
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-**新安装的 Tailscale 仍然从 1.102.4 开始。** 保持这个默认版本，是为了让旧的软件包更新器也能安装新工具；只更新软件包不会更新 Tailscale。若要替换二进制文件，请先核对查询到的版本和 Tailscale 官方公告，再按[手动更新指南（英文）](docs/runtime-updates.md)操作。指南包含明确指定版本、使用离线文件包和查看事务状态的方法。
+**使用已发布的 v0.6.0 新安装时，Tailscale 从 1.102.4 开始。** 保持这个默认版本，是为了让旧的软件包更新器也能安装新工具；只更新软件包不会更新 Tailscale。若要替换二进制文件，请先核对查询到的版本和 Tailscale 官方公告，再按[手动更新指南（英文）](docs/runtime-updates.md)操作。指南包含明确指定版本、使用离线文件包和查看事务状态的方法。
 
 应用更新前，请确认可以操作一个不依赖 Tailscale 连接的云端恢复终端。更新 Tailscale 二进制文件时，应先暂停外部恢复任务，待新的 SSH 连接和 ping 检查通过后再恢复。一旦尝试执行候选守护进程，即使启动失败，也不会自动降级；失败后的状态不明确时，需要按指南手动恢复。回退软件包代码与 Tailscale 状态数据是否兼容，是两回事。
 

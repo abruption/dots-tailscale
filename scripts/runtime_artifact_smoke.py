@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--versions', nargs='+', default=['1.102.4', '1.104.2'])
+    parser.add_argument('--versions', nargs='+', default=['1.102.4', '1.104.4'])
     args = parser.parse_args()
     if len(args.versions) > 2:
         parser.error('at most two explicit versions')

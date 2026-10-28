@@ -8,6 +8,8 @@ Use Tailscale and SSH to reach your Dots cloud computer from your own devices. d
 
 **Current release: [v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0).** It adds manual Tailscale binary updates and better diagnostics for the separately deployed recovery monitor. This is an independent project, not an official OpenAI or Tailscale tool.
 
+**Development candidate:** the unreleased `0.7.0-dev` source raises the new-install baseline to Tailscale **1.104.4**. The v0.6.0 commands below still install the published release. Existing 1.102.4-baseline packages need the [explicit security-baseline migration](docs/security-baseline.md), after a separate runtime upgrade; ordinary `update apply` keeps its cross-baseline guard.
+
 ## What you can do
 
 | Task | How it helps |
@@ -68,7 +70,7 @@ Once the matching v0.6.0 tools are installed, check the official stable Tailscal
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-**New installations still start with Tailscale 1.102.4.** Keeping that default allows older package updaters to install the new tools; upgrading the package alone does not upgrade Tailscale. To change the binaries, review the reported version and upstream advisories, then follow the [manual runtime update guide](docs/runtime-updates.md). It covers explicit version selection, offline bundles and transaction status.
+**New installations from published v0.6.0 start with Tailscale 1.102.4.** Keeping that default allows older package updaters to install the new tools; upgrading the package alone does not upgrade Tailscale. To change the binaries, review the reported version and upstream advisories, then follow the [manual runtime update guide](docs/runtime-updates.md). It covers explicit version selection, offline bundles and transaction status.
 
 Before applying an update, verify an independent cloud recovery terminal is usable. For runtime updates, pause external recovery jobs and resume them after fresh SSH/ping checks. Once execution of a candidate daemon has been attempted, even a failed startup does not permit automatic downgrade: uncertain failures require the guide's manual recovery procedure. Package code rollback and Tailscale state compatibility are different things.
 

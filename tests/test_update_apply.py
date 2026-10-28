@@ -80,6 +80,231 @@ class ApplyTests(unittest.TestCase):
             self.assertEqual((path.stat().st_ino, path.read_bytes()), expected)
         self.assertFalse((self.directory / 'start.sh').exists())
 
+    def migration_fixture(self):
+        stage = self.transaction / 'stage'
+        self.new['tailscale-setup.sh'] = b'#!/bin/bash\nTS_VERSION=1.104.4\n'
+        metadata = json.loads(self.new[tool.MANIFEST])
+        metadata['files']['tailscale-setup.sh'] = hashlib.sha256(self.new['tailscale-setup.sh']).hexdigest()
+        self.new[tool.MANIFEST] = json.dumps(metadata).encode()
+        for name, body in self.new.items(): (stage / name).write_bytes(body)
+        for name in ('tailscale', 'tailscaled'):
+            path = self.directory / name
+            path.write_text('#!/bin/sh\nprintf "1.104.4\\n"\n'); path.chmod(0o700)
+            self.protected[name] = (path.stat().st_ino, path.read_bytes())
+        supervisor = self.transaction / 'supervisor'; supervisor.mkdir(mode=0o700)
+        for name in ('dots-ts', 'dots_proxy.py'): (supervisor / name).write_bytes(self.new[name])
+        self.journal.update(operation='migrate_baseline',
+            baseline_package_hashes=tool.apply_payload_hashes(self.old),
+            target_package_hashes=tool.apply_payload_hashes(self.new))
+        self.baseline['_socket'] = [1, 2]
+        self.proxy.inspect_config.return_value = {
+            'restart_required': False, 'daemon_running': True,
+            'desired': {'socks_port': None, 'http_port': None}}
+        self.proxy._flags.return_value = []
+        self.proxy._socket_owned.return_value = True
+        self.proxy._socket_identity.return_value = [1, 2]
+        runtime = self.root / 'runtime'
+        self.proxy._daemon.return_value = {
+            'pid': self.baseline['tailscaled']['pid'],
+            'argv': [str(self.directory / 'tailscaled'), '--tun=userspace-networking',
+                     '--statedir=' + str(self.directory / 'state'),
+                     '--socket=' + str(runtime / 'tailscaled.sock'), '--port=0']}
+        stack = self.lifecycle()
+        stack.enter_context(mock.patch.object(tool, 'apply_identity', return_value=self.baseline['tailscaled']))
+        reply = mock.Mock(returncode=0, stdout=json.dumps({'Version': '1.104.4-tabc1234567-gdef1234567', 'BackendState': 'Running'}))
+        self.runtime_reply = reply
+        stack.enter_context(mock.patch.object(tool, 'run_cli', return_value=reply))
+        return stack
+
+    def migration_guard(self):
+        return tool.apply_baseline_guard(self.old, self.new, self.directory,
+                                         self.root / 'runtime', self.proxy, True)
+
+    def test_baseline_migration_changes_sources_only(self):
+        self.migration_fixture()
+        self.run_transaction()
+        self.assertEqual(self.journal['state'], 'applied')
+        self.assertEqual(tool.apply_bundle(self.directory, 'installed'), self.new)
+        self.assert_protected()
+        self.stop.assert_called_once_with(self.baseline['shim'])
+
+    def test_baseline_migration_readiness_failure_restores_code_without_binary_downgrade(self):
+        self.migration_fixture()
+        self.ready.side_effect = [tool.ApplyError('readiness_timeout'), None]
+        self.run_transaction()
+        self.assertEqual(self.journal['state'], 'failed_rolled_back')
+        self.assertEqual(tool.apply_bundle(self.directory, 'installed'), self.old)
+        self.assert_protected()
+
+    def test_baseline_migration_partial_replacement_restores_manifest_and_sources(self):
+        self.migration_fixture()
+        write = tool.apply_write; fired = []
+        def fail(path, data, mode=0o600):
+            write(path, data, mode)
+            if path == self.directory / 'dots-ts' and not fired:
+                fired.append(True); raise OSError('fixture after replacement')
+        with mock.patch.object(tool, 'apply_write', side_effect=fail): self.run_transaction()
+        self.assertEqual(self.journal['state'], 'failed_rolled_back')
+        self.assertEqual(tool.apply_bundle(self.directory, 'installed'), self.old)
+        self.assert_protected()
+
+    def test_baseline_migration_does_not_relax_ordinary_apply_guard(self):
+        self.migration_fixture()
+        self.journal.pop('operation')
+        with self.assertRaisesRegex(tool.ApplyError, 'binary_update_unsupported'): self.run_transaction()
+        self.stop.assert_not_called(); self.assert_protected()
+
+    def test_baseline_migration_exact_transition_only(self):
+        self.migration_fixture()
+        old = dict(self.old); old['tailscale-setup.sh'] = b'TS_VERSION=1.104.2\n'
+        with self.assertRaisesRegex(tool.ApplyError, 'unsupported_baseline_migration'):
+            tool.apply_baseline_guard(old, self.new, self.directory, self.root / 'runtime', self.proxy, True)
+        self.stop.assert_not_called()
+
+    def test_baseline_migration_wrong_or_partial_pair_refused(self):
+        self.migration_fixture()
+        cli = self.directory / 'tailscale'; daemon = self.directory / 'tailscaled'
+        cli.write_text('#!/bin/sh\nprintf "1.102.4\\n"\n')
+        with self.assertRaisesRegex(tool.ApplyError, 'baseline_migration_runtime_required'): self.migration_guard()
+        cli.write_text('#!/bin/sh\nprintf "1.104.4\\n"\n'); daemon.unlink()
+        with self.assertRaisesRegex(tool.ApplyError, 'baseline_migration_runtime_required'): self.migration_guard()
+        self.stop.assert_not_called()
+
+    def test_baseline_migration_daemon_actual_version_and_backend_required(self):
+        self.migration_fixture()
+        for data in ({'Version':'1.102.4','BackendState':'Running'},
+                     {'Version':'1.104.4','BackendState':'NeedsLogin'},
+                     {'BackendState':'Running'}, {'Version':True,'BackendState':'Running'}):
+            self.runtime_reply.stdout = json.dumps(data)
+            with self.subTest(data=data), self.assertRaisesRegex(tool.ApplyError, 'baseline_migration_daemon_version_mismatch'):
+                self.migration_guard()
+        self.stop.assert_not_called()
+
+    def test_baseline_migration_userspace_socket_proxy_contract_required(self):
+        self.migration_fixture()
+        self.proxy._daemon.return_value['argv'].append('--tun=tailscale0')
+        with self.assertRaisesRegex(tool.ApplyError, 'baseline_migration_daemon_required'): self.migration_guard()
+        self.stop.assert_not_called()
+
+    def test_baseline_migration_rejects_pending_runtime_and_cleanup_warning(self):
+        self.migration_fixture()
+        root = self.directory / tool.RUNTIME_DIRECTORY; root.mkdir(mode=0o700)
+        (root / ('b' * 32)).mkdir(mode=0o700)
+        for status in ({'state':'running'}, {'state':'applied','cleanup_warning':'worker_cleanup_failed'}):
+            with mock.patch.object(tool, 'runtime_status', return_value=status):
+                with self.assertRaisesRegex(tool.ApplyError, 'prior_transaction_requires_manual_review'): self.migration_guard()
+        self.stop.assert_not_called()
+
+    def test_baseline_migration_stage_or_frozen_worker_change_rejected(self):
+        self.migration_fixture()
+        (self.transaction / 'supervisor/dots-ts').write_bytes(b'# stale worker')
+        with self.assertRaisesRegex(tool.ApplyError, 'baseline_migration_source_changed'): self.run_transaction()
+        self.stop.assert_not_called()
+        (self.transaction / 'supervisor/dots-ts').write_bytes(self.new['dots-ts'])
+        self.journal['target_package_hashes']['shim.py'] = '0' * 64
+        with self.assertRaisesRegex(tool.ApplyError, 'baseline_migration_source_changed'): self.run_transaction()
+        self.stop.assert_not_called()
+
+    def test_baseline_migration_rejects_valid_but_changed_installed_package(self):
+        self.migration_fixture()
+        fixture(self.directory, True, '0.6.0', 'concurrent reviewed change')
+        with self.assertRaisesRegex(tool.ApplyError, 'baseline_migration_source_changed'): self.run_transaction()
+        self.stop.assert_not_called(); self.assert_protected()
+
+    def test_baseline_migration_rejects_symlink_pair_before_probing(self):
+        self.migration_fixture()
+        daemon = self.directory / 'tailscaled'; daemon.unlink()
+        daemon.symlink_to(self.directory / 'tailscale')
+        with mock.patch.object(tool, 'runtime_verify_pair') as pair:
+            with self.assertRaisesRegex(tool.ApplyError, 'baseline_migration_runtime_required'): self.migration_guard()
+        pair.assert_not_called(); self.stop.assert_not_called()
+
+    def test_baseline_migration_journal_mode_type_and_hashes_validated(self):
+        self.migration_fixture()
+        for operation in (True, 1, None, 'unknown'):
+            record = dict(self.journal, operation=operation)
+            tool.apply_journal(self.transaction, record)
+            with self.assertRaisesRegex(tool.ApplyError, 'invalid_journal'): tool.apply_read_journal(self.transaction)
+        record = dict(self.journal, target_package_hashes={'dots-ts':'0'*64})
+        tool.apply_journal(self.transaction, record)
+        with self.assertRaisesRegex(tool.ApplyError, 'invalid_journal'): tool.apply_read_journal(self.transaction)
+
+    def test_baseline_migration_rechecks_before_signals(self):
+        self.migration_fixture()
+        actual = tool.apply_baseline_guard; calls = []
+        def guard(*args, **kwargs):
+            calls.append(True)
+            if len(calls) == 2: raise tool.ApplyError('baseline_migration_daemon_changed')
+            return actual(*args, **kwargs)
+        with mock.patch.object(tool, 'apply_baseline_guard', side_effect=guard):
+            with self.assertRaisesRegex(tool.ApplyError, 'baseline_migration_daemon_changed'): self.run_transaction()
+        self.stop.assert_not_called(); self.assert_protected()
+
+    def test_baseline_migration_caller_requires_matching_reviewed_checkout(self):
+        self.migration_fixture()
+        self.proxy._operation.return_value = contextlib.nullcontext()
+        with mock.patch.dict(sys.modules, {'dots_proxy': self.proxy}), \
+             mock.patch.object(tool.sys, 'platform', 'linux'), \
+             mock.patch.object(tool.os, 'pidfd_open', create=True), \
+             mock.patch.object(signal, 'pidfd_send_signal', create=True), \
+             mock.patch.object(tool, '__file__', str(self.directory / 'dots-ts')):
+            with self.assertRaisesRegex(tool.ApplyError, 'baseline_migration_candidate_mismatch'):
+                tool.update_apply(self.directory, self.root / 'runtime', bundle=self.transaction / 'stage',
+                                  confirm=True, migrate_baseline=True)
+        self.stop.assert_not_called(); self.assert_protected()
+
+    def test_baseline_migration_caller_freezes_intent_and_source_hashes(self):
+        self.migration_fixture()
+        self.proxy._operation.return_value = contextlib.nullcontext()
+        seen = []
+        def spawn(argv, **kwargs):
+            transaction = Path(argv[-1]); record = tool.apply_read_journal(transaction)
+            seen.append(record.copy())
+            tool.apply_journal(transaction, record, state='rejected')
+            return mock.Mock()
+        with mock.patch.dict(sys.modules, {'dots_proxy': self.proxy}), \
+             mock.patch.object(tool.sys, 'platform', 'linux'), \
+             mock.patch.object(tool.os, 'pidfd_open', create=True), \
+             mock.patch.object(signal, 'pidfd_send_signal', create=True), \
+             mock.patch.object(tool, '__file__', str(self.transaction / 'stage/dots-ts')), \
+             mock.patch.object(subprocess, 'Popen', side_effect=spawn), \
+             mock.patch.object(tool, 'apply_syntax'), \
+             mock.patch.object(tool, 'apply_boot', return_value='boot'), \
+             mock.patch.object(tool, 'runtime_verify_pair'):
+            result = tool.update_apply(self.directory, self.root / 'runtime', bundle=self.transaction / 'stage',
+                                       confirm=True, migrate_baseline=True)
+        self.assertEqual(result['state'], 'rejected')
+        self.assertEqual(seen[0]['operation'], 'migrate_baseline')
+        self.assertEqual(seen[0]['baseline_package_hashes'], tool.apply_payload_hashes(self.old))
+        self.assertEqual(seen[0]['target_package_hashes'], tool.apply_payload_hashes(self.new))
+        self.stop.assert_not_called(); self.assert_protected()
+
+    def test_baseline_migration_fence_blocks_before_binary_probes(self):
+        import dots_proxy as proxy
+        self.migration_fixture()
+        (self.directory / tool.RUNTIME_FENCE).write_text('fixture fence')
+        with mock.patch.object(tool.sys, 'platform', 'linux'), \
+             mock.patch.object(tool.os, 'pidfd_open', create=True), \
+             mock.patch.object(signal, 'pidfd_send_signal', create=True), \
+             mock.patch.object(tool, '__file__', str(self.transaction / 'stage/dots-ts')), \
+             mock.patch.object(tool, 'runtime_verify_pair') as pair:
+            with self.assertRaisesRegex(tool.ApplyError, 'operation_busy_or_unsafe'):
+                tool.update_apply(self.directory, self.root / 'runtime', bundle=self.transaction / 'stage',
+                                  confirm=True, migrate_baseline=True)
+        pair.assert_not_called(); self.stop.assert_not_called()
+
+    def test_baseline_migration_cli_exposes_only_explicit_bundle_workflow(self):
+        output = io.StringIO()
+        with mock.patch.object(tool, 'directories', return_value=(self.directory, self.root)), \
+             mock.patch.object(tool, 'update_apply', return_value={'state':'prepared'}) as migrate, \
+             contextlib.redirect_stdout(output):
+            code = tool.main(['update','migrate-baseline','--bundle',str(self.transaction / 'stage'),
+                              '--confirm-recovery-terminal','--json'])
+        self.assertEqual(code, 0)
+        self.assertEqual(migrate.call_args.kwargs, {'bundle':self.transaction / 'stage',
+                                                  'confirm':True, 'migrate_baseline':True})
+        self.assertEqual(json.loads(output.getvalue()), {'state':'prepared'})
+
     def test_success_code_only_and_manifest_last(self):
         self.lifecycle()
         self.run_transaction()
@@ -229,7 +454,7 @@ class ApplyTests(unittest.TestCase):
 
     def test_real_setup_binary_version_parses(self):
         payload = {'tailscale-setup.sh': (ROOT / 'tailscale-setup.sh').read_bytes()}
-        self.assertEqual(tool.apply_ts_version(payload), b'1.102.4')
+        self.assertEqual(tool.apply_ts_version(payload), b'1.104.4')
         payload['tailscale-setup.sh'] = b'TS_VERSION="1.102.4"\n'
         self.assertEqual(tool.apply_ts_version(payload), b'1.102.4')
         payload['tailscale-setup.sh'] = b'TS_VERSION="1.102.4\n'

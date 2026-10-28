@@ -8,7 +8,7 @@ dots-tailscale v0.6.0에 추가된 기능입니다(#50). v0.5.0 이하에는 이
 
 이 기능이 들어 있는 검토된 패키지의 소스 4개와 `source-manifest.json`을 함께 설치해야 합니다. 실행하는 도구와 설치된 소스 묶음이 다르면 거부합니다. 새 저장소의 CLI만 실행해 오래된 설치를 갱신하면, 기존 시작 스크립트가 중간에 끊긴 업데이트를 알아보지 못하기 때문입니다.
 
-이번 변경은 기본 설치 버전 1.102.4를 유지합니다. 먼저 기존 패키지 업데이터로 새 도구를 제공할 수 있게 하는 단계입니다. 기존 노드나 신규 설치 버전을 조용히 바꾸지 않습니다. 나중에 기본 버전을 바꾸는 패키지는 별도의 전환 검증이 필요하며, 현재 패키지 업데이터의 바이너리 버전 변경 제한도 유지됩니다.
+공개된 v0.6.0은 기존 소스 전용 업데이터로 새 도구를 설치할 수 있도록 기본값 1.102.4를 유지합니다. 미출시 0.7.0-dev 후보는 신규 설치에 1.104.4를 사용합니다. 일반 패키지 `update apply`는 실행 파일 버전 선언이 바뀌면 여전히 거부합니다. 기존 설치는 설치된 도구로 Tailscale을 먼저 갱신하고 외부 접속을 확인한 뒤, 후보의 명시적 [보안 기본 버전 전환](security-baseline.ko.md)을 따라야 합니다. 이 소스 전환과 `runtime apply`는 별개이며 실행 파일을 조용히 바꾸지 않습니다.
 
 ## 변경 없이 확인하기
 
@@ -16,7 +16,7 @@ dots-tailscale v0.6.0에 추가된 기능입니다(#50). v0.5.0 이하에는 이
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-기본은 플랫폼 프록시(`UPSTREAM_PROXY`, 없으면 `http://browser-proxy:8889`)를 명시적으로 사용합니다. `--proxy direct`는 직접 HTTPS 연결을 선택할 뿐 플랫폼의 외부 연결 제한을 우회하지 않습니다. `check --version 1.104.2`는 그 숫자와 비교만 하며, 공개된 최신 버전인지 확인하지 않습니다. 설치 버전을 읽지 못한 경우 먼저 원인을 확인하세요.
+기본은 플랫폼 프록시(`UPSTREAM_PROXY`, 없으면 `http://browser-proxy:8889`)를 명시적으로 사용합니다. `--proxy direct`는 직접 HTTPS 연결을 선택할 뿐 플랫폼의 외부 연결 제한을 우회하지 않습니다. `check --version 1.104.4`는 그 숫자와 비교만 하며, 공개된 최신 버전인지 확인하지 않습니다. 설치 버전을 읽지 못한 경우 먼저 원인을 확인하세요.
 
 온라인 적용은 요청을 시작할 때 공식 stable 목록에 나온 정확한 버전을 지정해야 합니다. 불안정 minor 번호·prerelease 표기·다운그레이드·같은 버전 재설치는 거부합니다. 도중에 새 릴리스가 나와도 이미 선택한 다운로드 주소를 바꾸지 않습니다.
 
@@ -24,15 +24,15 @@ dots-tailscale v0.6.0에 추가된 기능입니다(#50). v0.5.0 이하에는 이
 
 Tailscale 연결이 끊겨도 사용할 수 있는 Dots 클라우드 터미널을 먼저 열고 제어되는지 확인하세요. 외부 자동복구를 사용 중이면 잠시 중지하고, 외부 접속 확인까지 터미널을 유지하세요. 확인 플래그는 사용자의 확인을 받는 장치이며 실제 GUI 제어나 작업 중지를 도구가 검증하는 것은 아닙니다.
 
-확인한 버전이 1.104.2인 경우의 예시입니다.
+확인한 버전이 1.104.4인 경우의 예시입니다.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts runtime apply \
-  --version 1.104.2 --proxy platform \
+  --version 1.104.4 --proxy platform \
   --confirm-recovery-terminal --json
 ```
 
-이 예시는 1.104.2가 Tailworm을 해결했다는 뜻이 아닙니다. [Tailworm 보고서](https://tailworm.com/)도 1.104.2를 대상으로 했습니다. 적용 전 [공식 보안 공지](https://tailscale.com/security-bulletins)를 확인하세요.
+선택한 버전이 Tailworm·SSH 보고 항목을 모두 해결했다는 뜻은 아닙니다. [Tailworm 보고서](https://tailworm.com/)도 1.104.2를 대상으로 했습니다. 적용 전 [공식 보안 공지](https://tailscale.com/security-bulletins)를 확인하세요.
 
 적용에는 Linux amd64, Python pidfd 지원, 쓰기 가능한 사용자 전용 설치·실행 경로, 무결성이 확인된 패키지와 기존 구성으로 실행 중인 daemon·shim·OpenSSH가 필요합니다. 다운로드와 압축·해시·실행 버전 확인을 먼저 끝내고 두 바이너리를 백업합니다. 시작 스크립트·프록시 적용·패키지 업데이트와 같은 작업 잠금을 사용합니다.
 
@@ -60,15 +60,15 @@ CLI는 작업 ID를 출력하고 stdout을 비운 뒤 분리된 worker의 진행
 신뢰할 수 있는 장비에서 공식 파일과 checksum을 받아 전송합니다. 예시 디렉터리에는 다음 두 파일이 있어야 합니다.
 
 ```text
-tailscale_1.104.2_amd64.tgz
-tailscale_1.104.2_amd64.tgz.sha256
+tailscale_1.104.4_amd64.tgz
+tailscale_1.104.4_amd64.tgz.sha256
 ```
 
 설치·작업 디렉터리 밖에 두세요. bundle 디렉터리는 실행 사용자 소유·0700이어야 하며, 파일은 같은 사용자 소유의 일반 파일이어야 합니다. 심볼릭 링크와 그룹·다른 사용자에게 쓰기를 허용한 파일은 거부합니다.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts runtime apply \
-  --version 1.104.2 --bundle /workspace/staged-tailscale \
+  --version 1.104.4 --bundle /workspace/staged-tailscale \
   --confirm-recovery-terminal --json
 ```
 
