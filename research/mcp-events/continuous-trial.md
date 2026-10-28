@@ -61,10 +61,15 @@ reason and in the task conversation. This does not create a claim or refresh
 observations; unavailable/older tool catalogs fall back to a conversation
 report without fabricating a claim.
 
+## New-outage policy
+
+See the [new-outage cooldown guide](recovery-cooldown.md) ([한국어](recovery-cooldown.ko.md)) for the optional confirmed-recovery policy, status fields and safe deployment/rollback.
+
 ## Limits
 
 - One claim per incident; no repeat after an unknown result.
 - Defaults: at least one hour between claims and at most three claims per rolling 24 hours. Operators can configure `recovery_max_claims_per_24h` (strict integer 1–24) and `recovery_cooldown_seconds` (300–86400). The operator deployed an explicit 12-per-24-hour, 3600-second trial policy on 2026-10-24; changing it requires an operator configuration deployment, not a prompt change.
+- An optional `recovery_new_incident_cooldown_seconds` can shorten the interval for a distinct outage only after the last claimed incident has both a success report and durable external healthy confirmation. It defaults to `null`; the global interval/daily budget remain unchanged. See [new-outage cooldown](recovery-cooldown.md).
 - Status includes `eligibility_reason`, `retry_at`, and `policy`. `retry_at` is the earliest time-only restriction expiry, not authorization: a fresh observation and new accepted claim are still required. Server policy denial is not a local preflight report reason.
 - A recorded policy-blocked → freshly eligible transition creates a distinct reminder event for the same incident (maximum three such reminders per incident). Original events, delivery attempts, claims, and outcomes remain intact. Already-claimed or closed incidents cannot emit these reminders. Delayed processing remains possible.
 - Monitoring data must be no older than 150 seconds; gaps reset the failure streak.
