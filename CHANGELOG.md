@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — 0.7.0-dev
+
+- Raise the candidate new-install Tailscale baseline to 1.104.4 and validate archive contents plus both version outputs before placing binaries (#57).
+- Add an explicit source-only baseline migration after a separately completed runtime upgrade; ordinary package updates still reject changed binary declarations.
+- Document the TS-2026-013 version floor and separate host/Python/OpenSSL trust limitations. See [baseline migration](docs/security-baseline.md).
+
+
 ## v0.6.0 — 2026-10-26
 
 - Add checksum-checked manual Tailscale CLI/daemon updates with explicit version selection, bounded official downloads or private bundles, paired staging, durable transaction status and recovery fences (#50, #51).

@@ -9,7 +9,7 @@ on:
         required: true
       target_version:
         description: Canonical target Tailscale version
-        default: '1.104.2'
+        default: '1.104.4'
         required: true
   push:
     paths:
@@ -39,5 +39,5 @@ jobs:
       - name: Verify official archives and run version-only probes without networking
         env:
           BASELINE_VERSION: ${{ inputs.baseline_version || '1.102.4' }}
-          TARGET_VERSION: ${{ inputs.target_version || '1.104.2' }}
+          TARGET_VERSION: ${{ inputs.target_version || '1.104.4' }}
         run: python scripts/runtime_artifact_smoke.py --versions "$BASELINE_VERSION" "$TARGET_VERSION"

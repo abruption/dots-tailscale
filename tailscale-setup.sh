@@ -8,7 +8,7 @@ R="/tmp/dots-tailscale-$(id -u)"
 SOCK="$R/tailscaled.sock"
 S="$D/sshd"
 SOURCE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-TS_VERSION=1.102.4
+TS_VERSION=1.104.4
 UPSTREAM_PROXY="${UPSTREAM_PROXY:-http://browser-proxy:8889}"
 NODE_HOSTNAME="${NODE_HOSTNAME:-dots-sandbox}"
 fail() { printf 'failed: %s\n' "$*" >&2; exit 1; }
@@ -203,21 +203,49 @@ install_all() {
       cmp -s "$source_path" "$D/$installed_name" || fail "existing file differs: $D/$installed_name (manual review required)"
     fi
   done
-  local tmp tgz url want got
+  local tmp tgz url
   tmp="$(mktemp -d "$R/install.XXXXXX")"
   trap 'rm -rf -- "$tmp"' RETURN
   if [[ -e "$D/tailscale" || -e "$D/tailscaled" ]]; then
-    [[ -x "$D/tailscale" && -x "$D/tailscaled" ]] || fail 'partial binary installation'
+    [[ -x "$D/tailscale" && -x "$D/tailscaled" && ! -L "$D/tailscale" && ! -L "$D/tailscaled" ]] || fail 'partial or symlink binary installation'
+    python3 - "$SOURCE/dots-ts" "$D" "$TS_VERSION" <<'VERIFY_PAIR'
+import importlib.machinery, importlib.util, pathlib, sys
+loader = importlib.machinery.SourceFileLoader('install_runtime', sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+tool = importlib.util.module_from_spec(spec); loader.exec_module(tool)
+try:
+    directory = pathlib.Path(sys.argv[2]); minimum = sys.argv[3]
+    current = tool.runtime_probe(directory / 'tailscale', 'version')
+    tool.runtime_verify_pair(directory, current)
+    if tool.runtime_version(current) < tool.runtime_version(minimum):
+        sys.exit('existing Tailscale pair rejected: baseline_upgrade_required; use the installed manual runtime updater first')
+except tool.RuntimeUpdateError as error:
+    sys.exit('existing Tailscale pair rejected: ' + error.code + '; use the installed manual runtime updater first')
+VERIFY_PAIR
   else
     tgz="tailscale_${TS_VERSION}_amd64.tgz"
     url="https://pkgs.tailscale.com/stable/$tgz"
-    curl -fsSL --max-time 300 --proxy "$UPSTREAM_PROXY" "$url" -o "$tmp/$tgz"
-    want="$(curl -fsSL --max-time 30 --proxy "$UPSTREAM_PROXY" "$url.sha256" | tr -d '[:space:]')"
-    got="$(sha256sum "$tmp/$tgz" | cut -d' ' -f1)"
-    [[ "$want" =~ ^[a-fA-F0-9]{64}$ && "$want" = "$got" ]] || fail 'download checksum mismatch'
-    tar -xzf "$tmp/$tgz" -C "$tmp"
-    install -m 700 "$tmp/tailscale_${TS_VERSION}_amd64/tailscale" "$D/tailscale"
-    install -m 700 "$tmp/tailscale_${TS_VERSION}_amd64/tailscaled" "$D/tailscaled"
+    curl -fsSL --max-time 300 --max-filesize 67108864 --proxy "$UPSTREAM_PROXY" "$url" -o "$tmp/$tgz"
+    curl -fsSL --max-time 30 --max-filesize 4096 --proxy "$UPSTREAM_PROXY" "$url.sha256" -o "$tmp/$tgz.sha256"
+    python3 - "$SOURCE/dots-ts" "$tmp" "$tgz" "$TS_VERSION" <<'STAGE_PAIR'
+import importlib.machinery, importlib.util, os, pathlib, sys
+loader = importlib.machinery.SourceFileLoader('install_runtime', sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+tool = importlib.util.module_from_spec(spec); loader.exec_module(tool)
+try:
+    directory = pathlib.Path(sys.argv[2]); filename = sys.argv[3]; version = sys.argv[4]
+    checksum = tool.runtime_checksum(tool.runtime_owned_read(directory, filename + '.sha256', 4096), filename)
+    payload = tool.runtime_archive(tool.runtime_owned_read(directory, filename, tool.RUNTIME_ARCHIVE_LIMIT), version, checksum)
+    stage = directory / 'pair'; stage.mkdir(mode=0o700)
+    for name, body in payload.items():
+        with (stage / name).open('xb') as stream:
+            stream.write(body); stream.flush(); os.fchmod(stream.fileno(), 0o700); os.fsync(stream.fileno())
+    tool.runtime_verify_pair(stage, version)
+except (tool.RuntimeUpdateError, OSError) as error:
+    sys.exit('Tailscale archive/pair rejected: ' + (error.code if isinstance(error, tool.RuntimeUpdateError) else 'staging_failed'))
+STAGE_PAIR
+    install -m 700 "$tmp/pair/tailscale" "$D/tailscale"
+    install -m 700 "$tmp/pair/tailscaled" "$D/tailscaled"
   fi
   private_dir "$D/shim"; private_dir "$D/state"; private_dir "$S"
   place "$shim_source" "$D/shim/shim.py" 700

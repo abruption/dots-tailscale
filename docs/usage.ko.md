@@ -8,6 +8,8 @@
 
 공개 저장소 주소는 `https://github.com/abruption/dots-tailscale`입니다. 저장소 최초 공개 시 실제 clone과 raw 다운로드를 확인했습니다. 이는 당시의 검증 기록이며 v0.6.0 릴리스 파일 검증을 뜻하지 않습니다. [v0.6.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)는 ZIP·tar.gz와 `tailscale-setup.sh`·`shim.py`·`dots-ts`·`dots_proxy.py` 개별 파일과 `source-manifest.json`을 제공합니다. 릴리스 파일의 체크섬은 `SHA256SUMS`에 있습니다. `main`은 이후 변경될 수 있으므로 같은 소스로 다시 설치하려면 검토한 tag나 commit을 지정하세요.
 
+**미출시 후보 안내:** 0.7.0-dev 소스는 신규 설치에 Tailscale 1.104.4를 선택합니다. 아래 v0.6.0 예시는 해당 릴리스의 기본값 1.102.4를 유지합니다. 기본값이 1.102.4인 기존 패키지는 별도의 [실행 파일 우선 전환 절차](security-baseline.ko.md)를 따라야 합니다. 일반 `update apply`는 `TS_VERSION` 변경을 계속 거부하며, 선언이나 manifest를 고쳐 우회하면 안 됩니다.
+
 <a id="download-proxy"></a>
 
 ## 다운로드와 프록시 연결 확인
@@ -43,7 +45,7 @@ done
 
 ## 최초 설치
 
-Linux x86_64, Python 3, OpenSSH, `timeout`, `flock`, `openssl`, `ssh-keygen`, `curl`, `tar`, `sha256sum`, 일반 사용자 포트 22 바인딩을 전제로 합니다. 다운로드에 사용할 기본 프록시는 `http://browser-proxy:8889`, Tailscale 다운로드 버전은 `1.102.4`로 고정하고 공식 SHA-256과 대조합니다.
+Linux x86_64, Python 3, OpenSSH, `timeout`, `flock`, `openssl`, `ssh-keygen`, `curl`, `tar`, `sha256sum`, 일반 사용자 포트 22 바인딩을 전제로 합니다. v0.6.0 예시의 다운로드 기본 프록시는 `http://browser-proxy:8889`이며 Tailscale 버전은 `1.102.4`로 고정하고 공식 SHA-256과 대조합니다.
 
 Git이 설치된 VM 터미널에서 HTTPS로 저장소를 clone한 뒤 설치 스크립트를 실행합니다. Git 네트워크 요청에만 프록시 환경변수를 적용합니다. 인증서 검증은 유지합니다.
 

@@ -596,6 +596,7 @@ def notification_notify(directory):
 # authentication state and SSH configuration are outside this transaction.
 APPLY_DIRECTORY = '.update-transactions'
 APPLY_TERMINAL = {'applied', 'failed_rolled_back', 'rollback_failed_manual_required', 'rejected'}
+BASELINE_MIGRATION = ('1.102.4', '1.104.4')
 
 
 class ApplyError(Exception):
@@ -690,6 +691,16 @@ def apply_read_journal(transaction):
         if (not isinstance(value, dict) or type(value.get('schema')) is not int or value['schema'] != 1
                 or not isinstance(value.get('state'), str) or value['state'] not in states):
             raise ValueError()
+        operation = value.get('operation', 'update')
+        if type(operation) is not str or operation not in ('update', 'migrate_baseline'):
+            raise ValueError()
+        if operation == 'migrate_baseline':
+            for field in ('baseline_package_hashes', 'target_package_hashes'):
+                hashes = value.get(field)
+                if (not isinstance(hashes, dict) or set(hashes) != set(CORE_FILES) | {MANIFEST}
+                        or any(not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest)
+                               for digest in hashes.values())):
+                    raise ValueError()
         for field in ('phase', 'boot_id', 'error'):
             if field in value and (not isinstance(value[field], str) or len(value[field]) > 512): raise ValueError()
         worker = value.get('worker')
@@ -786,6 +797,77 @@ def apply_ts_version(payload):
     matches = re.findall(rb'^TS_VERSION=(?:"([0-9]+\.[0-9]+\.[0-9]+)"|([0-9]+\.[0-9]+\.[0-9]+))$', payload['tailscale-setup.sh'], re.M)
     if len(matches) != 1: raise ApplyError('unsupported_binary_version_declaration')
     return matches[0][0] or matches[0][1]
+
+
+
+def apply_payload_hashes(payload):
+    return {name: hashlib.sha256(body).hexdigest() for name, body in payload.items()}
+
+
+def apply_baseline_guard(old, candidate, directory, runtime, proxy, migration=False):
+    """Ordinary source updates cannot change binary declarations.
+
+    The dedicated migration only adopts a new default after the running runtime
+    has already been upgraded separately; it never installs or restarts binaries.
+    Callers hold the shared operation lock and workers repeat every condition.
+    """
+    if type(migration) is not bool: raise ApplyError('invalid_baseline_migration')
+    before, after = apply_ts_version(old), apply_ts_version(candidate)
+    if not migration:
+        if before != after: raise ApplyError('binary_update_unsupported')
+        return None
+    source_version, target = BASELINE_MIGRATION
+    if (before.decode('ascii'), after.decode('ascii')) != (source_version, target):
+        raise ApplyError('unsupported_baseline_migration')
+    prior = pathlib.Path(directory) / RUNTIME_DIRECTORY
+    if prior.exists() or prior.is_symlink():
+        apply_private(prior)
+        for transaction in prior.iterdir():
+            status = runtime_status(directory, transaction.name)
+            if status['state'] not in ('applied', 'failed_rolled_back', 'rejected') or status.get('cleanup_warning'):
+                raise ApplyError('prior_transaction_requires_manual_review')
+    binaries = {}
+    try:
+        for name in ('tailscale', 'tailscaled'):
+            info = (directory / name).lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) != 0o700 or info.st_nlink != 1):
+                raise ValueError()
+            binaries[name] = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+        runtime_verify_pair(directory, target)
+    except (RuntimeUpdateError, OSError, ValueError):
+        raise ApplyError('baseline_migration_runtime_required') from None
+    baseline = apply_components(directory, runtime, proxy)
+    daemon = proxy._daemon(directory, runtime)
+    config = proxy.inspect_config(directory, runtime)
+    if (not daemon or not proxy._socket_owned(daemon, runtime)
+            or config.get('restart_required') or not config.get('daemon_running')):
+        raise ApplyError('baseline_migration_daemon_required')
+    expected = [str(directory / 'tailscaled'), '--tun=userspace-networking',
+                '--statedir=' + str(directory / 'state'),
+                '--socket=' + str(runtime / 'tailscaled.sock'), '--port=0'] + proxy._flags(config['desired'])
+    if daemon['argv'][0] != expected[0] or sorted(daemon['argv'][1:]) != sorted(expected[1:]):
+        raise ApplyError('baseline_migration_daemon_required')
+    if apply_identity(daemon['pid']) != baseline['tailscaled']:
+        raise ApplyError('baseline_migration_daemon_changed')
+    reply = run_cli(directory, runtime, ['status', '--json'], timeout=3)
+    try:
+        data = json.loads(reply.stdout)
+        version = data.get('Version')
+        valid_version = isinstance(version, str) and re.fullmatch(
+            re.escape(target) + r'(?:-[A-Za-z0-9.-]{1,200})?', version)
+        if reply.returncode or data.get('BackendState') != 'Running' or not valid_version:
+            raise ValueError()
+    except (ValueError, TypeError, AttributeError):
+        raise ApplyError('baseline_migration_daemon_version_mismatch') from None
+    if (apply_identity(daemon['pid']) != baseline['tailscaled']
+            or proxy._socket_identity(runtime) != baseline['_socket']):
+        raise ApplyError('baseline_migration_daemon_changed')
+    for name, expected_identity in binaries.items():
+        info = (directory / name).lstat()
+        if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != expected_identity:
+            raise ApplyError('baseline_migration_runtime_changed')
+    return baseline
 
 
 def apply_components(directory, runtime, proxy):
@@ -966,8 +1048,19 @@ def apply_transaction(directory, runtime, transaction, journal, proxy):
     old = apply_bundle(directory, 'installed')
     candidate_payload = apply_bundle(transaction / 'stage')
     apply_syntax(candidate_payload)
-    if apply_ts_version(old) != apply_ts_version(candidate_payload): raise ApplyError('binary_update_unsupported')
-    baseline = apply_components(directory, runtime, proxy)
+    operation = journal.get('operation', 'update')
+    if type(operation) is not str or operation not in ('update', 'migrate_baseline'):
+        raise ApplyError('invalid_baseline_migration')
+    migration = operation == 'migrate_baseline'
+    if migration:
+        if (apply_payload_hashes(old) != journal.get('baseline_package_hashes')
+                or apply_payload_hashes(candidate_payload) != journal.get('target_package_hashes')):
+            raise ApplyError('baseline_migration_source_changed')
+        for name in ('dots-ts', 'dots_proxy.py'):
+            if bounded_code_read(transaction / 'supervisor', name, 8 * 1024 * 1024) != candidate_payload[name]:
+                raise ApplyError('baseline_migration_source_changed')
+    baseline = apply_baseline_guard(old, candidate_payload, directory, runtime, proxy, migration)
+    if baseline is None: baseline = apply_components(directory, runtime, proxy)
     apply_interpreter(baseline['shim'])
     environment = apply_environment(baseline['shim'])
     public = apply_public_identity(directory, runtime)
@@ -977,6 +1070,8 @@ def apply_transaction(directory, runtime, transaction, journal, proxy):
     if config.get('restart_required') or not config.get('daemon_running'): raise ApplyError('proxy_state_pending')
     backup = apply_private(transaction / 'backup', create=True)
     for name, data in old.items(): apply_write(backup / name, data)
+    if migration and apply_baseline_guard(old, candidate_payload, directory, runtime, proxy, True) != baseline:
+        raise ApplyError('baseline_migration_daemon_changed')
     # The shim is long lived; discard output rather than leave an unbounded log.
     logfd = os.open(os.devnull, os.O_WRONLY)
     child = None; candidate = None; stopped = False; mutation = False
@@ -1032,19 +1127,21 @@ def apply_worker(directory, runtime, transaction):
     return 0
 
 
-def update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None):
+def update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None, migrate_baseline=False):
     context = {}
     try:
-        return _update_apply(directory, runtime, tag, bundle, confirm, proxy_url, context)
+        return _update_apply(directory, runtime, tag, bundle, confirm, proxy_url, migrate_baseline, context)
     except Exception as error:
         report = apply_error_report(error)
         raise ApplyError(report['error'], context.get('transaction_id')) from None
 
 
-def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None, context=None):
+def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None, migrate_baseline=False, context=None):
     import signal
     import uuid
     import dots_proxy as proxy
+    if type(migrate_baseline) is not bool: raise ApplyError('invalid_baseline_migration')
+    if migrate_baseline and (tag is not None or bundle is None): raise ApplyError('baseline_migration_bundle_required')
     if not confirm: raise ApplyError('independent_recovery_terminal_confirmation_required')
     if sys.platform != 'linux' or not hasattr(os, 'pidfd_open') or not hasattr(signal, 'pidfd_send_signal'):
         raise ApplyError('linux_python_pidfd_required')
@@ -1070,12 +1167,17 @@ def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, prox
             payload = {name: download_release_asset(release, name, proxy_url, deadline) for name in CORE_FILES}
             payload[MANIFEST] = release['manifest_bytes']
         apply_syntax(payload)
-        if apply_ts_version(payload) != apply_ts_version(baseline): raise ApplyError('binary_update_unsupported')
+        if migrate_baseline and (caller_layout != 'source' or trusted != payload):
+            raise ApplyError('baseline_migration_candidate_mismatch')
+        apply_baseline_guard(baseline, payload, directory, runtime, proxy, migrate_baseline)
         identifier = uuid.uuid4().hex
         transaction = apply_private(root / identifier, create=True)
         context['transaction_id'] = identifier
         journal = {'schema': 1, 'state': 'prepared', 'boot_id': apply_boot(), 'selection': 'local_bundle' if bundle else tag,
                    'external_ssh': 'pending', 'checksum_trust': 'consistency_only_not_publisher_authentication'}
+        if migrate_baseline:
+            journal.update(operation='migrate_baseline', baseline_package_hashes=apply_payload_hashes(baseline),
+                           target_package_hashes=apply_payload_hashes(payload))
         apply_journal(transaction, journal, phase='staging')
         try:
             stage = apply_private(transaction / 'stage', create=True)
@@ -2112,6 +2214,10 @@ def main(argv=None):
         apply.add_argument('--confirm-recovery-terminal', action='store_true')
         apply.add_argument('--proxy')
         apply.add_argument('--json', action='store_true')
+        migrate = update_commands.add_parser('migrate-baseline', help='explicit source-only adoption after a separately verified runtime upgrade')
+        migrate.add_argument('--bundle', type=pathlib.Path, required=True)
+        migrate.add_argument('--confirm-recovery-terminal', action='store_true')
+        migrate.add_argument('--json', action='store_true')
         status = update_commands.add_parser('status')
         status.add_argument('--id', required=True)
         status.add_argument('--json', action='store_true')
@@ -2154,10 +2260,15 @@ def main(argv=None):
                     failure=runtime_error(error,options.id,state='status_unavailable');failure['action']='inspect_transaction'
                 else:failure=runtime_error(error)
                 print(json.dumps(failure,sort_keys=True),flush=True);return 1
-        if options.command == 'update' and options.update_command in ('apply', 'status'):
+        if options.command == 'update' and options.update_command in ('apply', 'migrate-baseline', 'status'):
             try:
-                report = (apply_status(directory, options.id) if options.update_command == 'status' else
-                          update_apply(directory, runtime, options.tag, options.bundle, options.confirm_recovery_terminal, options.proxy))
+                if options.update_command == 'status':
+                    report = apply_status(directory, options.id)
+                elif options.update_command == 'migrate-baseline':
+                    report = update_apply(directory, runtime, bundle=options.bundle,
+                                          confirm=options.confirm_recovery_terminal, migrate_baseline=True)
+                else:
+                    report = update_apply(directory, runtime, options.tag, options.bundle, options.confirm_recovery_terminal, options.proxy)
             except Exception as error:
                 report = apply_error_report(error)
             print(json.dumps(report, sort_keys=True))

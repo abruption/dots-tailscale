@@ -8,7 +8,7 @@ Available in dots-tailscale v0.6.0 (#50); v0.5.0 and earlier do not include this
 
 Use a reviewed dots-tailscale package containing this feature, including all four source files and its matching `source-manifest.json`. The installed bundle must match the tool invoking the update. Running a new checkout's CLI against an older installed package is refused: the older startup script would not know how to block an interrupted binary update.
 
-This change keeps the default installer pin at 1.102.4, allowing the tool itself to be distributed through the existing code-only updater. It does not silently upgrade existing nodes or change the Tailscale version used for new installations. A later change of the default pin needs its own package migration validation; the existing package updater's binary-version declaration guard remains in place.
+The published v0.6.0 installer keeps its 1.102.4 baseline so the runtime tool can be installed through older source-only updaters. The unreleased 0.7.0-dev candidate instead uses 1.104.4 for new installations. Ordinary package `update apply` still refuses a changed binary-version declaration. Existing installations must first use their installed runtime updater, verify external connectivity, then use the candidate's explicit [security-baseline migration](security-baseline.md). This source-only migration is separate from `runtime apply` and does not silently update binaries.
 
 ## Check without changing the installation
 
@@ -16,7 +16,7 @@ This change keeps the default installer pin at 1.102.4, allowing the tool itself
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-The default path uses the platform proxy (`UPSTREAM_PROXY`, otherwise `http://browser-proxy:8889`) explicitly. `--proxy direct` opts into direct HTTPS; it does not bypass platform egress restrictions. An explicit `check --version 1.104.2` compares against that number without validating that it is a published or latest release. An unavailable installed version must be inspected before applying an update.
+The default path uses the platform proxy (`UPSTREAM_PROXY`, otherwise `http://browser-proxy:8889`) explicitly. `--proxy direct` opts into direct HTTPS; it does not bypass platform egress restrictions. An explicit `check --version 1.104.4` compares against that number without validating that it is a published or latest release. An unavailable installed version must be inspected before applying an update.
 
 Online apply requires an exact version matching the official stable metadata observed at the start of that request. Numeric versions with an unstable minor number, prerelease suffixes, downgrades and same-version reinstalls are refused. A newer stable release appearing later does not change the already selected archive URL.
 
@@ -28,11 +28,11 @@ For example, after reviewing `runtime check` and the upstream advisory:
 
 ```bash
 /workspace/.dots-tailscale/dots-ts runtime apply \
-  --version 1.104.2 --proxy platform \
+  --version 1.104.4 --proxy platform \
   --confirm-recovery-terminal --json
 ```
 
-The version is an example, not a claim that 1.104.2 resolves Tailworm. The [Tailworm report](https://tailworm.com/) tested 1.104.2 itself. Check the current [Tailscale security bulletins](https://tailscale.com/security-bulletins) before selecting a version.
+The selected version is an example, not a claim that every Tailworm/SSH finding is resolved. The [Tailworm report](https://tailworm.com/) tested 1.104.2 itself. Check the current [Tailscale security bulletins](https://tailscale.com/security-bulletins) before selecting a version.
 
 Apply requires Linux amd64, Python pidfd support, a private writable installation/runtime context, a complete verified source package, and a uniquely identified running daemon/shim/OpenSSH with the expected configuration. It stages and checks the archive before stopping anything, verifies both version commands, and backs up both existing binaries. The same operation lock coordinates startup, proxy apply and package updates.
 
@@ -60,15 +60,15 @@ After `applied`, open a fresh external SSH connection, run Tailscale ping, and c
 If Dots cannot reach the package host, prepare a private directory on a trusted machine with the official archive and its checksum, then transfer both files. For the example above the directory contains:
 
 ```text
-tailscale_1.104.2_amd64.tgz
-tailscale_1.104.2_amd64.tgz.sha256
+tailscale_1.104.4_amd64.tgz
+tailscale_1.104.4_amd64.tgz.sha256
 ```
 
 The bundle directory must be owned by the executing user with mode 0700. Files must be regular, owned by that user, not symlinks, and not group/world writable. Choose a directory outside the installation and transaction directories.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts runtime apply \
-  --version 1.104.2 --bundle /workspace/staged-tailscale \
+  --version 1.104.4 --bundle /workspace/staged-tailscale \
   --confirm-recovery-terminal --json
 ```
 

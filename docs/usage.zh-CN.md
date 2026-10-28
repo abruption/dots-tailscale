@@ -8,6 +8,8 @@
 
 仓库首次公开时，已将克隆和原始文件下载结果与准备好的源文件核对。这是当时的验证记录，并不表示已验证 v0.6.0 的发布文件。[版本 v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)包含 ZIP 和 tar.gz 压缩包，也提供 `tailscale-setup.sh`、`shim.py`、`dots-ts` 和 `dots_proxy.py` 四个单独的源文件，以及 `source-manifest.json`。安装示例将源版本固定为 `v0.6.0`。`SHA256SUMS` 提供发布文件的校验和。捆绑的 Tailscale 版本仍为 `1.102.4`。
 
+**未发布候选版说明：** 0.7.0-dev 源码为新安装选择 Tailscale 1.104.4；下方 v0.6.0 示例保留该发布版的默认值 1.102.4。默认版本为 1.102.4 的现有软件包，需要执行单独的[先更新运行时、再迁移基线的流程（英文）](security-baseline.md)。普通 `update apply` 仍拒绝 `TS_VERSION` 变更，请勿编辑版本声明或重新生成清单来绕过检查。
+
 <a id="download-proxy"></a>
 
 ## 下载连通性与代理设置

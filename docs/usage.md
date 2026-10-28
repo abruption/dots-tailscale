@@ -8,6 +8,8 @@ These instructions target a user-level installation in an environment that prese
 
 At the initial public publication, the repository clone and raw downloads were verified against the prepared source. That historical check does not verify v0.6.0 assets. [Release v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0) includes ZIP and tar.gz archives plus `tailscale-setup.sh`, `shim.py`, `dots-ts`, `dots_proxy.py`, and `source-manifest.json` as individual assets. The installation examples pin the source to `v0.6.0`. `SHA256SUMS` covers the release artifacts. The bundled Tailscale version remains `1.102.4`.
 
+**Unreleased candidate:** the 0.7.0-dev source selects Tailscale 1.104.4 for new installations; the v0.6.0 examples below retain that release's 1.102.4 default. Existing 1.102.4-baseline packages must follow the separate [runtime-first baseline migration](security-baseline.md). Ordinary `update apply` still rejects a changed `TS_VERSION`; do not edit the declaration or regenerate a manifest to bypass it.
+
 <a id="download-proxy"></a>
 
 ## Download connectivity and proxy settings
