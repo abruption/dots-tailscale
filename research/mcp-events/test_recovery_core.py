@@ -532,7 +532,8 @@ class NewIncidentCooldownTests(unittest.TestCase):
         iid = self.incident(); claim = self.core.claim_recovery('operator', iid)
         self.core.report_recovery('operator', iid, claim['claim_id'], 'success')
         with self.assertRaises(ValueError): self.core.ingest(self.observation(healthy=True))
-        self.assertIsNone(self.proof(iid))
+        self.assertEqual(self.proof(iid)['streak'], 0)
+        self.assertIsNone(self.proof(iid)['confirmed_at'])
         self.healthy(1)
         self.assertEqual(self.proof(iid)['streak'], 1)
 
@@ -567,6 +568,105 @@ class NewIncidentCooldownTests(unittest.TestCase):
                 self.assertEqual(state['policy']['cooldown_basis'], 'global')
                 self.assertEqual(state['retry_at'], claimed + 3600)
                 self.path = path
+
+    def test_legacy_and_rollback_code_claims_never_gain_proof_slot(self):
+        for stored_outcome in ('unknown', 'success'):
+            with self.subTest(stored_outcome=stored_outcome):
+                old_path = self.path; self.path = old_path + '-legacy-' + stored_outcome
+                self.core = self.new_core()
+                iid = self.incident(); claimed = self.now
+                # The old claim implementation updates its original row only,
+                # even when additive tables already exist after a code rollback.
+                with self.core._db() as db:
+                    db.execute('UPDATE recovery_incidents SET claim_id=?,claimed=?,outcome=? WHERE id=?',
+                               ('legacy-claim', claimed, stored_outcome, iid))
+                self.assertIsNone(self.proof(iid))
+                self.healthy(10); self.healthy(30); self.healthy(30)
+                self.assertIsNone(self.proof(iid))
+                # A new-code report cannot retroactively seed a slot either.
+                self.core.report_recovery('operator',iid,'legacy-claim','success')
+                self.healthy(30); self.healthy(30); self.healthy(30)
+                self.assertIsNone(self.proof(iid))
+                state = self.outage()
+                self.assertEqual(state['policy']['cooldown_basis'], 'global')
+                self.assertEqual(state['retry_at'], claimed + 3600)
+                self.path = old_path
+
+    def test_claim_and_prospective_slot_are_one_atomic_write(self):
+        import sqlite3
+        iid = self.incident()
+        with self.core._db() as db:
+            db.execute('INSERT INTO recovery_confirmations VALUES(?,NULL,NULL,0,NULL)',(iid,))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.core.claim_recovery('operator',iid)
+        state = self.core.get_current_recovery('operator',iid)
+        self.assertEqual(state['incident']['state'],'pending')
+        self.assertEqual(state['policy']['claims_in_window'],0)
+        with self.core._db() as db:
+            self.assertIsNone(db.execute('SELECT claim_id FROM recovery_incidents WHERE id=?',(iid,)).fetchone()[0])
+
+    def test_explicit_unknown_first_report_remains_global_after_success(self):
+        iid = self.incident(); claim = self.core.claim_recovery('operator',iid)
+        claimed = self.now
+        first = self.core.report_recovery('operator',iid,claim['claim_id'],'unknown')
+        self.assertEqual(first['incident']['first_report'],
+                         {'outcome':'unknown','reported_at':claimed})
+        self.now += 1
+        self.core.report_recovery('operator',iid,claim['claim_id'],'success')
+        self.healthy(10); self.healthy(30); self.healthy(30)
+        self.assertIsNotNone(self.proof(iid)['confirmed_at'])
+        state = self.outage()
+        self.assertEqual(state['policy']['cooldown_basis'], 'global')
+        self.assertEqual(state['retry_at'], claimed + 3600)
+        historical = self.core.get_current_recovery('operator',iid)
+        self.assertEqual(historical['incident']['outcome'],'success')
+        self.assertEqual(historical['incident']['first_report'],
+                         {'outcome':'unknown','reported_at':claimed})
+
+    def test_unreported_initial_unknown_then_first_success_can_qualify(self):
+        iid = self.incident(); claim = self.core.claim_recovery('operator',iid)
+        state = self.core.get_current_recovery('operator',iid)
+        self.assertEqual(state['incident']['outcome'],'unknown')
+        self.assertIsNone(state['incident']['first_report'])
+        self.healthy(10); self.healthy(30); self.healthy(30)
+        self.core.report_recovery('operator',iid,claim['claim_id'],'success')
+        state = self.outage()
+        self.assertEqual(state['policy']['cooldown_basis'],'confirmed_recovery')
+
+    def test_first_report_is_idempotent_and_rejected_reports_do_not_change_it(self):
+        iid = self.incident(); claim = self.core.claim_recovery('operator',iid)
+        self.core.report_recovery('operator',iid,claim['claim_id'],'success')
+        expected = {'outcome':'success','reported_at':self.now}
+        self.now += 10
+        self.core.report_recovery('operator',iid,claim['claim_id'],'success')
+        for args in [('operator',iid,claim['claim_id'],'failed'),
+                     ('operator',iid,'wrong','unknown'),
+                     ('other',iid,claim['claim_id'],'unknown'),
+                     ('operator',iid,claim['claim_id'],'private text')]:
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                self.core.report_recovery(*args)
+        self.assertEqual(self.core.get_current_recovery('operator',iid)['incident']['first_report'],expected)
+        with self.core._db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM recovery_reports').fetchone()[0],1)
+
+    def test_delayed_preclaim_healthy_timestamp_is_accepted_but_cannot_advance_slot(self):
+        iid = self.incident(); before_claim = self.now
+        self.now += 30
+        claim = self.core.claim_recovery('operator',iid)
+        self.core.report_recovery('operator',iid,claim['claim_id'],'success')
+        self.now += 15
+        delayed = self.observation(healthy=True)
+        delayed['observed_at'] = datetime.fromtimestamp(before_claim+10,timezone.utc).isoformat()
+        # Chronological relative to the previous accepted observation, yet older
+        # than the claim itself: exercise _track_confirmation's own time guard.
+        result = self.core.ingest(delayed)
+        self.assertEqual(result['observation']['observed_at'],before_claim+10)
+        self.assertEqual(self.core.get_current_recovery('operator',iid)['incident']['state'],'externally_recovered')
+        self.assertEqual(self.proof(iid)['streak'],0)
+        self.assertIsNone(self.proof(iid)['since'])
+        self.assertIsNone(self.proof(iid)['confirmed_at'])
+        self.healthy(30)
+        self.assertEqual(self.proof(iid)['streak'],1)
 
     def test_latest_claim_cannot_reuse_an_older_confirmation(self):
         prior, _, claimed = self.prior(); self.outage()

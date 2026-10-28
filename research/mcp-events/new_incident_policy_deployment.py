@@ -179,6 +179,10 @@ def config_candidate(body, seconds):
     value = json.loads(body, object_pairs_hook=unique)
     if not isinstance(value, dict) or value.get('enable_recovery') is not True:
         raise ValueError('enabled recovery configuration required')
+    # SUMMARY, schema adoption, and the running server must address the same
+    # ledger. Do not resolve an alternate/aliased path into the expected one.
+    if type(value.get('runtime_dir')) is not str or value['runtime_dir'] != str(DATA):
+        raise ValueError('runtime_dir must be the exact supported data directory')
     budget = value.get('recovery_max_claims_per_24h', 3)
     cooldown = value.get('recovery_cooldown_seconds', 3600)
     if type(budget) is not int or not 1 <= budget <= 24:
@@ -229,6 +233,12 @@ def main():
     trusted_directory(DATA, account.pw_uid)
     candidate, _ = pinned_body(args.source_dir / 'recovery_core.py', args.candidate_core_sha256)
     compile(candidate, '<candidate-recovery-core>', 'exec')
+    # Reject a different ledger before even creating deployment locks/records.
+    # The protected-ancestry check above separately rejects a symlink at DATA.
+    initial_config, initial_meta = read_regular(CONFIG, account.pw_uid)
+    if stat.S_IMODE(initial_meta.st_mode) != 0o600:
+        raise ValueError('private configuration permissions required')
+    config_candidate(initial_config, args.new_incident_cooldown_seconds)
     locks = []
     try:
         # The release updater owns the first lock; earlier policy helpers own the
@@ -269,7 +279,10 @@ def main():
             return json.loads(service_python(SUMMARY))
 
         def health():
-            run(['systemctl', 'is-active', '--quiet', *UNITS, 'caddy.service'])
+            # systemctl is-active with multiple units succeeds when ANY unit is
+            # active. Require each component independently before proceeding.
+            for unit in (*UNITS, 'caddy.service'):
+                run(['systemctl', 'is-active', '--quiet', unit])
             run(['runuser', '-u', 'caddy', '--', '/usr/bin/curl', '--fail', '--silent',
                  '--max-time', '10', '--unix-socket', '/run/dots-events-recovery.sock',
                  '-H', 'Host: ' + host, 'http://localhost/healthz'])
@@ -342,21 +355,37 @@ def main():
         except BaseException:
             failed_phase = phase
             rollback = 'not_needed'
+            rollback_reason = None
             if stop_intended:
                 try:
                     run(['systemctl', 'stop', *UNITS])
-                    if writes_intended:
-                        atomic_replace(APP / 'recovery_core.py', core, core_meta)
-                        atomic_replace(APP / 'server.py', server, server_meta)
-                        atomic_replace(CONFIG, original, config_meta)
-                    # Additive evidence tables may remain. Never restore DB.
-                    run(['systemctl', 'start', *UNITS])
-                    health()
-                    rollback = 'code_and_config_restored'
+                    stopped_state = summary()
+                    if stopped_state['claims'] != before['claims']:
+                        # A restarted candidate might already have issued a
+                        # grant. Older code cannot attest that grant's new
+                        # provenance semantics. Leave the candidate and ledger
+                        # intact, with the broker stopped for operator review.
+                        rollback = 'operator_attention'
+                        rollback_reason = ('new_claims_during_deployment'
+                                           if stopped_state['claims'] > before['claims']
+                                           else 'claim_ledger_changed_during_deployment')
+                    else:
+                        if writes_intended:
+                            atomic_replace(APP / 'recovery_core.py', core, core_meta)
+                            atomic_replace(APP / 'server.py', server, server_meta)
+                            atomic_replace(CONFIG, original, config_meta)
+                        # Additive evidence tables may remain. Never restore DB.
+                        run(['systemctl', 'start', *UNITS])
+                        health()
+                        rollback = ('code_and_config_restored' if writes_intended
+                                    else 'services_restarted_without_code_changes')
                 except BaseException:
                     rollback = 'operator_attention'
+                    rollback_reason = 'rollback_state_or_restore_unavailable'
             result = {'applied': False, 'failed_phase': failed_phase, 'rollback': rollback,
                       'ledger_restored': False, 'private_record': str(record)}
+            if rollback_reason is not None:
+                result['rollback_reason'] = rollback_reason
             (record / 'result.json').write_text(json.dumps(result))
             print(json.dumps(result))
             raise RuntimeError('deployment failed; inspect the root-private record') from None

@@ -46,6 +46,7 @@ class RecoveryCore(EventCore):
             CREATE TABLE IF NOT EXISTS recovery_incidents(id TEXT PRIMARY KEY,event_id TEXT,created REAL,closed REAL,claim_id TEXT,claimed REAL,outcome TEXT);
             CREATE TABLE IF NOT EXISTS recovery_eligibility(incident_id TEXT PRIMARY KEY,policy_blocked INTEGER NOT NULL,notification_count INTEGER NOT NULL,latest_event_id TEXT);
             CREATE TABLE IF NOT EXISTS recovery_confirmations(incident_id TEXT PRIMARY KEY,since REAL,last REAL,streak INTEGER NOT NULL CHECK(streak BETWEEN 0 AND 3),confirmed_at REAL);
+            CREATE TABLE IF NOT EXISTS recovery_reports(incident_id TEXT PRIMARY KEY,outcome TEXT NOT NULL,reported_at REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS preflight_reports(incident_id TEXT PRIMARY KEY,reason TEXT NOT NULL,reported_at REAL NOT NULL,report_count INTEGER NOT NULL);
             ''')
 
@@ -144,7 +145,10 @@ class RecoveryCore(EventCore):
         if latest is None:
             return
         proof = db.execute('SELECT * FROM recovery_confirmations WHERE incident_id=?', (latest['id'],)).fetchone()
-        if proof is not None and proof['confirmed_at'] is not None:
+        # Only this implementation's atomic claim path seeds a proof slot.
+        # Legacy/rollback-code claims must never acquire prospective authority
+        # merely because healthy observations arrive after an upgrade.
+        if proof is None or proof['confirmed_at'] is not None:
             return
         stamp = observation['observed_at']
         if not healthy or stamp <= latest['claimed']:
@@ -172,6 +176,10 @@ class RecoveryCore(EventCore):
                 or previous['closed'] is None or previous['outcome'] != 'success'):
             return False
         proof = db.execute('SELECT * FROM recovery_confirmations WHERE incident_id=?', (previous['id'],)).fetchone()
+        first_report = db.execute('SELECT outcome,reported_at FROM recovery_reports WHERE incident_id=?', (previous['id'],)).fetchone()
+        if (first_report is None or first_report['outcome'] != 'success'
+                or first_report['reported_at'] < previous['claimed']):
+            return False
         if proof is None or any(proof[key] is None for key in ('since', 'last', 'confirmed_at')):
             return False
         return (proof['streak'] >= HEALTHY_CONFIRMATION_SAMPLES
@@ -208,6 +216,8 @@ class RecoveryCore(EventCore):
             result['incident'] = {'incident_id': row['id'], 'event_id':row['event_id'], 'created_at':row['created'], 'state':state, 'outcome':row['outcome'] or ('unknown' if row['claim_id'] else None), 'closed_at':row['closed']}
             preflight = db.execute('SELECT reason,reported_at,report_count FROM preflight_reports WHERE incident_id=?', (row['id'],)).fetchone()
             result['incident']['preflight_report'] = dict(preflight) if preflight else None
+            first_report = db.execute('SELECT outcome,reported_at FROM recovery_reports WHERE incident_id=?', (row['id'],)).fetchone()
+            result['incident']['first_report'] = dict(first_report) if first_report else None
             if state == 'externally_recovered':
                 reason = 'externally_recovered'
             elif state == 'attempted':
@@ -283,6 +293,7 @@ class RecoveryCore(EventCore):
             claim = 'claim_'+secrets.token_hex(16)
             now = self.clock()
             db.execute('UPDATE recovery_incidents SET claim_id=?,claimed=?,outcome=? WHERE id=?', (claim,now,'unknown',incident_id))
+            db.execute('INSERT INTO recovery_confirmations VALUES(?,NULL,NULL,0,NULL)', (incident_id,))
         return {'incident_id':incident_id, 'claim_id':claim, 'command':COMMAND, 'expires_at':now+120, 'instructions':'Run the fixed command once immediately in your cloud computer. Never reuse this claim or execute after expires_at. Report only a sanitized outcome. Success is not external recovery confirmation.'}
 
     def report_preflight(self, principal, incident_id, reason):
@@ -316,6 +327,11 @@ class RecoveryCore(EventCore):
                 raise ValueError('unknown claim')
             if row['outcome'] not in ('unknown',outcome):
                 raise ValueError('attempt already reported')
+            # Preserve the first accepted explicit report separately from the
+            # legacy mutable outcome. Unknown-to-success remains accepted for
+            # status reconciliation, but cannot earn shorter-cooldown authority.
+            db.execute('INSERT OR IGNORE INTO recovery_reports VALUES(?,?,?)',
+                       (incident_id, outcome, self.clock()))
             db.execute('UPDATE recovery_incidents SET outcome=? WHERE id=?',(outcome,incident_id))
         return self.get_current_recovery(principal,incident_id)
 
