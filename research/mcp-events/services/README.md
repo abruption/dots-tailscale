@@ -15,6 +15,30 @@ Load the relay only after a fresh observer sample and a successful receiver
 smoke check. LaunchAgents survive process exits, but require the user's login
 session after a Mac restart. Verify startup after login separately.
 
+## Keep the service interpreter available
+
+Use an explicit path to a dedicated Python installation for the relay's
+`/ABSOLUTE/PYTHON3` placeholder, and retain that installation for the entire
+service lifetime. A package-manager alias can point to a newer Python while the
+running process still uses a removed version. A virtual environment alone does
+not prevent this: its base interpreter and standard library must also remain
+available. Do not let unattended package cleanup remove a running service's
+interpreter.
+
+When intentionally changing Python, check the new interpreter and relay imports
+first, then unload and load the identified launchd job with its new absolute
+path. Keep a code/configuration backup for recovery. After loading it, verify
+fresh observation delivery and an active authorized subscription; a running PID
+or successful HTTPS health check alone is not delivery confirmation.
+
+The relay captures resolved interpreter and prefix paths when it starts, so an
+installation alias moving later cannot hide removal of the original runtime.
+Its health output includes only presence booleans and the numeric Python version,
+not those paths. A runtime-presence change emits a health transition even when
+the previous observation delivery was healthy. This diagnoses missing runtime
+files; it does not prove that every dependency is intact or automatically
+restart the process.
+
 The observer template explicitly sets `TERM=xterm-256color`. During the Mac
 deployment trial, the installed Tailscale app binary attempted to launch its GUI
 under launchd's minimal environment without `TERM`. It printed `The Tailscale
