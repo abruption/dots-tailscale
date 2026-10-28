@@ -70,7 +70,7 @@ The source transaction backs up and replaces the four executable sources and man
 
 6. Check the package manifest and runtime again, and verify fresh external SSH/ping after the source transaction. Resume the paused external jobs only after these checks. If output is lost, inspect the existing transaction from the independent terminal; do not submit another migration blindly.
 
-This new migration path has not yet been validated by a live migration in this guide. The [2026-10-26 normal runtime trial](validation/runtime-update-trial-20261026.md) used the earlier development package and is historical evidence, not a live test of the v0.7.0 installer/source migration or every future release.
+At publication, the new source migration had only isolated validation. A later [2026-10-28 live source migration](validation/v0.7.0-migration-trial-20261028.md) successfully moved one existing package from 0.6.0 to 0.7.0 with an explicit target while preserving the already-installed 1.104.4 runtime and identities. It does not validate fresh installation, failure injection or every future release. The [2026-10-26 runtime trial](validation/runtime-update-trial-20261026.md) remains a separate historical test.
 
 ## Runtime failure and source rollback are different
 
