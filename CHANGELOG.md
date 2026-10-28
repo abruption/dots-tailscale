@@ -1,11 +1,13 @@
 # Changelog
 
-## Unreleased — 0.7.0-dev
+## v0.7.0 — 2026-10-28
 
-- Raise the candidate new-install Tailscale baseline to 1.104.4 and validate archive contents plus both version outputs before placing binaries (#57).
+- Raise the new-install Tailscale baseline to 1.104.4 and validate archive contents plus both version outputs before placing binaries (#57).
 - Add an explicit source-only baseline migration after a separately completed runtime upgrade; ordinary package updates still reject changed binary declarations.
+- Track the relay interpreter and prefix resolved at startup, detect removed runtime files even after installation aliases change, and document retaining a dedicated interpreter (#55, #56).
 - Document the TS-2026-013 version floor and separate host/Python/OpenSSL trust limitations. See [baseline migration](docs/security-baseline.md).
 
+Existing installations need the [explicit baseline migration](docs/security-baseline.md); ordinary `update apply` still refuses this changed declaration. New source migration and installer paths are verified in isolated tests, not a live migration trial. See the [release notes](docs/releases/v0.7.0.md).
 
 ## v0.6.0 — 2026-10-26
 

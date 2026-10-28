@@ -6,9 +6,9 @@
 
 Tailscale と SSH を使って、自分の端末から Dots のクラウドコンピューターに接続できます。dots-tailscale は root 権限や systemd を使わずに必要なツールをインストールし、インストールファイル、Tailscale のノード状態、SSH の識別情報を `/workspace` に保存します。環境が変わってもこのディレクトリが残っていれば、そのまま再利用できます。
 
-**現在のリリース: [v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)。** Tailscale バイナリの手動更新に対応し、別途配備する復旧監視ツールの診断情報を改善しました。これは独立したプロジェクトであり、OpenAI や Tailscale の公式ツールではありません。
+**現在のリリース: [v0.7.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)。** 新規インストールの Tailscale を 1.104.4 に更新し、バイナリ検証と既存パッケージの明示的な移行手順を追加しました。復旧リレーは削除された Python 環境も検出します。OpenAI や Tailscale の公式ツールではない独立プロジェクトです。
 
-**開発候補について:** 未公開の `0.7.0-dev` ソースでは、新規インストールの既定値を Tailscale **1.104.4** に変更します。以下の v0.6.0 のコマンドは公開済みリリースをインストールします。既定値が 1.102.4 の既存パッケージは、先に Tailscale を更新し、[明示的なセキュリティ基準バージョンの移行（英語）](docs/security-baseline.md)を行う必要があります。通常の `update apply` の基準バージョン変更ガードは維持します。
+**v0.6.0 など旧基準からの更新:** Tailscale の既定値が 1.102.4 のパッケージでは、先にランタイムを更新してから[明示的な基準バージョン移行（英語）](docs/security-baseline.md)を行ってください。通常の `update apply` の変更ガードは維持されます。
 
 ## できること
 
@@ -29,7 +29,7 @@ Tailscale と SSH を使って、自分の端末から Dots のクラウドコ�
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.6.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.7.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -59,18 +59,18 @@ bash /workspace/.dots-tailscale/start.sh
 
 ```bash
 /workspace/.dots-tailscale/dots-ts version
-/workspace/.dots-tailscale/dots-ts update check --tag v0.6.0 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.7.0 --proxy http://browser-proxy:8889 --json
 ```
 
-検証済みの v0.4.0 以降を使っている場合は、[パッケージの更新手順](docs/usage.ja.md#update-management)に従って、先に v0.6.0 をインストールしてください。信頼できるパッケージ情報がない旧版では、ガイドに記載された手動確認が必要です。新しく取得したソースの CLI だけを使って、古いインストールを操作する方法には対応していません。
+Tailscale の基準を 1.102.4 と宣言する v0.6.0 などの既存パッケージは、[基準バージョンの移行手順（英語）](docs/security-baseline.md)で v0.7.0 に更新してください。v0.6.0 より古いツールを使っている場合は、先に[パッケージ更新手順](docs/usage.ja.md#update-management)で同じ基準の v0.6.0 を導入します。信頼できるメタデータがない旧版は手動確認が必要です。
 
-対応する v0.6.0 のツールをインストールしたら、Tailscale の公式安定版を確認できます。
+v0.6.0 以降のツールを導入したら、Tailscale の公式安定版を確認できます。
 
 ```bash
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-**公開済み v0.6.0 で新規インストールする場合、Tailscale は 1.102.4 です。** この既定値を維持することで、以前のパッケージ更新ツールから新しいツールを導入できます。パッケージを更新しただけでは Tailscale は更新されません。バイナリを変更する場合は、表示されたバージョンと Tailscale の公式アドバイザリを確認し、[手動更新ガイド（英語）](docs/runtime-updates.md)に従ってください。更新先の明示的な指定、オフライン用ファイル、処理状況の確認方法を説明しています。
+**v0.7.0 の新規インストールでは Tailscale 1.104.4 を使います。** パッケージ更新や `install` が既存バイナリを暗黙に置き換えることはありません。バイナリを更新する場合は、表示されたバージョンと公式アドバイザリを確認し、[手動更新ガイド（英語）](docs/runtime-updates.md)に従ってください。基準移行では、インストール済みの両バイナリと実行中のバックエンドがすべて正確に 1.104.4 であることを確認してからソースを変更します。
 
 更新を適用する前に、Tailscale 接続とは独立した復旧用クラウドターミナルを操作できることを確認してください。Tailscale バイナリの更新時は外部の復旧タスクを一時停止し、新しい SSH 接続と ping を確認してから再開します。更新候補のデーモンの実行を一度でも試みた後は、起動に失敗しても自動ダウングレードは行いません。失敗時の状態が不明なら、ガイドの手動復旧手順が必要です。パッケージのコードを戻せることと、Tailscale の状態データに互換性があることは別です。
 
@@ -93,6 +93,7 @@ bash /workspace/.dots-tailscale/start.sh
 
 - [Dots 実環境での試験](docs/validation/runtime-update-trial-20261026.md)では、レビュー済みの開発版パッケージを使って Tailscale を 1.102.4 から 1.104.2 に更新しました。ノードと SSH の識別情報を保ち、更新後に新しい外部 SSH 接続とリレー経由の ping が成功することを確認しました。
 - [v0.6.0 リリース](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)には、最終コミットでの本体・研究用テストと、隔離環境での公式バイナリ確認を記録しています。将来のすべてのバージョンとの互換性、実環境での障害復旧、状態データをダウングレードする安全性を証明するものではありません。
+- [v0.7.0 リリース](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)では、隔離した新規インストールとソース移行のテストを追加しました。新しいソース移行は実環境ではまだ実行していません。根拠と制限は[基準バージョン・TLS の確認記録](docs/validation/security-baseline-20261028.md)を参照してください。
 - `/workspace` が残ることは利用条件であり、プラットフォームによる保証ではありません。実行時のソケット、PID、ログは `/tmp` に作成し直します。新しい環境では、起動コマンドを実行する手段が引き続き必要です。
 - ローカルの `Running` 表示だけでは、外部から接続できるとは限りません。新しい SSH 接続と、実際に使うアプリの接続経路を確認してください。1.104.2 への更新が Tailworm の修正を意味するわけではありません。
 
@@ -104,13 +105,13 @@ bash /workspace/.dots-tailscale/start.sh
 
 外部サービスを運用できる方は、[Dots を使った外部からの復旧実験（英語）](docs/experimental-recovery.md)を確認できます。外部監視、認証付き MCP Events サーバー、許可済みの Dots タスクを使い、接続障害の後に起動コマンドの実行を依頼します。通常のインストーラーは、この基盤を配備したり復旧タスクを有効にしたりしません。
 
-現在の実験には外部サーバーと SSO の設定が必要です。イベント処理には遅延があり得ます。別のアカウントでの設定再現や、任意の VM 交換後の復旧は未検証です。watchdog との連携や、明示的に有効化する自動更新は今後の課題であり、v0.6.0 で有効になる機能ではありません。
+現在の実験には外部サーバーと SSO 設定が必要です。イベント処理は遅延することがあり、別アカウントでの再現や任意の VM 交換後の復旧は未検証です。watchdog との連携とオプトイン自動更新は v0.8.0 の後続課題であり、v0.7.0 で有効になる機能ではありません。
 
 ## ドキュメントと構成ファイル
 
 - [使い方とトラブルシューティング](docs/usage.ja.md) · [Tailscale の手動更新（英語）](docs/runtime-updates.md)
 - [プライベート HTTPS API の利用例](docs/private-http-api.ja.md) · [復旧実験（英語）](docs/experimental-recovery.md)
-- [リリースノート](docs/releases/v0.6.0.md) · [変更履歴](CHANGELOG.md) · [MIT ライセンス](LICENSE)
+- [リリースノート](docs/releases/v0.7.0.md) · [変更履歴](CHANGELOG.md) · [MIT ライセンス](LICENSE)
 
 | パス | 用途 |
 |---|---|

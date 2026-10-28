@@ -2,7 +2,7 @@
 
 [한국어](security-baseline.ko.md)
 
-This guide describes the **unreleased 0.7.0-dev candidate** for #57. The published v0.6.0 installer still defaults to Tailscale 1.102.4. The reviewed candidate source defaults to **1.104.4** and adds an explicit source-package migration after a separate runtime upgrade. No v0.7.0 release is implied.
+This guide covers **dots-tailscale v0.7.0** and its Tailscale **1.104.4** installation baseline (#57). The earlier v0.6.0 installer declared 1.102.4. Existing packages on that baseline need a separate runtime upgrade followed by the explicit source-package migration below.
 
 ## Why 1.104.4
 
@@ -16,20 +16,28 @@ At that review time, the [changelog](https://tailscale.com/changelog) did not ye
 
 | Item | Meaning |
 |---|---|
-| Package version | The dots-tailscale scripts and original source manifest, such as published 0.6.0 or candidate 0.7.0-dev. |
-| Declared installer baseline | `TS_VERSION` in that package: 1.102.4 in v0.6.0, 1.104.4 in this candidate. |
+| Package version | The dots-tailscale scripts and original source manifest, such as the installed v0.6.0 package or the v0.7.0 release. |
+| Declared installer baseline | `TS_VERSION` in that package: 1.102.4 in v0.6.0, 1.104.4 in v0.7.0. |
 | Installed/running Tailscale | The actual CLI, daemon binary and running backend version. Changing the package declaration does not update them. |
 | Host TLS trust | The OS/Python/OpenSSL verifier and saved CA bundle used around the shim; this is separate from the Tailscale Go runtime. |
 
-New installations from the candidate verify the archive checksum, constrained archive contents and both version outputs before placing the pair. Existing binaries are not silently replaced by `install`; incomplete, mismatched or below-baseline pairs are refused. Keep all four source files and their matching original manifest together.
+New v0.7.0 installations verify the archive checksum, constrained archive contents and both version outputs before placing the pair. Existing binaries are not silently replaced by `install`; incomplete, mismatched or below-baseline pairs are refused. Keep all four source files and their matching original manifest together.
 
 ## Existing installation: runtime first, package second
 
-This path is intentionally narrow: a trusted installed package declaring **1.102.4**, a complete reviewed candidate declaring **1.104.4**, and an actual installed/running Tailscale pair already at **1.104.4**. Other declaration transitions and different runtime versions need their own reviewed migration. Do not downgrade a newer node to fit this example.
+This path is intentionally narrow: a trusted installed package declaring **1.102.4**, a complete reviewed v0.7.0 bundle declaring **1.104.4**, and an actual installed/running Tailscale pair already at **1.104.4**. Other declaration transitions and different runtime versions need their own reviewed migration. Do not downgrade a newer node to fit this example.
 
 1. Open an independent Dots cloud terminal and verify that it is usable without Tailscale SSH. Keep it available through external checks. Pause any external recovery/update jobs so they cannot compete with either transaction.
-2. From the **installed v0.6.0 tools**, inspect integrity and the runtime, then perform the runtime upgrade if needed. Do not use the new candidate CLI against the old installation for this step.
+2. If your tools predate v0.6.0, first use the [package update instructions](usage.md#update-management) to install the published v0.6.0 tools on the same declared 1.102.4 baseline. Do not apply v0.7.0 directly. From the **installed v0.6.0 tools**, inspect integrity and the runtime, then perform the runtime upgrade if needed. Do not use the new release checkout's CLI against the old installation for this runtime step.
 
+
+For a trusted v0.4.0-or-later package whose installed tools predate v0.6.0, this bootstrap keeps the same declared baseline. Check its transaction before continuing. An installation without trusted metadata needs manual provenance review instead.
+
+```bash
+/workspace/.dots-tailscale/dots-ts update apply --tag v0.6.0 \
+  --proxy http://browser-proxy:8889 --confirm-recovery-terminal --json
+/workspace/.dots-tailscale/dots-ts update status --id BOOTSTRAP_TRANSACTION_ID --json
+```
 ```bash
 /workspace/.dots-tailscale/dots-ts version --json
 /workspace/.dots-tailscale/dots-ts runtime check --json
@@ -41,24 +49,24 @@ This path is intentionally narrow: a trusted installed package declaring **1.102
 If both installed binaries and the running backend are already 1.104.4, skip `runtime apply`; same-version reinstalls are refused. Online apply requires the requested version to match the current official stable metadata. If that has moved on, use the [reviewed offline-bundle procedure](runtime-updates.md#offline-transfer) for the exact supported version, or wait for an expanded migration path; do not falsify metadata.
 
 3. Confirm runtime transaction completion with no unresolved fence/cleanup warning. Open a **new strict-host-key SSH connection** and run Tailscale ping from another device. Also check the applications you depend on. A local `Running` result and the journal's `external_ssh=pending` are not external success claims.
-4. Stage a reviewed complete candidate source bundle at `/workspace/reviewed-candidate`, outside the installation. Preserve its original `source-manifest.json`. Inspect the source and verify its provenance and hashes. Do not change `TS_VERSION`, regenerate a manifest to disguise mixed sources, or copy only the new CLI into the old installation.
-5. Run the candidate's explicit source-only migration command:
+4. Stage a reviewed complete v0.7.0 source bundle at `/workspace/reviewed-v0.7.0`, outside the installation. Preserve its original `source-manifest.json`. Inspect the source and verify its provenance and hashes. Do not change `TS_VERSION`, regenerate a manifest to disguise mixed sources, or copy only the new CLI into the old installation.
+5. Run the release checkout's explicit source-only migration command:
 
 ```bash
-python3 /workspace/reviewed-candidate/dots-ts update migrate-baseline \
-  --bundle /workspace/reviewed-candidate \
+python3 /workspace/reviewed-v0.7.0/dots-ts update migrate-baseline \
+  --bundle /workspace/reviewed-v0.7.0 \
   --confirm-recovery-terminal --json
-python3 /workspace/reviewed-candidate/dots-ts update status \
+python3 /workspace/reviewed-v0.7.0/dots-ts update status \
   --id PACKAGE_TRANSACTION_ID --json
 ```
 
-The usual `update apply` command keeps its binary-declaration equality guard and still refuses this cross-baseline transition with `binary_update_unsupported`. `migrate-baseline` is a separate, explicit guarded operation. It requires the invoking candidate to match the selected bundle, a verified installed package, the exact supported declaration transition, CLI/daemon/backend version agreement, the expected userspace/socket/proxy setup, and no unresolved package/runtime transaction or fence. The frozen worker repeats the migration checks under the shared operation lock before changing sources.
+The usual `update apply` command keeps its binary-declaration equality guard and still refuses this cross-baseline transition with `binary_update_unsupported`. `migrate-baseline` is a separate, explicit guarded operation. It requires the invoking release checkout to match the selected bundle, a verified installed package, the exact supported declaration transition, CLI/daemon/backend version agreement, the expected userspace/socket/proxy setup, and no unresolved package/runtime transaction or fence. The frozen worker repeats the migration checks under the shared operation lock before changing sources.
 
 The source transaction backs up and replaces the four executable sources and manifest, then checks the shim restart. It does not replace Tailscale binaries, node state or SSH keys. A failed source migration may restore its code-only backup; it must not restore old Tailscale state or binaries as a substitute for runtime compatibility checks.
 
 6. Check the package manifest and runtime again, and verify fresh external SSH/ping after the source transaction. Resume the paused external jobs only after these checks. If output is lost, inspect the existing transaction from the independent terminal; do not submit another migration blindly.
 
-This new migration path has not yet been validated by a live migration in this guide. The [2026-10-26 normal runtime trial](validation/runtime-update-trial-20261026.md) used the earlier development package and is historical evidence, not a live test of this candidate or every future release.
+This new migration path has not yet been validated by a live migration in this guide. The [2026-10-26 normal runtime trial](validation/runtime-update-trial-20261026.md) used the earlier development package and is historical evidence, not a live test of the v0.7.0 installer/source migration or every future release.
 
 ## Runtime failure and source rollback are different
 

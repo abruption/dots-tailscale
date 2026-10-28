@@ -6,9 +6,9 @@
 
 通过 Tailscale 和 SSH，你可以从自己的设备连接 Dots 云电脑。dots-tailscale 不需要 root 权限或 systemd，会将安装文件、Tailscale 节点状态和 SSH 身份信息保存在 `/workspace` 中。环境变化后，只要这个目录还在，就可以继续使用原来的安装和身份。
 
-**当前版本：[v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)。** 这一版新增了 Tailscale 二进制文件的手动更新功能，并改进了单独部署的恢复监控工具的诊断信息。本项目独立开发，并非 OpenAI 或 Tailscale 的官方工具。
+**当前版本：[v0.7.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)。** 新安装改用 Tailscale 1.104.4，并增加了更严格的二进制检查和现有软件包的明确迁移流程。恢复中继也能检测已删除的 Python 环境。本项目独立开发，并非 OpenAI 或 Tailscale 的官方工具。
 
-**开发候选版说明：** 尚未发布的 `0.7.0-dev` 源码将新安装的默认 Tailscale 版本改为 **1.104.4**。下方 v0.6.0 命令仍安装已发布版本。默认版本为 1.102.4 的现有软件包，需要先单独更新 Tailscale，再执行[明确的安全基线迁移（英文）](docs/security-baseline.md)。普通 `update apply` 仍保留跨基线变更检查。
+**从 v0.6.0 等旧基线更新时：** 默认声明为 Tailscale 1.102.4 的软件包，需要先更新运行时，再执行[明确的安全基线迁移（英文）](docs/security-baseline.md)。普通 `update apply` 仍保留跨基线变更检查。
 
 ## 可以做什么
 
@@ -29,7 +29,7 @@
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.6.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.7.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -59,18 +59,18 @@ bash /workspace/.dots-tailscale/start.sh
 
 ```bash
 /workspace/.dots-tailscale/dots-ts version
-/workspace/.dots-tailscale/dots-ts update check --tag v0.6.0 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.7.0 --proxy http://browser-proxy:8889 --json
 ```
 
-如果现有安装是经过验证的 v0.4.0 或更高版本，请先按照[软件包更新说明](docs/usage.zh-CN.md#update-management)安装 v0.6.0。缺少可信软件包元数据的旧安装，需要按指南进行手动检查。不能只运行新下载的 CLI，来绕过对旧安装的更新步骤。
+Tailscale 基线声明为 1.102.4 的现有软件包（包括 v0.6.0），需要按[安全基线迁移流程（英文）](docs/security-baseline.md)更新到 v0.7.0。工具早于 v0.6.0 时，请先按[软件包更新说明](docs/usage.zh-CN.md#update-management)安装同一基线的 v0.6.0。缺少可信元数据的旧安装需要手动检查。
 
-安装好配套的 v0.6.0 工具后，再检查 Tailscale 官方稳定版：
+安装 v0.6.0 或更新的工具后，可以检查 Tailscale 官方稳定版：
 
 ```bash
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-**使用已发布的 v0.6.0 新安装时，Tailscale 从 1.102.4 开始。** 保持这个默认版本，是为了让旧的软件包更新器也能安装新工具；只更新软件包不会更新 Tailscale。若要替换二进制文件，请先核对查询到的版本和 Tailscale 官方公告，再按[手动更新指南（英文）](docs/runtime-updates.md)操作。指南包含明确指定版本、使用离线文件包和查看事务状态的方法。
+**v0.7.0 新安装使用 Tailscale 1.104.4。** 软件包更新和 `install` 不会悄悄替换已有二进制文件。需要更新时，请先核对查询到的版本和官方公告，再按[手动更新指南（英文）](docs/runtime-updates.md)操作。基线迁移要求两个已安装的二进制文件和运行中的后端都恰好为 1.104.4，然后才更换源码。
 
 应用更新前，请确认可以操作一个不依赖 Tailscale 连接的云端恢复终端。更新 Tailscale 二进制文件时，应先暂停外部恢复任务，待新的 SSH 连接和 ping 检查通过后再恢复。一旦尝试执行候选守护进程，即使启动失败，也不会自动降级；失败后的状态不明确时，需要按指南手动恢复。回退软件包代码与 Tailscale 状态数据是否兼容，是两回事。
 
@@ -93,6 +93,7 @@ bash /workspace/.dots-tailscale/start.sh
 
 - 一次 [Dots 实环境测试](docs/validation/runtime-update-trial-20261026.md)使用经过审核的开发版软件包，将 Tailscale 从 1.102.4 更新至 1.104.2。节点与 SSH 身份保持不变，随后通过了新的外部 SSH 连接和中继 ping 检查。
 - [v0.6.0 发布页](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)记录了最终提交的核心与研究测试，以及隔离环境中的官方二进制文件检查。这些结果不能证明所有未来版本都兼容，也不能证明实环境故障恢复或状态数据降级一定安全。
+- [v0.7.0 发布页](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)增加了隔离的新安装与源码迁移测试。新的源码迁移尚未在实环境中执行；具体依据和限制见[基线与 TLS 检查记录](docs/validation/security-baseline-20261028.md)。
 - `/workspace` 能够保留是使用条件，并非平台保证。运行时的套接字、PID 和日志会在 `/tmp` 中重新创建。进入新环境后，仍需要某种方式来执行启动命令。
 - 本地显示 `Running` 不代表外部一定能够连接。请重新建立 SSH 连接，并检查实际使用的应用访问路径。更新到 1.104.2 并不意味着 Tailworm 已被修复。
 
@@ -104,13 +105,13 @@ bash /workspace/.dots-tailscale/start.sh
 
 具备外部服务运维条件的用户，可以了解[通过 Dots 执行外部恢复的实验（英文）](docs/experimental-recovery.md)。它结合外部监控、带认证的 MCP Events 服务器和已获授权的 Dots 任务，在连接故障后请求执行启动命令。普通安装程序不会部署这些服务，也不会启用恢复任务。
 
-目前的实验需要配置外部服务器和 SSO。事件处理可能有延迟；尚未验证其他账号能否复现设置，也未验证任意 VM 替换后都能恢复。watchdog 协同和主动开启的自动更新属于后续工作，不是 v0.6.0 已启用的功能。
+当前实验需要外部服务器和 SSO 设置。事件处理可能延迟，其他账号的设置复现和任意 VM 替换后的恢复仍未验证。watchdog 协调与可选自动更新移至 v0.8.0 后续工作，v0.7.0 不会开启这些功能。
 
 ## 文档与项目文件
 
 - [使用与故障排查](docs/usage.zh-CN.md) · [手动更新 Tailscale（英文）](docs/runtime-updates.md)
 - [私有 HTTPS API 示例](docs/private-http-api.zh-CN.md) · [恢复实验（英文）](docs/experimental-recovery.md)
-- [发布说明](docs/releases/v0.6.0.md) · [更新记录](CHANGELOG.md) · [MIT 许可证](LICENSE)
+- [发布说明](docs/releases/v0.7.0.md) · [更新记录](CHANGELOG.md) · [MIT 许可证](LICENSE)
 
 | 路径 | 用途 |
 |---|---|

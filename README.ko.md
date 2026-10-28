@@ -6,9 +6,9 @@
 
 내 기기에서 Tailscale과 SSH로 Dots 클라우드 컴퓨터에 접속할 수 있게 해주는 도구입니다. root 권한이나 systemd 없이 설치할 수 있으며, 설치 파일과 Tailscale 기기 정보, SSH 키를 `/workspace`에 보관합니다. 실행 환경이 바뀌어도 이 경로가 남아 있다면 기존 정보를 다시 사용할 수 있습니다.
 
-**현재 릴리스는 [v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)입니다.** Tailscale 실행 파일을 직접 업데이트하는 기능을 추가했고, 별도로 운영하는 복구 감시 도구의 진단 정보도 보강했습니다. OpenAI나 Tailscale에서 제공하는 공식 도구가 아닌 독립 프로젝트입니다.
+**현재 릴리스는 [v0.7.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)입니다.** 신규 설치의 Tailscale을 1.104.4로 올리고, 바이너리 검증과 기존 패키지의 명시적 전환 절차를 추가했습니다. 복구 전달기는 삭제된 Python 실행 환경도 감지합니다. OpenAI나 Tailscale의 공식 도구가 아닌 독립 프로젝트입니다.
 
-**개발 후보 안내:** 아직 공개하지 않은 `0.7.0-dev` 소스의 신규 설치 기본값은 Tailscale **1.104.4**입니다. 아래 v0.6.0 명령은 기존 정식 릴리스를 설치합니다. 기본값이 1.102.4인 기존 패키지는 Tailscale을 먼저 갱신한 뒤 [명시적 보안 기본 버전 전환](docs/security-baseline.ko.md)을 거쳐야 합니다. 일반 `update apply`의 기본 버전 변경 제한은 유지됩니다.
+**v0.6.0 등 이전 기본 버전에서 업데이트한다면:** Tailscale 기본값이 1.102.4인 패키지는 실행 파일을 먼저 갱신한 뒤 [명시적 보안 기본 버전 전환](docs/security-baseline.ko.md)을 거쳐야 합니다. 일반 `update apply`의 기본 버전 변경 제한은 유지됩니다.
 
 ## 할 수 있는 일
 
@@ -29,7 +29,7 @@
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.6.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.7.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -59,18 +59,18 @@ bash /workspace/.dots-tailscale/start.sh
 
 ```bash
 /workspace/.dots-tailscale/dots-ts version
-/workspace/.dots-tailscale/dots-ts update check --tag v0.6.0 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.7.0 --proxy http://browser-proxy:8889 --json
 ```
 
-검증된 v0.4.0 이상 설치라면 [패키지 업데이트 안내](docs/usage.ko.md#update-management)에 따라 먼저 v0.6.0 도구를 설치하세요. 신뢰할 수 있는 패키지 정보가 없는 이전 설치는 가이드의 수동 확인 절차가 필요합니다. 새로 내려받은 CLI만으로 오래된 설치를 바로 갱신하는 방법은 지원하지 않습니다.
+기본 Tailscale을 1.102.4로 선언하는 v0.6.0 등 기존 패키지는 [보안 기본 버전 전환](docs/security-baseline.ko.md)에 따라 v0.7.0으로 이동하세요. 설치된 도구가 v0.6.0보다 오래됐다면 [패키지 업데이트 안내](docs/usage.ko.md#update-management)로 같은 기본 버전의 v0.6.0 도구를 먼저 준비하세요. 신뢰할 수 있는 메타데이터가 없는 이전 설치는 수동 확인이 필요합니다.
 
-같은 버전의 v0.6.0 도구가 설치된 뒤에는 공식 Tailscale 안정 버전을 확인할 수 있습니다.
+v0.6.0 이상 도구가 설치됐다면 공식 Tailscale 안정 버전을 확인할 수 있습니다.
 
 ```bash
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-**공개된 v0.6.0으로 새로 설치하면 Tailscale은 1.102.4로 시작합니다.** 기존 패키지 업데이터로 새 도구를 설치할 수 있도록 기본값을 유지한 것이며, 패키지만 업데이트해도 Tailscale 버전이 바뀌지는 않습니다. 실행 파일을 바꾸려면 조회된 버전과 Tailscale 공식 공지를 검토한 뒤 [수동 업데이트 가이드](docs/runtime-updates.ko.md)를 따라주세요. 대상 버전 지정, 오프라인 파일 전달, 진행 상태 확인 방법을 설명합니다.
+**v0.7.0으로 새로 설치하면 Tailscale은 1.104.4로 시작합니다.** 패키지 업데이트나 `install`이 기존 실행 파일을 조용히 바꾸지는 않습니다. 실행 파일을 갱신하려면 조회된 버전과 공식 공지를 검토한 뒤 [수동 업데이트 가이드](docs/runtime-updates.ko.md)를 따르세요. 기본 버전 전환은 설치된 두 실행 파일과 실행 중인 백엔드가 모두 정확히 1.104.4인 것을 확인한 뒤 소스를 바꿉니다.
 
 업데이트를 적용하기 전에 Tailscale SSH가 끊겨도 사용할 수 있는 별도의 클라우드 복구 터미널을 확인하세요. Tailscale 자체를 업데이트할 때는 외부 복구 작업을 잠시 중지하고, 새 SSH 연결과 ping이 정상인지 확인한 뒤 다시 켜세요. 새 데몬의 실행을 시도한 뒤에는 시작에 실패했더라도 자동으로 이전 버전으로 되돌리지 않습니다. 실패 원인이 불확실하면 가이드의 수동 복구 절차가 필요합니다. 패키지 코드의 원복과 Tailscale 상태 정보의 하위 버전 호환성은 별개입니다.
 
@@ -93,6 +93,7 @@ bash /workspace/.dots-tailscale/start.sh
 
 - [실제 Dots 시험](docs/validation/runtime-update-trial-20261026.md)에서 검토한 개발 패키지로 Tailscale 1.102.4를 1.104.2로 업데이트했습니다. 기존 기기 정보와 SSH 키를 유지했고, 이후 새 외부 SSH 연결과 릴레이 ping도 확인했습니다.
 - [v0.6.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)에는 최종 커밋의 기본·연구 테스트와 격리된 환경에서 수행한 공식 실행 파일 검증 기록이 있습니다. 앞으로 나올 모든 버전과의 호환성이나 실환경 장애 복구, 이전 버전으로 되돌릴 때의 상태 호환성을 입증한 것은 아닙니다.
+- [v0.7.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)에는 격리된 신규 설치·소스 전환 테스트가 추가됐습니다. 새 소스 전환은 아직 실환경에서 실행하지 않았습니다. 근거와 한계는 [날짜별 기본 버전·TLS 점검 기록](docs/validation/security-baseline-20261028.md)을 확인하세요.
 - `/workspace`가 남아 있어야 사용할 수 있으며, 플랫폼이 이 경로의 보존을 보장한다는 뜻은 아닙니다. 실행 중 필요한 소켓·PID·로그는 `/tmp`에 다시 만듭니다. 새 실행 환경에서는 여전히 시작 명령을 실행할 방법이 필요합니다.
 - 로컬에서 `Running`이 나와도 외부에서 접속된다는 뜻은 아닙니다. 새 SSH 연결과 실제 사용하는 앱의 접속 경로를 확인하세요. 1.104.2 업데이트로 Tailworm 문제가 해결됐다고 주장하지도 않습니다.
 
@@ -104,13 +105,13 @@ bash /workspace/.dots-tailscale/start.sh
 
 고급 설정이 필요하다면 [Dots를 통한 외부 복구 실험](docs/experimental-recovery.ko.md)을 살펴보세요. 외부 감시 도구, 인증을 거치는 MCP Events 서버, 사용자가 허용한 Dots 작업으로 연결 장애 후 시작 명령 실행을 요청하는 방식입니다. 일반 설치 과정에서 이 구성을 배포하거나 복구 작업을 켜지는 않습니다.
 
-현재 실험에는 외부 서버와 SSO 설정이 필요합니다. 이벤트 처리가 지연될 수 있고, 다른 계정에서의 설정 재현이나 임의의 VM 교체 후 복구는 아직 검증하지 않았습니다. watchdog과 외부 복구의 조정, 선택적 자동 업데이트는 후속 과제이며 v0.6.0에서 활성화되는 기능이 아닙니다.
+현재 실험에는 외부 서버와 SSO 설정이 필요합니다. 이벤트 처리가 지연될 수 있고, 다른 계정에서의 설정 재현이나 임의의 VM 교체 후 복구는 아직 검증하지 않았습니다. watchdog과 외부 복구의 조정, 선택적 자동 업데이트는 v0.8.0 후속 과제이며 v0.7.0에서 켜지는 기능이 아닙니다.
 
 ## 문서와 구성 파일
 
 - [사용법과 문제 해결](docs/usage.ko.md) · [Tailscale 수동 업데이트](docs/runtime-updates.ko.md)
 - [비공개 HTTPS API 연결 예시](docs/private-http-api.ko.md) · [외부 복구 실험](docs/experimental-recovery.ko.md)
-- [릴리스 노트](docs/releases/v0.6.0.md) · [변경 이력](CHANGELOG.md) · [MIT 라이선스](LICENSE)
+- [릴리스 노트](docs/releases/v0.7.0.md) · [변경 이력](CHANGELOG.md) · [MIT 라이선스](LICENSE)
 
 | 경로 | 역할 |
 |---|---|

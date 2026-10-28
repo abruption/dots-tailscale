@@ -6,9 +6,9 @@
 
 Use Tailscale and SSH to reach your Dots cloud computer from your own devices. dots-tailscale installs the tools without root or systemd and keeps the installation, Tailscale node state and SSH identity under `/workspace` so you can reuse them when that directory survives an environment change.
 
-**Current release: [v0.6.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0).** It adds manual Tailscale binary updates and better diagnostics for the separately deployed recovery monitor. This is an independent project, not an official OpenAI or Tailscale tool.
+**Current release: [v0.7.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0).** New installations use Tailscale 1.104.4, with stricter binary checks and an explicit migration path for existing packages. Recovery relay diagnostics now detect a removed Python runtime. This is an independent project, not an official OpenAI or Tailscale tool.
 
-**Development candidate:** the unreleased `0.7.0-dev` source raises the new-install baseline to Tailscale **1.104.4**. The v0.6.0 commands below still install the published release. Existing 1.102.4-baseline packages need the [explicit security-baseline migration](docs/security-baseline.md), after a separate runtime upgrade; ordinary `update apply` keeps its cross-baseline guard.
+**Upgrading from v0.6.0 or an older baseline:** packages declaring Tailscale 1.102.4 need the [explicit security-baseline migration](docs/security-baseline.md), after a separate runtime upgrade. Ordinary `update apply` keeps its cross-baseline guard.
 
 ## What you can do
 
@@ -29,7 +29,7 @@ For a **new installation**, use the Dots cloud terminal. You need Linux x86_64, 
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.6.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.7.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -59,18 +59,18 @@ First check the installed package and available package release:
 
 ```bash
 /workspace/.dots-tailscale/dots-ts version
-/workspace/.dots-tailscale/dots-ts update check --tag v0.6.0 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.7.0 --proxy http://browser-proxy:8889 --json
 ```
 
-For a verified v0.4.0-or-later installation, follow [package update instructions](docs/usage.md#update-management) to install v0.6.0 first. Older installations without trusted package metadata need the guide's manual review procedure. Running only a new checkout's CLI against an older installed package is not a supported shortcut.
+Existing packages declaring Tailscale 1.102.4, including v0.6.0, must follow the [security-baseline migration](docs/security-baseline.md) to reach v0.7.0. If your installed tools predate v0.6.0, first use the [package update instructions](docs/usage.md#update-management) to obtain v0.6.0 on the same baseline. Older installations without trusted metadata need the manual review procedure.
 
-Once the matching v0.6.0 tools are installed, check the official stable Tailscale version:
+Once v0.6.0 or later tools are installed, check the official stable Tailscale version:
 
 ```bash
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-**New installations from published v0.6.0 start with Tailscale 1.102.4.** Keeping that default allows older package updaters to install the new tools; upgrading the package alone does not upgrade Tailscale. To change the binaries, review the reported version and upstream advisories, then follow the [manual runtime update guide](docs/runtime-updates.md). It covers explicit version selection, offline bundles and transaction status.
+**New v0.7.0 installations start with Tailscale 1.104.4.** Existing binaries are not silently replaced by a package update or `install`. To change them, review the reported version and upstream advisories, then follow the [manual runtime update guide](docs/runtime-updates.md). The baseline migration requires both installed binaries and the running backend to be exactly 1.104.4 before the source package changes.
 
 Before applying an update, verify an independent cloud recovery terminal is usable. For runtime updates, pause external recovery jobs and resume them after fresh SSH/ping checks. Once execution of a candidate daemon has been attempted, even a failed startup does not permit automatic downgrade: uncertain failures require the guide's manual recovery procedure. Package code rollback and Tailscale state compatibility are different things.
 
@@ -93,6 +93,7 @@ Local SOCKS5/HTTP proxies are off by default. Enabling them requires an explicit
 
 - A [live Dots trial](docs/validation/runtime-update-trial-20261026.md) upgraded Tailscale 1.102.4 to 1.104.2 with the reviewed development package, preserved node/SSH identity and confirmed fresh external SSH and relay ping afterward.
 - The [v0.6.0 release](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0) records final-commit core/research tests and isolated official-binary checks. These do not establish all future-version compatibility, live failure recovery or state downgrade safety.
+- The [v0.7.0 release](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0) adds isolated new-install and source-migration tests. The new source migration has not been run live; see the [dated baseline and TLS review](docs/validation/security-baseline-20261028.md) for the exact evidence and limits.
 - `/workspace` preservation is a condition, not a platform guarantee. Runtime sockets, PIDs and logs are recreated in `/tmp`. A new environment still needs a way to execute the start command.
 - A local `Running` result is not proof of external reachability. Check a fresh SSH connection and the application paths you use. Upgrading to 1.104.2 is not a claim that Tailworm is fixed.
 
@@ -104,13 +105,13 @@ This maintainer-provided screenshot is a historical installation/status check, n
 
 Advanced users can explore [Dots-assisted external recovery](docs/experimental-recovery.md). It uses an external monitor, an authenticated MCP Events server and an authorized Dots task to request a start command after a connection failure. The normal installer does not deploy this infrastructure or enable a recovery task.
 
-The current experiment requires external server/SSO setup. Event processing can be delayed; setup on another account and recovery after arbitrary VM replacement remain unverified. Watchdog coordination and opt-in automatic updates are follow-up work, not features enabled by v0.6.0.
+The current experiment requires external server/SSO setup. Event processing can be delayed; setup on another account and recovery after arbitrary VM replacement remain unverified. Watchdog coordination and opt-in automatic updates are deferred to v0.8.0; v0.7.0 does not enable them.
 
 ## Documentation and project files
 
 - [Usage and troubleshooting](docs/usage.md) · [Manual Tailscale updates](docs/runtime-updates.md)
 - [Private HTTPS API example](docs/private-http-api.md) · [Experimental recovery](docs/experimental-recovery.md)
-- [Release notes](docs/releases/v0.6.0.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
+- [Release notes](docs/releases/v0.7.0.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
 
 | Path | Purpose |
 |---|---|
