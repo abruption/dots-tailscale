@@ -8,6 +8,7 @@ import ssl
 import socket
 import time
 import multiprocessing
+import monitor_relay
 from unittest.mock import patch
 from bounded_network import bounded_call
 import http.client
@@ -18,7 +19,7 @@ import unittest
 from types import SimpleNamespace
 
 from monitor_relay import (sanitize, ssh_argv, transmit, step, save_private, read_private,
-    https_target, https_transmit, update_health, emit_health_transition, ssh_failure, read_token, bounded_ssh_run, DeadlineSocket)
+    https_target, https_transmit, update_health, emit_health_transition, ssh_failure, read_token, bounded_ssh_run, DeadlineSocket, capture_runtime_paths, runtime_diagnostics)
 
 NOW = 1800000000.0
 
@@ -237,6 +238,79 @@ class RelayTest(unittest.TestCase):
         lines=output.getvalue().splitlines();self.assertEqual(len(lines),2)
         self.assertEqual(json.loads(lines[0])['failure_class'],'auth_required')
         self.assertEqual(json.loads(lines[1])['relay_health'],'restored')
+
+    def test_runtime_paths_do_not_follow_a_repointed_installation_alias(self):
+        root = Path(self.tmp.name)
+        old, new = root / 'python-old', root / 'python-new'
+        old.mkdir(); new.mkdir()
+        (old / 'python3').write_text('old')
+        (new / 'python3').write_text('new')
+        alias = root / 'python-current'
+        alias.symlink_to(old, target_is_directory=True)
+        captured = capture_runtime_paths(str(alias), str(alias / 'python3'))
+        self.assertEqual(captured, (str(old.resolve()), str((old / 'python3').resolve())))
+        alias.unlink(); alias.symlink_to(new, target_is_directory=True)
+        (old / 'python3').unlink(); old.rmdir()
+        self.assertTrue(alias.is_dir())
+        self.assertTrue((alias / 'python3').is_file())
+        with patch.object(monitor_relay, '_RUNTIME_PATHS', captured):
+            result = runtime_diagnostics()
+        self.assertFalse(result['runtime_prefix_present'])
+        self.assertFalse(result['runtime_executable_present'])
+        self.assertRegex(result['runtime_version'], r'^\d+\.\d+\.\d+$')
+        self.assertNotIn(str(root), json.dumps(result))
+
+    def test_runtime_path_capture_failure_keeps_independent_executable(self):
+        executable = Path(self.tmp.name) / 'python3'
+        executable.write_text('python')
+        for error in (OSError('PRIVATE'), RuntimeError('PRIVATE')):
+            with patch.object(Path, 'resolve', side_effect=[error, executable]):
+                captured = capture_runtime_paths('/unavailable', str(executable))
+            self.assertEqual(captured, (None, str(executable)))
+            with patch.object(monitor_relay, '_RUNTIME_PATHS', captured):
+                result = runtime_diagnostics()
+            self.assertFalse(result['runtime_prefix_present'])
+            self.assertTrue(result['runtime_executable_present'])
+            self.assertNotIn('PRIVATE', json.dumps(result))
+
+    def test_runtime_diagnostics_probe_errors_are_false(self):
+        with patch.object(monitor_relay, '_RUNTIME_PATHS', ('/prefix', '/python3')):
+            with patch.object(Path, 'is_dir', side_effect=OSError('PRIVATE')):
+                with patch.object(Path, 'is_file', return_value=True):
+                    result = runtime_diagnostics()
+            self.assertFalse(result['runtime_prefix_present'])
+            self.assertTrue(result['runtime_executable_present'])
+            with patch.object(Path, 'is_dir', return_value=True):
+                with patch.object(Path, 'is_file', side_effect=OSError('PRIVATE')):
+                    result = runtime_diagnostics()
+            self.assertTrue(result['runtime_prefix_present'])
+            self.assertFalse(result['runtime_executable_present'])
+            self.assertNotIn('PRIVATE', json.dumps(result))
+
+    def test_runtime_disappearance_emits_a_degraded_transition(self):
+        present = {'runtime_prefix_present': True,
+                   'runtime_executable_present': True, 'runtime_version': '3.13.17'}
+        missing = dict(present, runtime_prefix_present=False,
+                       runtime_executable_present=False)
+        with patch.object(monitor_relay, 'runtime_diagnostics', return_value=present):
+            healthy = update_health({}, {'delivered_at': sample()['observed_at']},
+                                    'delivered', {}, NOW)
+        failed = dict(healthy, **missing)
+        output = io.StringIO()
+        with redirect_stderr(output):
+            with patch.object(monitor_relay, 'runtime_diagnostics', return_value=missing):
+                emit_health_transition(healthy, failed)
+                emit_health_transition(failed, failed)
+            with patch.object(monitor_relay, 'runtime_diagnostics', return_value=present):
+                emit_health_transition(failed, healthy)
+        lines = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0]['relay_health'], 'degraded')
+        self.assertEqual(lines[1]['relay_health'], 'restored')
+        self.assertFalse(lines[0]['runtime_prefix_present'])
+        self.assertFalse(lines[0]['runtime_executable_present'])
+        self.assertEqual(lines[0]['failure_class'], 'ok')
+        self.assertNotIn(str(self.tmp.name), output.getvalue())
 
     def test_diagnostics_preserve_bool_senders(self):
         diagnostics={}

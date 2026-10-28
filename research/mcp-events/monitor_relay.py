@@ -25,6 +25,20 @@ import subprocess
 import time
 import threading
 
+
+def capture_runtime_paths(prefix, executable):
+    """Freeze resolved installation identities before package-manager alias changes."""
+    paths = []
+    for value in (prefix, executable):
+        try:
+            paths.append(str(Path(value).resolve(strict=True)))
+        except (OSError, RuntimeError):
+            paths.append(None)
+    return tuple(paths)
+
+
+_RUNTIME_PATHS = capture_runtime_paths(sys.prefix, sys.executable)
+
 STATES = frozenset('verified_running external_unreachable peer_reachable_ssh_failed probe_failed service_degraded ssh_ready_ping_unverified run_missing identity_missing prior_boot process_dead process_suspended heartbeat_missing heartbeat_identity_mismatch recovery_in_progress heartbeat_stale not_running metadata_invalid'.split())
 ERRORS = frozenset('ok host_key_rejected authentication_failed connection_refused timeout network_unreachable remote_command_failed transport_failed invalid_probe_json local_execution_failed timeout_or_local_failure'.split())
 
@@ -346,12 +360,15 @@ def transmit(config, observation, runner=subprocess.run):
 
 
 def runtime_diagnostics():
-    # Expose presence/version only, never interpreter paths or environment.
-    try:
-        present = Path(sys.prefix).is_dir()
-    except OSError:
-        present = False
-    return {'runtime_prefix_present': present,
+    # Check startup identities, not aliases which may now resolve to a new runtime.
+    # Paths remain process-local; health/transition output contains booleans only.
+    def present(path, kind):
+        try:
+            return path is not None and getattr(Path(path), kind)()
+        except (OSError, RuntimeError):
+            return False
+    return {'runtime_prefix_present': present(_RUNTIME_PATHS[0], 'is_dir'),
+            'runtime_executable_present': present(_RUNTIME_PATHS[1], 'is_file'),
             'runtime_version': '.'.join(str(v) for v in sys.version_info[:3])}
 
 
@@ -411,13 +428,19 @@ def emit_health_transition(previous, current):
     new = (current['stale_delivery'], current['failure_class'])
     old_worker = worker_diagnostics(previous.get('worker_error_kind'), previous.get('worker_exit_code'))
     new_worker = worker_diagnostics(current.get('worker_error_kind'), current.get('worker_exit_code'))
-    if (old != new or old_worker != new_worker) and (new != (False, 'ok') or previous):
-        print(json.dumps({'relay_health': 'degraded' if new != (False, 'ok') else 'restored',
+    runtime = runtime_diagnostics()
+    keys = ('runtime_prefix_present', 'runtime_executable_present')
+    old_runtime = tuple(previous.get(key) for key in keys)
+    new_runtime = tuple(runtime[key] for key in keys)
+    runtime_missing = not all(new_runtime)
+    if (old != new or old_worker != new_worker or old_runtime != new_runtime) and (
+            new != (False, 'ok') or previous or runtime_missing):
+        print(json.dumps({'relay_health': 'degraded' if new != (False, 'ok') or runtime_missing else 'restored',
                           'failure_class': current['failure_class'],
                           'stale_delivery': current['stale_delivery'], **new_worker,
                           'previous_worker_error_kind': old_worker['worker_error_kind'],
                           'previous_worker_exit_code': old_worker['worker_exit_code'],
-                          **runtime_diagnostics()}), file=sys.stderr, flush=True)
+                          **runtime}), file=sys.stderr, flush=True)
 
 
 def main():
