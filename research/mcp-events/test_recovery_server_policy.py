@@ -21,6 +21,26 @@ class RecoveryServerPolicyTests(unittest.TestCase):
         self.assertEqual(trial['policy']['cooldown_seconds'], 3600)
         self.assertFalse(trial['claimable'])  # A higher budget alone is not permission.
 
+    def test_optional_new_incident_policy_is_explicit_and_status_visible(self):
+        default = load_recovery(self.config).get_current_recovery('alice')
+        self.assertIsNone(default['policy']['new_incident_cooldown_seconds'])
+        state = load_recovery({**self.config, 'recovery_max_claims_per_24h': 12,
+                               'recovery_new_incident_cooldown_seconds': 600}).get_current_recovery('alice')
+        self.assertEqual(state['policy']['max_claims_per_24h'], 12)
+        self.assertEqual(state['policy']['cooldown_seconds'], 3600)
+        self.assertEqual(state['policy']['new_incident_cooldown_seconds'], 600)
+        self.assertEqual(state['policy']['effective_cooldown_seconds'], 3600)
+        self.assertEqual(state['policy']['cooldown_basis'], 'global')
+        self.assertFalse(state['claimable'])
+
+    def test_invalid_shortened_interval_is_not_coerced(self):
+        for value in (True, '600', 0, 299, 3601, 86401):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                load_recovery({**self.config, 'recovery_new_incident_cooldown_seconds': value})
+        with self.assertRaises(ValueError):
+            load_recovery({**self.config, 'recovery_cooldown_seconds': 300,
+                           'recovery_new_incident_cooldown_seconds': 600})
+
     def test_bad_deployment_values_are_not_coerced_to_valid_policy(self):
         for key, value in [('recovery_max_claims_per_24h', True),
                            ('recovery_max_claims_per_24h', '12'),

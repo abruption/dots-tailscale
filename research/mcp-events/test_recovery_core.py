@@ -249,7 +249,9 @@ class RecoveryTests(unittest.TestCase):
                 self.configured_core(cooldown_seconds=value)
         core=self.configured_core(max_claims_per_24h=24,cooldown_seconds=86400)
         self.assertEqual(core.get_current_recovery('operator')['policy'],
-                         {'max_claims_per_24h':24,'cooldown_seconds':86400,'window_seconds':86400,'claims_in_window':0})
+                         {'max_claims_per_24h':24,'cooldown_seconds':86400,'window_seconds':86400,'claims_in_window':0,
+                          'new_incident_cooldown_seconds':None,'effective_cooldown_seconds':86400,
+                          'cooldown_basis':'global'})
         self.configured_core(max_claims_per_24h=1,cooldown_seconds=300)
 
     def test_policy_reason_boundaries_and_combined_retry(self):
@@ -382,6 +384,254 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.core.pending_delivery_ids('operator'),[])
         with self.core._db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM events').fetchone()[0],1)
+
+
+
+class NewIncidentCooldownTests(unittest.TestCase):
+    setUp = RecoveryTests.setUp
+    tearDown = RecoveryTests.tearDown
+    observation = RecoveryTests.observation
+
+    def new_core(self):
+        return RecoveryTests.configured_core(self, new_incident_cooldown_seconds=600)
+
+    def failed_sample(self):
+        self.now += 60
+        return self.core.ingest(self.observation())
+
+    def incident(self):
+        self.failed_sample(); self.failed_sample()
+        state = self.failed_sample()
+        self.assertTrue(state['claimable'])
+        return state['incident']['incident_id']
+
+    def healthy(self, seconds=30):
+        self.now += seconds
+        return self.core.ingest(self.observation(healthy=True))
+
+    def prior(self, outcome='success', offsets=(10, 40, 70)):
+        iid = self.incident(); claim = self.core.claim_recovery('operator', iid)
+        claimed = self.now
+        self.core.report_recovery('operator', iid, claim['claim_id'], outcome)
+        for offset in offsets:
+            self.now = claimed + offset
+            self.core.ingest(self.observation(healthy=True))
+        return iid, claim, claimed
+
+    def outage(self):
+        self.failed_sample(); self.failed_sample()
+        return self.failed_sample()
+
+    def fresh_failure_at(self, stamp):
+        while self.now + 120 < stamp:
+            self.now += 120
+            self.core.ingest(self.observation())
+        self.now = stamp
+        return self.core.ingest(self.observation())
+
+    def proof(self, incident):
+        with self.core._db() as db:
+            row = db.execute('SELECT * FROM recovery_confirmations WHERE incident_id=?', (incident,)).fetchone()
+            return dict(row) if row is not None else None
+
+    def test_optional_policy_strict_bounds_and_default_compatibility(self):
+        for value in (True, False, 0, 299, 3601, 600.0, '600', [], {}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                RecoveryTests.configured_core(self, new_incident_cooldown_seconds=value)
+        for value in (None, 300, 3600):
+            core = RecoveryTests.configured_core(self, new_incident_cooldown_seconds=value)
+            self.assertEqual(core.get_current_recovery('operator')['policy']['new_incident_cooldown_seconds'], value)
+        self.core = RecoveryTests.configured_core(self)
+        self.prior()
+        state = self.outage()
+        self.assertEqual(state['policy']['cooldown_basis'], 'global')
+        self.assertEqual(state['policy']['effective_cooldown_seconds'], 3600)
+
+    def test_qualified_new_outage_obeys_short_boundary_and_single_claim(self):
+        prior, _, claimed = self.prior()
+        state = self.outage(); iid = state['incident']['incident_id']
+        self.assertNotEqual(iid, prior)
+        self.assertEqual(state['policy']['cooldown_seconds'], 3600)
+        self.assertEqual(state['policy']['effective_cooldown_seconds'], 600)
+        self.assertEqual(state['policy']['cooldown_basis'], 'confirmed_recovery')
+        self.assertEqual(state['eligibility_reason'], 'cooldown')
+        self.assertEqual(state['retry_at'], claimed + 600)
+        self.assertFalse(self.fresh_failure_at(claimed + 599.999)['claimable'])
+        self.assertTrue(self.fresh_failure_at(claimed + 600)['claimable'])
+        claim = self.core.claim_recovery('operator', iid)
+        self.assertEqual(claim['command'], COMMAND)
+        self.assertEqual(claim['expires_at'], self.now + 120)
+        with self.assertRaises(RecoveryIneligible): self.core.claim_recovery('operator', iid)
+
+    def test_success_report_with_one_healthy_sample_is_not_confirmation(self):
+        prior, _, claimed = self.prior(offsets=(60,))
+        self.assertIsNone(self.proof(prior)['confirmed_at'])
+        state = self.outage()
+        self.assertEqual(state['policy']['cooldown_basis'], 'global')
+        self.assertEqual(state['retry_at'], claimed + 3600)
+
+    def test_three_samples_need_elapsed_span_and_status_cannot_complete_it(self):
+        prior, _, claimed = self.prior(offsets=(1, 2, 3))
+        self.assertEqual(self.proof(prior)['streak'], 3)
+        self.assertIsNone(self.proof(prior)['confirmed_at'])
+        self.now = claimed + 61
+        self.core.get_current_recovery('operator')
+        self.assertIsNone(self.proof(prior)['confirmed_at'])
+        self.assertEqual(self.outage()['policy']['cooldown_basis'], 'global')
+
+    def test_duplicate_rejected_and_status_reads_do_not_advance_proof(self):
+        prior, _, _ = self.prior(offsets=(20,))
+        before = self.proof(prior); same = self.observation(healthy=True)
+        for _ in range(3):
+            self.core.ingest(same); self.core.get_current_recovery('operator')
+        self.assertEqual(self.proof(prior), before)
+        self.now += 1
+        older = self.observation(healthy=True)
+        older['observed_at'] = datetime.fromtimestamp(self.now-2, timezone.utc).isoformat()
+        with self.assertRaises(ValueError): self.core.ingest(older)
+        malformed = self.observation(healthy=True); malformed['ssh']['command_succeeded'] = 'true'
+        with self.assertRaises(ValueError): self.core.ingest(malformed)
+        self.assertEqual(self.proof(prior), before)
+        self.now += 151
+        with self.assertRaises(ValueError): self.core.ingest(same)
+        self.assertEqual(self.proof(prior), before)
+        self.core.ingest(self.observation(healthy=True))
+        self.assertEqual(self.proof(prior)['streak'], 1)
+        self.assertIsNone(self.proof(prior)['confirmed_at'])
+
+    def test_fresh_healthy_gap_resets_streak(self):
+        prior, _, claimed = self.prior(offsets=(1, 152, 212))
+        self.assertEqual(self.proof(prior)['streak'], 2)
+        self.assertIsNone(self.proof(prior)['confirmed_at'])
+        self.healthy(60)
+        self.assertEqual(self.proof(prior)['confirmed_at'], claimed+272)
+        self.assertEqual(self.outage()['policy']['cooldown_basis'], 'confirmed_recovery')
+
+    def test_accepted_error_partial_state_and_contradiction_reset_streak(self):
+        prior, _, _ = self.prior(offsets=(30, 60))
+        for bad in ('local_error', 'partial', 'probe_failed', 'contradictory_ping'):
+            with self.subTest(bad=bad):
+                self.now += 30
+                observation = self.observation(healthy=True)
+                if bad == 'local_error':
+                    observation['ssh'].update(command_succeeded=False, probe_valid=False, exit_code=255,
+                                              error_class='authentication_failed')
+                elif bad == 'partial': observation['peer_ping'].update(responded=False, exit_code=1)
+                elif bad == 'probe_failed': observation['state'] = 'probe_failed'
+                else: observation['peer_ping']['error_class'] = 'local_execution_failed'
+                self.core.ingest(observation)
+                self.assertEqual(self.proof(prior)['streak'], 0)
+                self.assertIsNone(self.proof(prior)['confirmed_at'])
+                self.healthy(30); self.healthy(30)
+                self.assertEqual(self.proof(prior)['streak'], 2)
+                self.assertIsNone(self.proof(prior)['confirmed_at'])
+        self.healthy(30)
+        self.assertIsNotNone(self.proof(prior)['confirmed_at'])
+
+    def test_preclaim_timestamp_cannot_count_as_postclaim_evidence(self):
+        iid = self.incident(); claim = self.core.claim_recovery('operator', iid)
+        self.core.report_recovery('operator', iid, claim['claim_id'], 'success')
+        with self.assertRaises(ValueError): self.core.ingest(self.observation(healthy=True))
+        self.assertIsNone(self.proof(iid))
+        self.healthy(1)
+        self.assertEqual(self.proof(iid)['streak'], 1)
+
+    def test_confirmation_survives_restart_and_subsequent_failed_samples(self):
+        prior, _, claimed = self.prior(); proof = self.proof(prior)
+        state = self.outage()
+        self.assertEqual(self.proof(prior), proof)
+        self.core = self.new_core()
+        after = self.core.get_current_recovery('operator')
+        self.assertEqual(after, {k:v for k,v in state.items() if k!='new_event_id'})
+        self.assertEqual(after['retry_at'], claimed + 600)
+        self.assertEqual(self.proof(prior), proof)
+
+    def test_legacy_closed_row_does_not_infer_confirmation(self):
+        prior, _, claimed = self.prior()
+        with self.core._db() as db:
+            db.execute('DELETE FROM recovery_confirmations WHERE incident_id=?', (prior,))
+        self.core = self.new_core()
+        state = self.outage()
+        self.assertEqual(state['policy']['cooldown_basis'], 'global')
+        self.assertEqual(state['retry_at'], claimed + 3600)
+
+    def test_unknown_failed_and_blocked_reports_keep_global_policy(self):
+        # Fresh databases isolate each outcome without altering the claim ledger.
+        for outcome in ('unknown', 'failed', 'blocked'):
+            with self.subTest(outcome=outcome):
+                path = self.path
+                self.path = path + '-' + outcome
+                self.core = self.new_core()
+                _, _, claimed = self.prior(outcome=outcome)
+                state = self.outage()
+                self.assertEqual(state['policy']['cooldown_basis'], 'global')
+                self.assertEqual(state['retry_at'], claimed + 3600)
+                self.path = path
+
+    def test_latest_claim_cannot_reuse_an_older_confirmation(self):
+        prior, _, claimed = self.prior(); self.outage()
+        state = self.fresh_failure_at(claimed + 600); iid = state['incident']['incident_id']
+        self.core.claim_recovery('operator', iid)
+        self.healthy(60)
+        state = self.outage()
+        self.assertEqual(state['policy']['cooldown_basis'], 'global')
+        self.assertEqual(state['retry_at'], claimed + 4200)
+        old = self.core.get_current_recovery('operator', prior)
+        self.assertEqual(old['eligibility_reason'], 'externally_recovered')
+        self.assertEqual(old['policy']['cooldown_basis'], 'global')
+
+    def test_ambiguous_latest_claim_or_open_incident_keeps_global_policy(self):
+        prior, _, claimed = self.prior()
+        state = self.outage(); current = state['incident']['incident_id']
+        with self.core._db() as db:
+            db.execute('INSERT INTO recovery_incidents VALUES(?,?,?,?,?,?,?)',
+                       ('tied-history','tied-event',claimed-1,claimed+1,'tied-claim',claimed,'success'))
+        self.assertEqual(self.core.get_current_recovery('operator',current)['policy']['cooldown_basis'], 'global')
+        with self.core._db() as db:
+            db.execute('DELETE FROM recovery_incidents WHERE id=?', ('tied-history',))
+            db.execute('INSERT INTO recovery_incidents VALUES(?,?,?,NULL,NULL,NULL,NULL)',
+                       ('ambiguous-open','ambiguous-event',self.now))
+        for iid in (current, 'ambiguous-open'):
+            self.assertEqual(self.core.get_current_recovery('operator',iid)['policy']['cooldown_basis'], 'global')
+        self.assertIsNotNone(self.proof(prior)['confirmed_at'])
+
+    def test_daily_budget_dominates_shorter_cooldown(self):
+        self.core = RecoveryTests.configured_core(self, max_claims_per_24h=1,
+                                                 new_incident_cooldown_seconds=600)
+        _, _, claimed = self.prior(); state = self.outage()
+        self.assertEqual(state['policy']['effective_cooldown_seconds'], 600)
+        self.assertEqual(state['eligibility_reason'], 'daily_limit')
+        self.assertEqual(state['retry_at'], claimed + 86400)
+        with self.assertRaises(RecoveryIneligible):
+            self.core.claim_recovery('operator', state['incident']['incident_id'])
+
+    def test_short_reminder_durable_and_concurrent_claim_stays_single(self):
+        _, _, claimed = self.prior(); state = self.outage(); iid = state['incident']['incident_id']
+        original = state['incident']['event_id']
+        with self.core._db() as db:
+            db.execute('INSERT INTO subscriptions VALUES(?,?,?,?,?,?,1)',
+                       ('short','operator','https://example.com/','{}','unused',self.now+86400))
+            db.execute("INSERT INTO outbox VALUES(?,?,'delivered',2,200)",(original,'short'))
+        self.now = claimed + 600
+        self.assertEqual(self.core.pending_delivery_ids('operator'), [])
+        self.failed_sample(); self.failed_sample(); state = self.failed_sample()
+        reminder = state['new_event_id']
+        self.assertIsNotNone(reminder); self.assertNotEqual(reminder, original)
+        self.core = self.new_core()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            rows = list(pool.map(lambda _:self.core.pending_delivery_ids('operator'), range(8)))
+        self.assertTrue(all(ids == [reminder] for ids in rows))
+        with self.core._db() as db:
+            self.assertEqual(tuple(db.execute('SELECT state,attempts,http_status FROM outbox WHERE event=?',
+                                             (original,)).fetchone()), ('delivered',2,200))
+            self.assertEqual(db.execute('SELECT notification_count FROM recovery_eligibility WHERE incident_id=?',
+                                        (iid,)).fetchone()[0], 1)
+        def claim(_):
+            try: self.core.claim_recovery('operator', iid); return True
+            except RecoveryIneligible: return False
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            self.assertEqual(sum(pool.map(claim,range(8))), 1)
+        self.assertEqual(self.core.pending_delivery_ids('operator'), [])
 
 
 if __name__=='__main__': unittest.main()

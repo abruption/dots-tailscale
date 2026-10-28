@@ -309,7 +309,8 @@ def load_recovery(cfg):
     return RecoveryCore(Path(cfg['runtime_dir'])/'recovery.sqlite',
                         cfg['allowed_callback_origins'], cfg['allowed_user'],
                         max_claims_per_24h=cfg.get('recovery_max_claims_per_24h', 3),
-                        cooldown_seconds=cfg.get('recovery_cooldown_seconds', 3600))
+                        cooldown_seconds=cfg.get('recovery_cooldown_seconds', 3600),
+                        new_incident_cooldown_seconds=cfg.get('recovery_new_incident_cooldown_seconds'))
 
 
 def main():
