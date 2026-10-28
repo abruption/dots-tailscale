@@ -36,6 +36,12 @@ SSH and relay ping succeeded, and public node/SSH identities matched the
 pre-update snapshot. The source package remained 0.6.0. External recovery was
 paused for cutover, then confirmed active again.
 
+A subsequent read-only compatibility snapshot found both binaries at mode 0700
+with one hardlink each, an owned runtime socket, exact supported daemon
+arguments, no pending proxy restart and a `Running` backend reporting
+`1.104.4-t938213198-gd38c96d6a`. This checks the existing launcher/runtime
+contract, not execution of the new migration.
+
 That trial is evidence for the deployed userspace/custom-socket/shim path at
 1.104.4. It was not a live test of this candidate's new installer or source
 baseline migration, a new 1.102.4-to-1.104.4 live transition, failure injection,
@@ -43,10 +49,11 @@ VM replacement, or state downgrade compatibility.
 
 ## Read-only host/shim trust review
 
-The running shim's Python verifier used OpenSSL **3.5.7 (9 Jun 2026)**. Its
-process had no `SSL_CERT_FILE`/`SSL_CERT_DIR` override, and a fresh verifier with
-the same CA environment found default CA file/directory paths. Its store held
-152 CA certificates and zero CRLs. These counts do not establish distrust of
+A read-only probe used the running shim's interpreter and CA override environment
+to create a new verifier with OpenSSL **3.5.7 (9 Jun 2026)**. The shim process had
+no `SSL_CERT_FILE`/`SSL_CERT_DIR` override. This fresh context found default CA
+file/directory paths and held 152 CA certificates and zero CRLs. The probe did
+not introspect the existing shim context's already-loaded trust store. These counts do not establish distrust of
 a particular certificate or safe revocation handling.
 
 The saved installation bundle did **not** begin with the current OS CA file.

@@ -206,15 +206,20 @@ install_all() {
   local tmp tgz url
   tmp="$(mktemp -d "$R/install.XXXXXX")"
   trap 'rm -rf -- "$tmp"' RETURN
-  if [[ -e "$D/tailscale" || -e "$D/tailscaled" ]]; then
+  if [[ -e "$D/tailscale" || -L "$D/tailscale" || -e "$D/tailscaled" || -L "$D/tailscaled" ]]; then
     [[ -x "$D/tailscale" && -x "$D/tailscaled" && ! -L "$D/tailscale" && ! -L "$D/tailscaled" ]] || fail 'partial or symlink binary installation'
-    python3 - "$SOURCE/dots-ts" "$D" "$TS_VERSION" <<'VERIFY_PAIR'
-import importlib.machinery, importlib.util, pathlib, sys
+    python3 -I - "$SOURCE/dots-ts" "$D" "$TS_VERSION" <<'VERIFY_PAIR' || fail 'existing Tailscale pair verification failed'
+import importlib.machinery, importlib.util, os, pathlib, stat, sys
 loader = importlib.machinery.SourceFileLoader('install_runtime', sys.argv[1])
 spec = importlib.util.spec_from_loader(loader.name, loader)
 tool = importlib.util.module_from_spec(spec); loader.exec_module(tool)
 try:
     directory = pathlib.Path(sys.argv[2]); minimum = sys.argv[3]
+    for name in ('tailscale', 'tailscaled'):
+        info = (directory / name).lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o700 or info.st_nlink != 1):
+            sys.exit('existing Tailscale pair rejected: unsafe_binary_file')
     current = tool.runtime_probe(directory / 'tailscale', 'version')
     tool.runtime_verify_pair(directory, current)
     if tool.runtime_version(current) < tool.runtime_version(minimum):
@@ -225,9 +230,9 @@ VERIFY_PAIR
   else
     tgz="tailscale_${TS_VERSION}_amd64.tgz"
     url="https://pkgs.tailscale.com/stable/$tgz"
-    curl -fsSL --max-time 300 --max-filesize 67108864 --proxy "$UPSTREAM_PROXY" "$url" -o "$tmp/$tgz"
-    curl -fsSL --max-time 30 --max-filesize 4096 --proxy "$UPSTREAM_PROXY" "$url.sha256" -o "$tmp/$tgz.sha256"
-    python3 - "$SOURCE/dots-ts" "$tmp" "$tgz" "$TS_VERSION" <<'STAGE_PAIR'
+    curl -fsSL --max-time 300 --max-filesize 67108864 --proxy "$UPSTREAM_PROXY" "$url" -o "$tmp/$tgz" || fail 'Tailscale archive download failed'
+    curl -fsSL --max-time 30 --max-filesize 4096 --proxy "$UPSTREAM_PROXY" "$url.sha256" -o "$tmp/$tgz.sha256" || fail 'Tailscale checksum download failed'
+    python3 -I - "$SOURCE/dots-ts" "$tmp" "$tgz" "$TS_VERSION" <<'STAGE_PAIR' || fail 'Tailscale archive/pair verification failed'
 import importlib.machinery, importlib.util, os, pathlib, sys
 loader = importlib.machinery.SourceFileLoader('install_runtime', sys.argv[1])
 spec = importlib.util.spec_from_loader(loader.name, loader)

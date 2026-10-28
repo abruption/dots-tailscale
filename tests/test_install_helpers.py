@@ -121,6 +121,30 @@ class InstallHelpersTests(unittest.TestCase):
         archive = output.getvalue()
         self.fresh_download(archive, hashlib.sha256(archive).hexdigest(), success=True)
 
+    def call_install_in_condition(self):
+        text = self.entry.read_text()
+        self.assertTrue(text.endswith('install_all\n'))
+        self.entry.write_text(text[:-len('install_all\n')] + 'if install_all; then exit 0; else exit 1; fi\n')
+        manifest_path = self.source / 'source-manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['files']['tailscale-setup.sh'] = hashlib.sha256(self.entry.read_bytes()).hexdigest()
+        manifest_path.write_text(json.dumps(manifest))
+
+    def test_pair_failure_stops_even_inside_shell_condition(self):
+        self.call_install_in_condition()
+        for name in ('tailscale', 'tailscaled'):
+            (self.d / name).write_text('#!/bin/sh\necho 1.102.4\n')
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('baseline_upgrade_required', result.stderr)
+        self.assertFalse((self.d / 'installed').exists())
+        self.assert_identity_preserved()
+
+    def test_archive_failure_stops_even_inside_shell_condition(self):
+        self.call_install_in_condition()
+        result = self.fresh_download(b'bad archive fixture', '0'*64)
+        self.assertIn('checksum_mismatch', result.stderr)
+
     def test_fresh_download_checksum_failure_never_places_pair(self):
         result = self.fresh_download(b'bad archive fixture', '0'*64)
         self.assertIn('checksum_mismatch', result.stderr)
@@ -145,6 +169,40 @@ class InstallHelpersTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("baseline_upgrade_required", result.stderr)
         self.assertFalse((self.d / "installed").exists())
+        self.assert_identity_preserved()
+
+    def test_unsafe_existing_pair_is_rejected_without_executing_it(self):
+        import os
+        marker = self.source / 'executed'
+        original = (self.d / 'tailscale').read_bytes()
+        for unsafe in ('hardlink', 'writable'):
+            with self.subTest(unsafe=unsafe):
+                binary = self.d / 'tailscale'
+                binary.write_text('#!/bin/sh\ntouch ' + shlex.quote(str(marker)) + '\necho 1.104.4\n')
+                link = self.source / 'hardlink'
+                if unsafe == 'hardlink':
+                    os.link(binary, link)
+                else:
+                    binary.chmod(0o777)
+                result = self.install()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('unsafe_binary_file', result.stderr)
+                self.assertFalse(marker.exists())
+                self.assertFalse((self.d / 'installed').exists())
+                if link.exists():
+                    link.unlink()
+                binary.write_bytes(original); binary.chmod(0o700)
+                self.assert_identity_preserved()
+
+    def test_dangling_pair_symlink_is_rejected_before_download(self):
+        for name in ('tailscale', 'tailscaled'):
+            (self.d / name).unlink()
+        (self.d / 'tailscale').symlink_to(self.source / 'absent-victim')
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('partial or symlink binary installation', result.stderr)
+        self.assertFalse((self.source / 'absent-victim').exists())
+        self.assertFalse((self.d / 'tailscaled').exists())
         self.assert_identity_preserved()
 
     def test_partial_pair_is_not_completed_implicitly(self):
