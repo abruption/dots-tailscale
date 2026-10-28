@@ -25,7 +25,7 @@ A pending incident uses that shorter interval only if all conditions hold:
 
 - It is distinct from the uniquely latest claimed incident and was created
   after that incident's qualified external recovery.
-- The prior claimed incident is closed and has an explicit success report.
+- The prior claimed incident is closed and its first accepted explicit report is success.
 - At least three distinct consecutive accepted `verified_running` observations
   after the claim show both SSH and ping healthy, with no local-error markers.
   They must span at least 60s, with gaps no longer than 150s.
@@ -33,11 +33,19 @@ A pending incident uses that shorter interval only if all conditions hold:
   `recovery_confirmations` table. Historical closed rows and report text alone
   are not evidence. Ambiguous ledger rows fall back to the global interval.
 
-Accepted errors or partial health reset an unconfirmed streak. Exact duplicates
-and rejected stale/out-of-order/malformed inputs never advance it; rejected
+Accepted errors or partial health reset an unconfirmed streak. Retransmissions with the same timestamp and normalized connection result,
+and rejected stale/out-of-order/malformed inputs, never advance it; rejected
 requests do not mutate proof. A long gap resets the streak. Once confirmed,
 the real recovered boundary is retained across later failures and restarts.
 A newer claim cannot reuse another incident's evidence.
+
+Evidence slots are created atomically with claims issued by the new code. Legacy
+claims, including claims issued while older code was running, cannot gain the
+shorter interval merely by receiving new healthy samples. The first explicit
+report is recorded separately in `recovery_reports`; an explicit unknown report
+cannot become short-path success through a later result correction. The existing
+result-reporting interface may still update an unknown displayed outcome, but
+that does not change the first-report evidence.
 
 If the prior outcome is unknown, failed or blocked, or evidence is insufficient,
 the full global interval applies. The daily limit always applies, and its later
@@ -54,6 +62,9 @@ their existing restrictions.
 | `new_incident_cooldown_seconds` | Optional configured interval; `null` means disabled. |
 | `effective_cooldown_seconds` | Interval selected for the queried incident. |
 | `cooldown_basis` | `global` or `confirmed_recovery`. |
+
+`incident.first_report` exposes the first accepted outcome/time; a later correction
+to the displayed incident outcome is not sufficient short-path evidence.
 
 With no qualified pending incident, a configured 600s value can correctly appear
 alongside an effective 3600s/global policy. Do not infer that configuration was
@@ -75,15 +86,20 @@ KR's existing mail connector changes must be retained: add the new argument to
 
 The helper `new_incident_policy_deployment.py` performs pinned, operator-selected
 code/configuration changes only during a fresh healthy and quiescent window.
-Read-only preflight does not load the new core against the live DB; its
+The helper requires its pinned `/var/lib/dots-events` data directory and checks
+socket, broker and Caddy separately. Read-only preflight does not load the new core against the live DB; its
 constructor creates the additive schema only inside the controlled deployment.
 Code/configuration are backed up privately. On failure restore code/config only;
 **never rewind the ledger DB** to erase claims or callback progress. The harmless
-additive table can remain when rolling back code.
+additive tables can remain when rolling back code. If a new claim was issued
+after restart, the helper stops for operator attention rather than automatically
+putting an older reporting implementation under that in-flight claim. Arbitrary
+mixed-version handling cannot retroactively prove a first report.
 
 No synthetic production claim, outage, callback or recovery command is needed
 for installation verification. Confirm the configured policy, active service,
-fresh observations and natural healthy evidence. Actual later recovery remains
+fresh observations and natural healthy evidence for newly issued claims. With
+only legacy claims, confirmation evidence is deliberately not backfilled. Actual later recovery remains
 a separate end-to-end observation. To disable the short path, remove/set the
 new configuration key to `null` through a controlled operator change; leave all
 budgets and histories intact.
