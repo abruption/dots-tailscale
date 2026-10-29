@@ -1,0 +1,2 @@
+# Developer/CI tool only; not installed by tailscale-setup.sh or dots-ts.
+ruff==0.17.3
