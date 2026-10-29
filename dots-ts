@@ -101,11 +101,14 @@ def package_report(directory, layout="installed", manifest_directory=None):
     return report
 
 
-def tailscale_version(directory):
+def local_binary_version(directory, name, argument):
     """Bound both execution time and captured output; never contact the daemon."""
     process = None
     try:
-        process = subprocess.Popen([str(directory / "tailscale"), "version"],
+        # Diagnostics must not follow a symlink or execute a non-regular leaf.
+        if not stat.S_ISREG((directory / name).lstat().st_mode):
+            return {"version": None, "status": "unavailable"}
+        process = subprocess.Popen([str(directory / name), argument],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         deadline = time.monotonic() + MANAGEMENT_TIMEOUT
         output = bytearray()
@@ -136,6 +139,128 @@ def tailscale_version(directory):
                 process.kill()
             process.wait()
             process.stdout.close()
+
+
+def tailscale_version(directory):
+    return local_binary_version(directory, "tailscale", "version")
+
+
+def runtime_release(version):
+    """Return a release identity without mistaking Tailscale's -t<git> for an RC.
+
+    Build identifiers remain in the displayed version. Unrecognized prerelease
+    forms are never ordered against a stable installation declaration.
+    """
+    if not isinstance(version, str) or len(version) > 128:
+        return None
+    match = re.fullmatch(r"((?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8}))"
+                         r"(-[A-Za-z0-9][A-Za-z0-9.-]{0,79})?(?:\+[A-Za-z0-9][A-Za-z0-9.-]{0,39})?", version)
+    if match is None:
+        return None
+    suffix = match.group(2)
+    kind = ("stable" if suffix is None else "release_build" if re.fullmatch(r"-t[0-9a-f]{7,64}", suffix)
+            else "prerelease")
+    return tuple(int(part) for part in match.group(1).split(".")), kind
+
+
+def installed_baseline(directory):
+    """Read a single literal declaration; never source an installed shell file."""
+    report = {"version": None, "status": "missing", "source": "setup.sh"}
+    try:
+        payload = bounded_code_read(directory, "setup.sh", 8 * 1024 * 1024)
+    except FileNotFoundError:
+        return report
+    except (OSError, ValueError):
+        report["status"] = "unavailable"
+        return report
+    matches = re.findall(rb'^TS_VERSION=(?:"([0-9]+\.[0-9]+\.[0-9]+)"|([0-9]+\.[0-9]+\.[0-9]+))$', payload, re.M)
+    assignments = re.findall(rb'^[ \t]*(?:export[ \t]+)?TS_VERSION[ \t]*=', payload, re.M)
+    if len(matches) != 1 or len(assignments) != 1:
+        report["status"] = "invalid_declaration"
+        return report
+    version = (matches[0][0] or matches[0][1]).decode("ascii")
+    if runtime_release(version) is None:
+        report["status"] = "invalid_declaration"
+        return report
+    report.update(version=version, status="declared")
+    return report
+
+
+def baseline_observation(probe, expected):
+    """Keep only bounded version data and fixed status/comparison tokens."""
+    statuses = {"available", "timeout", "unavailable", "invalid_response", "skipped", "not_queried", "missing"}
+    status = probe.get("status") if isinstance(probe, dict) else "invalid_response"
+    report = {"version": None, "status": status if status in statuses else "invalid_response",
+              "release_kind": "unknown", "comparison": "unknown"}
+    if report["status"] != "available":
+        return report
+    version = probe.get("version")
+    parsed = runtime_release(version)
+    if parsed is None:
+        report["status"] = "invalid_response"
+        return report
+    release, kind = parsed
+    report.update(version=version, release_kind=kind)
+    if kind == "prerelease":
+        report["comparison"] = "not_comparable"
+    elif expected is not None:
+        report["comparison"] = "below" if release < expected else "above" if release > expected else "equal"
+    return report
+
+
+def runtime_baseline_report(directory, package=None, cli=None, backend=None):
+    """Offline evidence, separate from connectivity and from advisory policy.
+
+    version never queries a daemon. doctor supplies its existing socket reply,
+    so no additional backend request is needed for this comparison.
+    """
+    declaration = installed_baseline(directory)
+    parsed = runtime_release(declaration["version"])
+    expected = parsed[0] if parsed is not None else None
+    package = package_report(directory) if package is None else package
+    declaration["package_integrity"] = package["integrity"]
+    if cli is None:
+        cli = tailscale_version(directory)
+    backend = {"version": None, "status": "not_queried"} if backend is None else backend
+    reports = {"cli": baseline_observation(cli, expected),
+               "daemon_binary": baseline_observation(local_binary_version(directory, "tailscaled", "--version"), expected),
+               "backend": baseline_observation(backend, expected)}
+    queried = reports["backend"]["status"] != "not_queried"
+    required = ("cli", "daemon_binary", "backend") if queried else ("cli", "daemon_binary")
+    available = [runtime_release(item["version"]) for item in reports.values() if item["status"] == "available"]
+    releases = {item[0] for item in available}
+    consistency = "mismatch" if len(releases) > 1 else "match" if len(available) >= 2 else "unknown"
+    if consistency == "mismatch":
+        assessment = "version_mismatch"
+    elif declaration["status"] != "declared":
+        assessment = "unknown_baseline"
+    elif declaration["package_integrity"] != "match":
+        assessment = "unverified_declaration"
+    elif any(item["comparison"] == "below" for item in reports.values()):
+        assessment = "below_baseline"
+    elif any(item["release_kind"] == "prerelease" for item in reports.values()):
+        assessment = "nonstable_version"
+    elif any(reports[name]["status"] != "available" for name in required):
+        assessment = "unknown"
+    else:
+        assessment = "meets_declared_baseline" if queried else "local_binaries_meet_baseline"
+    return {"schema_version": 1, "declaration": declaration, **reports,
+            "consistency": consistency, "assessment": assessment,
+            "scope": "binary_pair_and_backend" if queried else "local_binary_pair_only",
+            "advisory_policy": "not_evaluated"}
+
+
+def print_runtime_baseline(report):
+    declaration = report["declaration"]
+    print("Tailscale declared installation baseline: " + (declaration["version"] or declaration["status"]))
+    print("baseline declaration integrity: " + declaration["package_integrity"])
+    for name, label in (("cli", "CLI"), ("daemon_binary", "daemon binary"), ("backend", "running backend")):
+        item = report[name]
+        print("Tailscale " + label + ": " + (item["version"] or item["status"])
+              + "; comparison with baseline: " + item["comparison"])
+    print("runtime version agreement: " + report["consistency"])
+    print("runtime baseline assessment: " + report["assessment"] + " (" + report["scope"] + ")")
+    print("security advisory policy: not evaluated by this offline comparison")
 
 
 # All update requests are unauthenticated and confined to this repository.
@@ -2164,18 +2289,24 @@ def doctor(directory, runtime, target=None):
                 checks["state"] = "empty"
         except OSError:
             checks["state"] = "unknown"
+    backend_version = {"version": None, "status": "skipped"}
     connection = socket_connection(runtime) if checks["socket"] == "present" else "skipped"
     if connection not in ("connectable", "skipped"):
         checks["socket_response"] = connection
         checks["backend"] = "unavailable"
+        backend_version["status"] = connection if connection in ("timeout", "unavailable") else "unavailable"
     if connection == "connectable" and checks["files"]["tailscale"] == "present":
         try:
             result = run_cli(directory, runtime, ["status", "--json"])
             checks["socket_response"] = "responsive" if result.returncode == 0 else "unavailable"
             if result.returncode:
                 checks["backend"] = "unavailable"
+                backend_version["status"] = "unavailable"
             else:
-                state = json.loads(result.stdout).get("BackendState")
+                status = json.loads(result.stdout)
+                backend_version = {"version": status.get("Version"),
+                                   "status": "available" if "Version" in status else "missing"}
+                state = status.get("BackendState")
                 checks["backend"] = {"Running": "running", "NeedsLogin": "needs_login", "NoState": "no_state",
                                      "Stopped": "stopped", "Starting": "starting", "NeedsMachineAuth": "needs_approval"}.get(state, "unknown")
                 checks["authentication"] = {"Running": "authenticated", "NeedsLogin": "needs_login",
@@ -2183,11 +2314,15 @@ def doctor(directory, runtime, target=None):
         except subprocess.TimeoutExpired:
             checks["backend"] = "timeout"
             checks["socket_response"] = "timeout"
+            backend_version["status"] = "timeout"
         except OSError:
             checks["backend"] = "unavailable"
             checks["socket_response"] = "unavailable"
+            backend_version["status"] = "unavailable"
         except (ValueError, TypeError, AttributeError):
             checks["backend"] = "invalid_response"
+            backend_version = {"version": None, "status": "invalid_response"}
+    checks["runtime_baseline"] = runtime_baseline_report(directory, package=checks["package"], backend=backend_version)
     if target is not None:
         host, port = target_parts(target)
         try:
@@ -2421,6 +2556,7 @@ def main(argv=None):
             return update_check_exit(report)
         if options.command == "version":
             report = {"package": package_report(directory), "tailscale": tailscale_version(directory)}
+            report["runtime_baseline"] = runtime_baseline_report(directory, package=report["package"], cli=report["tailscale"])
             if options.json:
                 print(json.dumps(report, sort_keys=True))
             else:
@@ -2428,7 +2564,7 @@ def main(argv=None):
                 print("dots-ts package: " + (package["declared_version"] or "unknown"))
                 print("source revision: unknown")
                 print("source integrity: " + package["integrity"] + " (" + package["reason"] + ")")
-                print("Tailscale: " + (report["tailscale"]["version"] or report["tailscale"]["status"]))
+                print_runtime_baseline(report["runtime_baseline"])
             return int(report["package"]["integrity"] in ("mismatch", "incomplete"))
         if options.target is not None:
             target_parts(options.target)
@@ -2438,7 +2574,10 @@ def main(argv=None):
         else:
             print("dots-ts doctor: " + report["overall"])
             for category, value in report["checks"].items():
-                print(category + ": " + json.dumps(value, sort_keys=True))
+                if category == "runtime_baseline":
+                    print_runtime_baseline(value)
+                else:
+                    print(category + ": " + json.dumps(value, sort_keys=True))
             print("target_scope: tcp_only")
             print("context: " + json.dumps(report["context"], sort_keys=True))
             print("skipped_checks: " + json.dumps(report["skipped_checks"]))
