@@ -305,8 +305,26 @@ int main(int argc, char **argv) {
             daemon.kill()
             daemon.wait(timeout=3)
             self.assertTrue((self.runtime / 'tailscaled.sock').exists())
-            eligible = lifecycle.ORIGINAL_PROBE(self.directory, self.runtime, self.state())
-            self.assertEqual(eligible['managed_socket_cleanup'], 'eligible')
+            inspected_processes = []
+            inspected_sockets = []
+            real_socket_status = tool.socket_status
+            def inspect_processes(directory):
+                value = REAL_PROCESS_CHECKS(directory)
+                inspected_processes.append(value)
+                return value
+            def inspect_socket(path):
+                value = real_socket_status(path)
+                inspected_sockets.append(value)
+                return value
+            # Record the actual inputs consumed by the probe without replacing
+            # uncertain/negative evidence with a successful fixture value.
+            with mock.patch.object(tool, 'process_checks', side_effect=inspect_processes), \
+                    mock.patch.object(tool, 'socket_status', side_effect=inspect_socket):
+                eligible = lifecycle.ORIGINAL_PROBE(self.directory, self.runtime, self.state())
+            inspection = {'probe': eligible, 'process_checks': inspected_processes,
+                          'socket_status': inspected_sockets}
+            self.assertEqual(eligible.get('state'), 'components_missing', inspection)
+            self.assertEqual(eligible.get('managed_socket_cleanup'), 'eligible', inspection)
             self.probe.side_effect = [eligible, {'state': 'healthy'}]
             def staged_start(*args, **kwargs):
                 self.assertFalse((self.runtime / 'tailscaled.sock').exists())
