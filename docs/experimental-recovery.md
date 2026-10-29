@@ -2,6 +2,26 @@
 
 [한국어](experimental-recovery.ko.md)
 
+## v0.8.0 development integration
+
+The new local coordination path is an opt-in development candidate, not a change
+to existing tasks or the published v0.7.1 package. Follow the
+[setup and publication gates](recovery-support-readiness.md) and
+[local lifecycle guide](recovery-lifecycle.md). A separately deployed broker
+keeps its legacy startup command unless `recovery_local_coordination: true` is
+explicitly configured after the matching local helper is ready. Use the versioned
+[English](../research/mcp-events/coordinated-recovery-instructions.en.txt) or
+[Korean](../research/mcp-events/coordinated-recovery-instructions.ko.txt) coordinated
+instruction template only in that mode. The older trial instructions below
+remain historical/legacy guidance; switching packages does not rewrite them.
+
+The coordinated local execution budget and external claim budget remain separate.
+Switch both actor paths and stop the old private watchdog before describing
+local attempts as shared. A local-ready result still requires external SSH/ping
+confirmation. A second real ChatGPT account is unavailable for this milestone's
+trial, so new-account setup and general support remain unverified; the clean
+two-owner fixtures are not evidence of that live gate.
+
 This is an **advanced-user experiment** for asking Dots to restart an existing dots-tailscale installation after an externally observed outage. It requires infrastructure outside Dots and an authorized Dots task. It is not enabled by installing the normal package, and there is no one-click installer or guarantee that every outage will recover.
 
 ## What has been observed

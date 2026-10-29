@@ -56,6 +56,15 @@ class RecoveryServerPolicyTests(unittest.TestCase):
         self.assertIsNone(load_recovery({'enable_recovery': False}))
         self.assertEqual(list(Path(self.tmp.name).iterdir()), [])
 
+    def test_local_coordination_requires_its_own_explicit_boolean(self):
+        self.assertEqual(load_recovery(self.config).get_current_recovery('alice')['execution_mode'], 'legacy_start')
+        selected = load_recovery({**self.config, 'recovery_local_coordination': True})
+        self.assertEqual(selected.get_current_recovery('alice')['execution_mode'], 'coordinated')
+        for value in ('true', 1, None):
+            with self.assertRaises(ValueError):
+                load_recovery({**self.config, 'recovery_local_coordination': value})
+        self.assertIsNone(load_recovery({'enable_recovery': False, 'recovery_local_coordination': True}))
+
 
 class PolicyErrorHTTPTests(unittest.TestCase):
     def test_structured_policy_denial_survives_mcp_transport(self):
