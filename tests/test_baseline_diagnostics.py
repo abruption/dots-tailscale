@@ -96,6 +96,20 @@ class BaselineDiagnosticTests(unittest.TestCase):
         self.assertNotIn("vulnerable", json.dumps(report))
         self.assertNotIn("secure", json.dumps(report))
 
+    def test_real_installer_declaration_and_exact_snapshot_binding(self):
+        (self.directory / 'setup.sh').write_bytes((ROOT / 'tailscale-setup.sh').read_bytes())
+        self.manifest()
+        report = self.report('1.104.4')
+        self.assertEqual(report['declaration']['version'], '1.104.4')
+        self.assertEqual(report['declaration']['status'], 'declared')
+        self.assertEqual(report['declaration']['source_integrity'], 'match')
+        previous = tool.package_report(self.directory)
+        (self.directory / 'setup.sh').write_text('TS_VERSION=1.106.0\n')
+        self.manifest()
+        mixed = self.report(package=previous)
+        self.assertEqual(mixed['declaration']['source_integrity'], 'mismatch')
+        self.assertEqual(mixed['assessment'], 'unverified_declaration')
+
     def test_missing_invalid_duplicate_and_unreadable_declarations(self):
         path = self.directory / "setup.sh"
         for body in ("fixture", "TS_VERSION=PRIVATE\n", "TS_VERSION=1.104.4\nTS_VERSION=1.102.4\n",
@@ -169,7 +183,7 @@ class BaselineDiagnosticTests(unittest.TestCase):
         self.assertEqual(report["daemon_binary"]["status"], "unavailable")
         self.assertEqual(report["assessment"], "unknown")
         path = self.directory / "tailscaled"
-        path.write_text("#!" + sys.executable + "\nimport time; time.sleep(10)\n")
+        path.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + " -c 'import time; time.sleep(10)'\n")
         path.chmod(0o700)
         with mock.patch.object(tool, "MANAGEMENT_TIMEOUT", 0.05):
             report = self.report()

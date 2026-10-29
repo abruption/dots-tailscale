@@ -337,6 +337,26 @@ class AdmissionTests(unittest.TestCase):
         with self.track_threads():
             self.reusable(admission)
 
+    def test_non_socket_websocket_worker_error_wakes_parent_and_returns_slot(self):
+        admission = shim.ConnectionAdmission(1)
+        conn = ScriptedSocket([b"CONNECT example.test:443 HTTP/1.1\r\n\r\n",
+                               b"GET /derp HTTP/1.1\r\nHost: example.test\r\nUpgrade: DERP\r\n\r\n"], wait_at_eof=True)
+        upstream = ScriptedSocket([valid_response], wait_at_eof=True)
+        exceptions = []
+        with self.track_threads(), \
+                mock.patch.object(shim.threading, 'excepthook', side_effect=lambda args: exceptions.append(args.exc_type)), \
+                mock.patch.object(shim, 'recv_exact', side_effect=MemoryError('controlled fixture')), \
+                mock.patch.object(shim, "upstream_connect", return_value=(upstream, b"")), \
+                mock.patch.object(shim, "leaf", return_value=IdentityTLS()), \
+                mock.patch.object(shim, "up_ctx", IdentityTLS()):
+            self.assertTrue(admission.dispatch(conn))
+            self.joined()
+            self.assertEqual(exceptions, [MemoryError])
+            self.assertTrue(conn.closed.is_set())
+            self.assertTrue(upstream.closed.is_set())
+        with self.track_threads():
+            self.reusable(admission)
+
     def test_two_normal_websocket_bridges_stay_bounded_and_outlive_setup(self):
         admission = shim.ConnectionAdmission(2)
         clients = [self.pair() for _ in range(2)]

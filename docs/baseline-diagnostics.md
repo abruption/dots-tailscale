@@ -5,6 +5,10 @@ stable release is v0.7.1; publishing this branch does not upgrade an installatio
 
 `dots-ts version` and `dots-ts doctor` compare the Tailscale versions visible in the current execution context with the `TS_VERSION` declaration in the installation's `setup.sh`. They do not update anything, restart a process, change authentication or fetch security advisories.
 
+The declaration's `sha256` and `source_integrity` bind it to the exact setup
+bytes checked against the source manifest. If files change between observations,
+an older package snapshot cannot silently verify a newly read declaration.
+
 ```bash
 /workspace/.dots-tailscale/dots-ts version --json
 /workspace/.dots-tailscale/dots-ts doctor --json

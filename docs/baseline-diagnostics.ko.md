@@ -6,6 +6,8 @@
 
 `dots-ts version`과 `dots-ts doctor`는 현재 실행 환경에서 보이는 Tailscale 버전을 설치의 `setup.sh`에 선언된 `TS_VERSION`과 비교합니다. 업데이트·프로세스 재시작·인증 변경·보안 권고 조회는 하지 않습니다.
 
+선언의 `sha256`과 `source_integrity`는 실제로 읽은 setup 파일이 소스 명세로 검증한 바이트와 같은지 보여줍니다. 조회 도중 파일이 바뀌면 예전 패키지 검사 결과로 새 선언을 검증했다고 처리하지 않습니다.
+
 ```bash
 /workspace/.dots-tailscale/dots-ts version --json
 /workspace/.dots-tailscale/dots-ts doctor --json

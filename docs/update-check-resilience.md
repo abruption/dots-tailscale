@@ -26,6 +26,8 @@ or publisher-identity check. `selection` and `evidence` both say `local_bundle`;
 the `trust` field makes this limit explicit. A newer local version is not proof
 that the bundle is an authorized stable release. Do not substitute this result for
 the separately enforced provenance and recovery gates when applying an update.
+This inspection accepts stable declared versions only; a development bundle is
+not advertised as a stable update candidate.
 
 `--bundle` and `--tag` are mutually exclusive. A proxy does not apply to a local
 bundle. Package/bundle integrity errors remain errors. Older clients do not have
@@ -39,24 +41,32 @@ The tool keeps only bounded numeric `Retry-After` seconds and
 `X-RateLimit-Reset` epoch seconds, plus a computed `retry_at`. It never prints
 raw error text, arbitrary headers, tokens, or the proxy address. If usable retry
 headers are absent, the local backoff is one minute. Supported header windows are
-bounded to 24 hours; `retry_at` is advisory and never permission to execute code.
+clamped to 24 hours; `retry_at` is advisory and never permission to execute code.
 
 The next package check, notification refresh, or package apply using the same
 explicit proxy returns that failure from the private local error cache until the
 window expires. The JSON `evidence` is then `rate_limit_cache`, not
 `github_live`. A changed tag cannot evade a known quota window; a different
-explicit proxy is a separate cache scope. Successful release metadata is not
+explicit proxy is a separate cache scope. Host/scheme case and a final `/` are
+normalized, so those spelling changes do not evade the same window. Successful release metadata is not
 cached or substituted for a failed/fresh check. The cache stores only one current
 proxy scope as a hash; it is a best-effort local throttle, not cross-machine quota
 coordination or a promise that concurrent first requests never race.
 
-Malformed, future-dated, unsafe, read-only or unavailable cache storage does not
-turn an error into success. When a new limit cannot be saved, output includes
-`warning: backoff_storage_unavailable`; repeated invocations may therefore make
-requests. Do not repeatedly poll an unavailable cache. Diagnose the private
+Malformed, future-dated, unsafe, read-only or unavailable error-cache storage is
+never used as positive release evidence. A fresh validated GitHub response can
+still be reported with `evidence: github_live` and the separate
+`warning: backoff_storage_unavailable`; a cache failure is not a failed GitHub
+response, nor permission to reuse a stale successful result. A failed live
+request remains a failed check. When a new limit cannot be saved the same warning
+explains that repeated invocations may make requests. A malformed JSON cache can
+be replaced after a new limit only if its regular-file, owner, mode and link
+checks pass. Unsafe files are not repaired or followed. Do not repeatedly poll an unavailable cache. Diagnose the private
 installation directory rather than weakening permissions or adding credentials.
 
-The existing bounded downloads, repository/tag/URL checks, manifest checks,
+Limit responses from later source and proof-asset downloads also enter this
+same window; notification refresh reuses its already-held metadata lock instead
+of recursively trying to take it. The existing bounded downloads, repository/tag/URL checks, manifest checks,
 independent recovery-terminal confirmation and transaction safeguards still apply.
 An API-light pinned-tag shortcut is deliberately not used: it would need to retain
 stable-publication and provenance checks, including the work tracked in #67.

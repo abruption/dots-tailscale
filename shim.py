@@ -266,9 +266,9 @@ def _ws_bridge(c, u, req_head, host, initial_data=b""):
                     with wlock: u.sendall(ws_frame(0xA, payload))
                 elif op == 8: break
         except OSError: pass
-        for x in (c, u):
-            try: x.shutdown(socket.SHUT_RDWR)
-            except OSError: pass
+        finally:
+            # Non-socket failures must also wake the other forwarding side.
+            shutdown(c, u)
     # read_head() may have consumed protocol bytes after the HTTP headers.
     # Flush them after the upstream Upgrade, before reading any later bytes.
     worker = None

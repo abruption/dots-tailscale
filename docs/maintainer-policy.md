@@ -22,6 +22,14 @@ These checks run on every pull request in the core workflow. Path-filtered
 when research changes, but are not unconditional required checks: an unrelated
 pull request must not wait forever for a workflow that was not triggered.
 
+The app ID binds a check to **GitHub Actions**, not to the reviewed contents of a
+particular workflow revision. A PR can change a workflow while keeping its job
+names, and a skipped required job may satisfy GitHub's check evaluation. Review
+workflow changes before merge and do not add conditions that silently skip a
+required job. Provider/context success is not proof of independently reviewed
+test contents. These four names describe classic branch protection; separately
+added rulesets may impose more requirements and must be inspected too.
+
 The solo-maintainer candidate requires zero native GitHub approval reviews. This
 does not remove the project's requested independent review before opening a
 change PR: freeze the reviewed revision, record each reviewer's evidence, address
@@ -50,7 +58,8 @@ do not routinely bypass a missing check just to preserve its old base.
 ## Apply, inspect and roll back
 
 Use the reviewed `scripts/repository_security.py` helper. `inspect` is read-only;
-`apply` requires explicit owner confirmation and captures the current policy in a
+`apply` requires the operator's explicit `--confirm-owner` flag (not identity
+verification) and captures the current policy in a
 private operator-selected backup before changing settings. It does not merge a
 PR, publish a release, configure automatic deployment or revoke credentials.
 
@@ -64,3 +73,9 @@ settings readback alone does not prove a real merge was refused. Record that
 experiment separately from mocked helper tests. Do not attempt a real merge as
 a test. Restoring a prior policy is an owner action, not an automatic response to
 a failed check.
+
+If the observation uses an administrator credential, record that privilege and
+the remaining bypass path. API/UI merge eligibility is an observation of the
+normal protection evaluation, not an actual non-administrator merge rejection.
+The selected approval count is zero, so a missing native review is deliberately
+not a blocking condition; independent CLI review remains a documented procedure.

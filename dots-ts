@@ -56,7 +56,7 @@ def bounded_code_read(directory, relative, limit):
 
 def package_report(directory, layout="installed", manifest_directory=None):
     report = {"declared_version": None, "source_revision": None,
-              "integrity": "unknown", "reason": "metadata_missing", "files": {}}
+              "integrity": "unknown", "reason": "metadata_missing", "files": {}, "verified_hashes": {}}
     try:
         raw = bounded_code_read(manifest_directory or directory, MANIFEST, 16384)
     except FileNotFoundError:
@@ -89,7 +89,10 @@ def package_report(directory, layout="installed", manifest_directory=None):
     for source, installed in CORE_FILES.items():
         try:
             payload = bounded_code_read(directory, source if layout == "source" else installed, 8 * 1024 * 1024)
-            status = "match" if hashlib.sha256(payload).hexdigest() == metadata["files"][source] else "mismatch"
+            digest = hashlib.sha256(payload).hexdigest()
+            status = "match" if digest == metadata["files"][source] else "mismatch"
+            if status == "match":
+                report["verified_hashes"][source] = digest
         except FileNotFoundError:
             status = "missing"
         except (OSError, ValueError):
@@ -133,7 +136,9 @@ def local_binary_version(directory, name, argument):
         return {"version": first, "status": "available"}
     except subprocess.TimeoutExpired:
         return {"version": None, "status": "timeout"}
-    except (OSError, UnicodeError):
+    except UnicodeError:
+        return {"version": None, "status": "invalid_response"}
+    except OSError:
         return {"version": None, "status": "unavailable"}
     finally:
         if process is not None:
@@ -175,6 +180,7 @@ def installed_baseline(directory):
     except (OSError, ValueError):
         report["status"] = "unavailable"
         return report
+    report["sha256"] = hashlib.sha256(payload).hexdigest()
     matches = re.findall(rb'^TS_VERSION=(?:"([0-9]+\.[0-9]+\.[0-9]+)"|([0-9]+\.[0-9]+\.[0-9]+))$', payload, re.M)
     assignments = re.findall(rb'^[ \t]*(?:export[ \t]+)?TS_VERSION[ \t]*=', payload, re.M)
     if len(matches) != 1 or len(assignments) != 1:
@@ -221,6 +227,9 @@ def runtime_baseline_report(directory, package=None, cli=None, backend=None):
     expected = parsed[0] if parsed is not None else None
     package = package_report(directory) if package is None else package
     declaration["package_integrity"] = package["integrity"]
+    verified = package.get("verified_hashes", {}).get("tailscale-setup.sh")
+    declaration["source_integrity"] = ("match" if verified and verified == declaration.get("sha256")
+                                       else "mismatch" if verified else "unknown")
     if cli is None:
         cli = tailscale_version(directory)
     backend = {"version": None, "status": "not_queried"} if backend is None else backend
@@ -236,7 +245,7 @@ def runtime_baseline_report(directory, package=None, cli=None, backend=None):
         assessment = "version_mismatch"
     elif declaration["status"] != "declared":
         assessment = "unknown_baseline"
-    elif declaration["package_integrity"] != "match":
+    elif declaration["package_integrity"] != "match" or declaration["source_integrity"] != "match":
         assessment = "unverified_declaration"
     elif any(item["comparison"] == "below" for item in reports.values()):
         assessment = "below_baseline"
@@ -255,7 +264,8 @@ def runtime_baseline_report(directory, package=None, cli=None, backend=None):
 def print_runtime_baseline(report):
     declaration = report["declaration"]
     print("Tailscale declared installation baseline: " + (declaration["version"] or declaration["status"]))
-    print("baseline declaration integrity: " + declaration["package_integrity"])
+    print("baseline declaration integrity: " + declaration["source_integrity"]
+          + " (package " + declaration["package_integrity"] + ")")
     for name, label in (("cli", "CLI"), ("daemon_binary", "daemon binary"), ("backend", "running backend")):
         item = report[name]
         print("Tailscale " + label + ": " + (item["version"] or item["status"])
@@ -316,7 +326,9 @@ def retry_headers(headers, now=None):
                           ("X-RateLimit-Reset", "rate_limit_reset")):
         value = headers.get(header)
         if isinstance(value, str) and re.fullmatch(r"[0-9]{1,12}", value):
-            result[field] = int(value)
+            numeric = int(value)
+            result[field] = (min(numeric, 86400) if field == "retry_after_seconds"
+                             else min(numeric, now + 86400))
     result = validated_retry(result, now)
     candidates = [result.get("rate_limit_reset", now), now + result.get("retry_after_seconds", 0)]
     # Missing/invalid retry headers receive a bounded conservative minute, not success.
@@ -766,7 +778,33 @@ def fetch_release(tag=None, proxy=None, timeout=UPDATE_TIMEOUT):
     return release
 
 
-def rate_limit_release(directory, tag=None, proxy=None):
+def rate_limit_scope(proxy):
+    validate_proxy(proxy)
+    if proxy is None:
+        canonical = 'direct'
+    else:
+        parsed = urllib.parse.urlsplit(proxy)
+        canonical = 'http://' + parsed.hostname.lower() + ':' + str(parsed.port)
+    return hashlib.sha256(canonical.encode('ascii')).hexdigest()
+
+
+def record_rate_limit(directory, proxy, error, locked_folder=None):
+    """Record API, manifest or source-asset limits in the same bounded scope."""
+    if error.code != 'rate_limited' or error.cached:
+        return
+    if not error.retry.get('retry_at'):
+        error.retry = retry_headers({})
+    try:
+        manager = notice_store(directory, create=True) if locked_folder is None else contextlib.nullcontext(locked_folder)
+        with manager as folder:
+            notice_write(folder, 'network-limit.json', {'observed_at': int(time.time()),
+                         'proxy_hash': rate_limit_scope(proxy), 'retry': error.retry}, replace_invalid_cache=True)
+        error.storage_warning = False
+    except (NoticeError, OSError):
+        error.storage_warning = True
+
+
+def rate_limit_release(directory, tag=None, proxy=None, locked_folder=None):
     """Persist only a bounded error window. Cached errors never become releases."""
     validate_proxy(proxy)
     if tag is not None:
@@ -774,10 +812,11 @@ def rate_limit_release(directory, tag=None, proxy=None):
             raise UpdateError("invalid_version")
         stable_version(tag[1:])
     now = int(time.time())
-    key = hashlib.sha256((proxy or "direct").encode("ascii")).hexdigest()
+    key = rate_limit_scope(proxy)
     storage_warning = False
     try:
-        with notice_store(directory) as folder:
+        manager = notice_store(directory) if locked_folder is None else contextlib.nullcontext(locked_folder)
+        with manager as folder:
             cache = notice_read(folder, "network-limit.json")
         if cache is not None:
             if (not isinstance(cache, dict) or set(cache) != {"observed_at", "proxy_hash", "retry"}
@@ -793,18 +832,13 @@ def rate_limit_release(directory, tag=None, proxy=None):
     except (NoticeError, OSError):
         storage_warning = True
     try:
-        return fetch_release(tag, proxy)
+        release = fetch_release(tag, proxy)
+        if storage_warning:
+            release = dict(release, backoff_storage_warning=True)
+        return release
     except UpdateError as error:
         if error.code == "rate_limited":
-            if not error.retry.get("retry_at"):
-                error.retry = retry_headers({})
-            try:
-                with notice_store(directory, create=True) as folder:
-                    notice_write(folder, "network-limit.json", {
-                        "observed_at": now, "proxy_hash": key, "retry": error.retry})
-            except (NoticeError, OSError):
-                storage_warning = True
-            error.storage_warning = storage_warning
+            record_rate_limit(directory, proxy, error, locked_folder)
         raise
 
 
@@ -828,6 +862,8 @@ def update_check(directory, tag=None, proxy=None, bundle=None):
             raise UpdateError("invalid_metadata")
         release = local_bundle_release(bundle) if bundle else rate_limit_release(directory, tag, proxy)
         report["release"] = {"tag": release["tag"], "version": release["version"]}
+        if release.get('backoff_storage_warning'):
+            report['warning'] = 'backoff_storage_unavailable'
         if package["integrity"] != "match":
             report["status"] = "not_comparable"
         else:
@@ -921,9 +957,15 @@ def notice_read(folder, name):
         raise NoticeError("invalid_settings" if name == "settings.json" else "invalid_cache")
 
 
-def notice_write(folder, name, data):
+def notice_write(folder, name, data, replace_invalid_cache=False):
     # Check existing files before replacing them; never follow a link or share an inode.
-    notice_read(folder, name)
+    try:
+        notice_read(folder, name)
+    except NoticeError as error:
+        # Physical ownership/mode/link checks already passed before a parse error.
+        # Never use this exception for settings or other notification state.
+        if not (replace_invalid_cache and name == 'network-limit.json' and error.code == 'invalid_cache'):
+            raise
     temporary = ".write-" + os.urandom(8).hex()
     try:
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
@@ -1018,15 +1060,23 @@ def notification_refresh(directory, proxy=None, force=False):
         if not force and not report["stale"]:
             return dict(report, status="cached")
         try:
-            release = rate_limit_release(directory, proxy=proxy)
+            release = rate_limit_release(directory, proxy=proxy, locked_folder=folder)
             cache.update(checked_at=int(time.time()), last_attempt_at=int(time.time()), last_error=None,
                          release={"tag": release["tag"], "version": release["version"]})
             status = "refreshed"
+            extra = {'evidence': 'github_live'}
+            if release.get('backoff_storage_warning'):
+                extra['warning'] = 'backoff_storage_unavailable'
         except UpdateError as error:
             cache.update(last_attempt_at=int(time.time()), last_error=error.code)
             status = "refresh_failed"
+            extra = {'evidence': 'rate_limit_cache' if error.cached else 'github_live'}
+            if error.code == 'rate_limited':
+                extra['retry'] = error.retry
+                if error.storage_warning:
+                    extra['warning'] = 'backoff_storage_unavailable'
         notice_write(folder, "cache.json", cache)
-        return dict(notice_summary(settings, cache, int(time.time())), status=status)
+        return dict(notice_summary(settings, cache, int(time.time())), status=status, **extra)
 
 
 def notification_notify(directory):
@@ -1660,10 +1710,14 @@ def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, prox
         else:
             release = rate_limit_release(directory, tag, proxy_url)
             deadline = time.monotonic() + 60
-            payload = {name: download_release_asset(release, name, proxy_url, deadline) for name in CORE_FILES}
-            payload[MANIFEST] = release['manifest_bytes']
-            evidence = ({name: download_release_asset(release, name, proxy_url, deadline) for name in PROVENANCE_FILES}
-                        if stable_version(release['version']) >= (0, 8, 0) else None)
+            try:
+                payload = {name: download_release_asset(release, name, proxy_url, deadline) for name in CORE_FILES}
+                payload[MANIFEST] = release['manifest_bytes']
+                evidence = ({name: download_release_asset(release, name, proxy_url, deadline) for name in PROVENANCE_FILES}
+                            if stable_version(release['version']) >= (0, 8, 0) else None)
+            except UpdateError as error:
+                record_rate_limit(directory, proxy_url, error)
+                raise
         provenance = provenance_verify_payload(payload, tag=tag, evidence=evidence, provenance_root=provenance_root,
             allow_unsigned_legacy=allow_unsigned_legacy,
             forbidden_directories=tuple(path for path in (directory, bundle) if path is not None))
@@ -1677,6 +1731,8 @@ def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, prox
         journal = {'schema': 1, 'state': 'prepared', 'boot_id': apply_boot(), 'selection': 'local_bundle' if bundle else tag,
                    'external_ssh': 'pending', 'checksum_trust': 'consistency_only_not_publisher_authentication',
                    'provenance': provenance}
+        if tag and release.get('backoff_storage_warning'):
+            journal['warning'] = 'backoff_storage_unavailable'
         if automatic is not None:
             if (not isinstance(automatic, dict) or set(automatic) != {'attempt_id', 'generation'}
                     or any(not isinstance(value, str) or not re.fullmatch('[0-9a-f]{32}', value) for value in automatic.values())):
@@ -1709,7 +1765,8 @@ def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, prox
         current = apply_read_journal(transaction)
         if current.get('worker') or current.get('state') in APPLY_TERMINAL:
             return {'state': current['state'] if current.get('state') in APPLY_TERMINAL else 'started', 'transaction_id': identifier,
-                    'external_ssh': 'pending', 'status_command': 'dots-ts update status --id ' + identifier}
+                    'external_ssh': 'pending', 'status_command': 'dots-ts update status --id ' + identifier,
+                    **({'warning': current['warning']} if current.get('warning') else {})}
         if child.poll() is not None: raise ApplyError('worker_exited_inspect_transaction')
         time.sleep(.05)
     raise ApplyError('worker_acknowledgement_timeout_inspect_transaction')
@@ -4182,6 +4239,8 @@ def main(argv=None):
                 print("update notifications: " + json.dumps(report, sort_keys=True))
             return int("error" in report or report.get("status") == "refresh_failed")
         if options.command == "update":
+            if options.bundle is not None and options.proxy is not None:
+                raise ValueError('invalid_arguments')
             report = update_check(directory, options.tag, options.proxy, options.bundle)
             if options.json:
                 print(json.dumps(report, sort_keys=True))

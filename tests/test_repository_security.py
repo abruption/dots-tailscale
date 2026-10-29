@@ -99,6 +99,18 @@ class RepositoryPolicyTests(unittest.TestCase):
         altered = dict(correct, restrictions={"users": []})
         self.assertFalse(tool.policy_matches(altered, self.policy))
 
+    def test_malformed_post_mutation_readback_keeps_unknown_phase(self):
+        for malformed in (None, [], {}):
+            self.calls, self.protected = [], False
+            def wrong_readback(path, method="GET", value=None):
+                if self.protected and path == '/private-vulnerability-reporting':
+                    return malformed
+                return self.api(path, method, value)
+            with self.assertRaises(tool.PolicyError) as caught:
+                tool.apply_policy(self.policy, True, lambda value: None, wrong_readback)
+            self.assertTrue(caught.exception.mutation_attempted)
+            self.assertEqual(caught.exception.phase, 'effective_readback')
+
 
 if __name__ == "__main__":
     unittest.main()

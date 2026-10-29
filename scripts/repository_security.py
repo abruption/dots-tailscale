@@ -102,12 +102,15 @@ def apply_policy(policy, confirm, backup, api=github):
         api("/branches/main/protection", "PUT", policy)
         phase = "effective_readback"
         after = inspect(api)
-    except (PolicyError, OSError, ValueError):
+        if (not isinstance(after["private_reporting"], dict)
+                or after["private_reporting"].get("enabled") is not True
+                or not policy_matches(after["protection"], policy)):
+            raise PolicyError("effective_policy_mismatch_inspect_backup", phase, True)
+    except Exception as error:
         # A timeout can happen after GitHub applied a PUT. Do not claim no change.
+        if isinstance(error, PolicyError) and error.mutation_attempted:
+            raise
         raise PolicyError("partial_or_unknown_inspect_settings", phase, True) from None
-    if (after["private_reporting"].get("enabled") is not True
-            or not policy_matches(after["protection"], policy)):
-        raise PolicyError("effective_policy_mismatch_inspect_backup", phase, True)
     return {"applied": True, "private_reporting": True, "main_protected": True,
             "required_checks": sorted(CHECKS), "required_approvals":
             policy["required_pull_request_reviews"]["required_approving_review_count"],
@@ -152,7 +155,7 @@ def main(argv=None):
             result = apply_policy(policy, options.confirm_owner, lambda value: save_backup(options.backup, value))
             print(json.dumps(result, sort_keys=True))
         return 0
-    except (PolicyError, OSError, ValueError) as error:
+    except Exception as error:
         attempted = isinstance(error, PolicyError) and error.mutation_attempted
         print(json.dumps({"applied": None if attempted else False,
                           "state": "partial_or_unknown" if attempted else "not_attempted",

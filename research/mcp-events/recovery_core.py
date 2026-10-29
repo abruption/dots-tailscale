@@ -313,6 +313,9 @@ class RecoveryCore(EventCore):
                        (incident_id, claim, mode, expiry, observed))
         return {'incident_id':incident_id, 'claim_id':claim, 'command':' '.join(argv), 'command_argv':argv,
                 'execution_mode':mode, 'expires_at':now+120,
+                'local_contract': ({'request_id': claim, 'claim_expires_at': expiry,
+                                    'observation_time': observed, 'ssh_failed': True, 'ping_failed': True}
+                                   if self.local_coordination else None),
                 'instructions':'Run the fixed command once immediately in your cloud computer. Never reuse this claim or execute after expires_at. Report only a sanitized outcome. Success is not external recovery confirmation. Coordinated mode also requires explicit local recovery opt-in and its separate durable execution budget; arguments are not local proof of OAuth authorization.'}
 
     def report_preflight(self, principal, incident_id, reason):

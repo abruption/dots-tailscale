@@ -26,6 +26,9 @@ class CoordinatedRecoveryTests(unittest.TestCase):
         self.assertEqual(argv[argv.index('--request-id') + 1], result['claim_id'])
         self.assertEqual(int(argv[argv.index('--claim-expires-at') + 1]), int(self.now + 120))
         self.assertEqual(int(argv[argv.index('--observation-time') + 1]), int(self.now))
+        self.assertEqual(result['local_contract'], {'request_id': result['claim_id'],
+                         'claim_expires_at': int(self.now + 120), 'observation_time': int(self.now),
+                         'ssh_failed': True, 'ping_failed': True})
         self.assertIn('--ssh-failed', argv)
         self.assertIn('--ping-failed', argv)
         # A config change cannot silently rewrite the already issued contract.
@@ -40,6 +43,7 @@ class CoordinatedRecoveryTests(unittest.TestCase):
         result = self.core.claim_recovery('operator', iid)
         self.assertEqual(result['command'], COMMAND)
         self.assertEqual(result['execution_mode'], 'legacy_start')
+        self.assertIsNone(result['local_contract'])
         for value in ('true', 1, None, []):
             with self.assertRaises(ValueError):
                 RecoveryCore(self.path, [], 'operator', local_coordination=value)

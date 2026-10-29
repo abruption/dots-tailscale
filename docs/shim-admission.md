@@ -31,7 +31,9 @@ this is a concurrency limit, not a complete memory or bandwidth quota.
 
 Every client shares this budget, including tailscaled itself. Saturation can
 reject its control/DERP reconnects; even an idle connection can hold a setup slot
-until its deadline. A fixed warning reports saturation at most once every 30
+through its per-stage deadlines, including several consecutive setup stages.
+Certificate generation still uses the existing serialized OpenSSL calls; this
+connection budget is not a total setup-duration guarantee. A fixed warning reports saturation at most once every 30
 seconds, after closing the excess socket. It does not identify clients or log
 their CONNECT targets. Use the intended tailnet policy rather than arbitrary
 stream lifetime limits to control who can reach this unauthenticated service.
@@ -52,5 +54,6 @@ proxy authentication nor proof that the peer is restricted to slot occupancy.
 The regression suite uses isolated socket pairs and controlled startup failures
 to verify rejection without new threads, capacity reuse, socket cleanup, joining
 workers/timers even when startup raises after the thread began, and normal raw
-and multiple WebSocket streams that remain usable after setup deadlines. These checks do not establish behavior
+and multiple WebSocket streams that remain usable after setup deadlines (with
+TLS explicitly replaced by a fixture). These checks do not establish behavior
 under a live Dots outage, a VM replacement, or a production load test.
