@@ -79,6 +79,14 @@ To remove periodic execution, disable automatic updates first, stop the foregrou
 
 `automatic status --json` reports settings and the last durable result, plus an independently observed transaction state when an attempt is pending. It labels the execution environment as not rechecked by a status read and external SSH as not verified. A cached result is not current network health.
 
+Status adds `warning: clock_moved_backwards` when saved observations are ahead of
+the current clock; it does not rewrite them. New automatic work remains blocked
+until the time evidence is consistent. Independent recovery is fenced by an
+actual unfinished/unknown operation, not by old automatic history alone: an idle
+or proven-terminal automatic ledger cannot disable recovery merely because a
+past clock step is being corrected. Disabling auto still does not clear a real
+unknown transaction.
+
 A prepared/started transaction is not success. Reconcile the same transaction with `dots-ts update status --id ID --json`; source transaction terminal results include `applied`, `failed_rolled_back`, `rejected`, and manual-recovery states. A lost acknowledgement is reconciled against the same attempt and transaction rather than resubmitted. A missing worker, uncertain launch or failed rollback blocks new automatic execution and leaves a manual-review result, except for the narrowly proven pre-staging exit below. Clock rollback is checked against existing observed times, including pending/result/confirmation times, before reconciliation and again before persistence. It refuses the operation without rewriting the existing state bytes; a future `next_check_at` is a planned schedule, not evidence of clock rollback.
 
 There are at most three automatic installation preparations and three recorded failures in a rolling 24-hour window. Intermittent check errors back off for 5, 10 and then 20 minutes, capped at one hour, and respect a later validated GitHub retry/reset time. The daily failure budget can delay further checks until an old failure leaves the window. Proof/policy failures and candidate execution failures hold that candidate tag instead of installing it repeatedly. Temporary network errors, a verifier timeout, operation/recovery contention or a pre-commit cancellation use backoff without permanently labelling the release faulty. These attempts still consume the configured budgets.

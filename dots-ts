@@ -3926,7 +3926,9 @@ def automatic_recovery_fence(directory):
             if folder is None: return {'state': 'not_configured', 'recovery_allowed': True}
             settings = automatic_settings(folder)
             state = automatic_state(folder, settings)
-            automatic_clock(state, int(time.time()), settings)
+            # This read-only fence asks whether code mutation can still occur,
+            # not whether another automatic attempt may spend a time budget.
+            # Old future-dated auto history must not disable independent recovery.
             if state['inflight'] is None: return {'state': 'idle', 'recovery_allowed': True}
             outcome, _ = automatic_observe_pending(directory, state['inflight'])
             if outcome == 'abandoned_before_staging':
@@ -4051,6 +4053,11 @@ def automatic_show(directory):
     with automatic_store(directory) as folder:
         settings = automatic_settings(folder)
         state = automatic_state(folder, settings)
+        warning = None
+        try:
+            automatic_clock(state, int(time.time()), settings)
+        except AutomaticError:
+            warning = 'clock_moved_backwards'
         pending = state['inflight']
         observed = automatic_observe_pending(directory, pending)[0] if pending else None
         result_state = ('manual_review_required' if observed == 'manual_review_required' else
@@ -4058,7 +4065,8 @@ def automatic_show(directory):
                         'disabled' if not settings['enabled'] else 'held' if settings['held'] else 'enabled')
         return dict(settings, **{key: value for key, value in state.items() if key != 'schema'}, state=result_state,
                     observed_transaction_state=observed, execution_environment='not_rechecked',
-                    scheduler='external_caller_required', external_ssh='not_verified')
+                    scheduler='external_caller_required', external_ssh='not_verified',
+                    **({'warning': warning} if warning else {}))
 
 
 def automatic_tick(directory, runtime):

@@ -321,6 +321,30 @@ class AutomaticUpdateTests(unittest.TestCase):
             self.assertEqual(self.configure('disable')['state'], 'disabled')
             self.assertFalse(tool.automatic_show(self.directory)['enabled'])
 
+    def test_future_auto_history_without_mutation_does_not_block_independent_recovery(self):
+        self.configure()
+        state = self.state()
+        state['failures'] = [self.NOW + 3600]
+        tool.automatic_result(state, self.NOW + 3600, 'check_failed', 'offline')
+        self.write_state(state)
+        self.configure('disable')
+        before = (self.directory / tool.AUTOMATIC_DIRECTORY / 'state.json').read_bytes()
+        self.assertEqual(tool.automatic_recovery_fence(self.directory), {'state': 'idle', 'recovery_allowed': True})
+        self.assertEqual(tool.automatic_show(self.directory)['warning'], 'clock_moved_backwards')
+        self.assertEqual((self.directory / tool.AUTOMATIC_DIRECTORY / 'state.json').read_bytes(), before)
+
+    def test_future_pending_time_with_proven_terminal_transaction_is_not_active_mutation(self):
+        self.configure()
+        self.assertEqual(tool.automatic_tick(self.directory, self.runtime)['state'], 'in_progress')
+        state = self.state()
+        state['inflight']['at'] = self.NOW + 3600
+        self.write_state(state)
+        self.journals[self.TRANSACTION]['state'] = 'applied'
+        self.assertEqual(tool.automatic_recovery_fence(self.directory)['state'], 'idle')
+        self.assertTrue(tool.automatic_recovery_fence(self.directory)['recovery_allowed'])
+        with self.assertRaisesRegex(tool.AutomaticError, 'clock_moved_backwards'):
+            tool.automatic_tick(self.directory, self.runtime)
+
     def test_foreground_watch_is_explicit_bounded_and_never_installs_a_scheduler(self):
         for seconds in (0, 86401):
             output = io.StringIO()
