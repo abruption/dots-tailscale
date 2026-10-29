@@ -23,6 +23,8 @@ CERTS = os.path.join(D, "certs")
 # Established raw/DERP/control streams remain long-lived and blocking.
 SETUP_TIMEOUT = 15
 MAX_HEADER_BYTES = 65536
+DEFAULT_MAX_CONNECTIONS = 64
+MAX_CONNECTION_LIMIT = 256
 lock = threading.Lock()
 up_ctx = ssl.create_default_context(); up_ctx.set_alpn_protocols(["http/1.1"])
 DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
@@ -367,15 +369,76 @@ def handle(c):
         finally:
             close(c, u)
 
+def connection_limit():
+    value = os.environ.get("SHIM_MAX_CONNECTIONS", str(DEFAULT_MAX_CONNECTIONS))
+    if not re.fullmatch(r"[1-9][0-9]{0,2}", value) or int(value) > MAX_CONNECTION_LIMIT:
+        raise ValueError(f"SHIM_MAX_CONNECTIONS must be an integer from 1 to {MAX_CONNECTION_LIMIT}")
+    return int(value)
+
+
+class ConnectionAdmission:
+    """Bound handlers and their bridge workers, without queueing excess clients."""
+
+    def __init__(self, limit):
+        if type(limit) is not int or not 1 <= limit <= MAX_CONNECTION_LIMIT:
+            raise ValueError("invalid connection limit")
+        self._slots = threading.BoundedSemaphore(limit)
+
+    def dispatch(self, conn):
+        if not self._slots.acquire(blocking=False):
+            close(conn)
+            return False
+
+        # Release once even if thread startup is interrupted after the new
+        # thread starts. Its worker remains responsible until cleanup finishes.
+        release_lock = threading.Lock()
+        released = False
+
+        def release():
+            nonlocal released
+            with release_lock:
+                if not released:
+                    released = True
+                    self._slots.release()
+
+        def run():
+            try:
+                handle(conn)
+            finally:
+                try:
+                    close(conn)
+                finally:
+                    release()
+
+        worker = None
+        try:
+            worker = threading.Thread(target=run, daemon=True)
+            worker.start()
+        except BaseException as error:
+            close(conn)
+            # A started handler may still own bridge workers. Do not admit a
+            # replacement until its shutdown and joins have completed.
+            if worker is not None and worker.ident is not None:
+                worker.join()
+            release()
+            if not isinstance(error, Exception):
+                raise
+            print("shim: connection handler could not start", file=sys.stderr, flush=True)
+            return False
+        return True
+
+
 def main():
+    limit = connection_limit()
+    admission = ConnectionAdmission(limit)
     with socket.socket() as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(LISTEN)
         listener.listen(64)
-        print(f"shim listening on {LISTEN}", flush=True)
+        print(f"shim listening on {LISTEN}; active connection limit {limit}", flush=True)
         while True:
             conn, _ = listener.accept()
-            threading.Thread(target=handle, args=(conn,), daemon=True).start()
+            admission.dispatch(conn)
 
 
 if __name__ == "__main__":
