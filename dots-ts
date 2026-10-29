@@ -2883,8 +2883,14 @@ def recovery_automatic_fence(directory):
     helper = globals().get('automatic_recovery_fence')
     if callable(helper):
         value = helper(directory)
-        if not isinstance(value, dict) or value.get('recovery_allowed') is not True:
+        if not isinstance(value, dict) or type(value.get('recovery_allowed')) is not bool:
+            raise RecoveryError('automatic_update_state_unknown')
+        state, allowed = value.get('state'), value['recovery_allowed']
+        if state in ('idle', 'not_configured') and allowed:
+            return
+        if state in ('in_progress', 'manual_review_required') and not allowed:
             raise RecoveryError('automatic_update_blocks_recovery')
+        raise RecoveryError('automatic_update_state_unknown')
     else:
         root = directory / '.automatic-updates'
         if root.exists() or root.is_symlink():
@@ -3734,7 +3740,7 @@ def automatic_worker_commit(directory, transaction, journal):
                 state = automatic_state(folder, settings)
                 pending = state['inflight']
                 if (not settings['enabled'] or settings['held'] or settings['generation'] != fence['generation']
-                        or pending is None or pending['phase'] != 'preparing'
+                        or pending is None or pending['phase'] not in ('preparing', 'submitted')
                         or any(pending[name] != fence[name] for name in fence)
                         or pending['transaction_id'] not in (None, transaction.name)
                         or journal.get('selection') != pending['tag']

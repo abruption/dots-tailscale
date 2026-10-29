@@ -412,9 +412,14 @@ class RecoveryLifecycleTests(unittest.TestCase):
         (self.directory / '.automatic-updates').mkdir(mode=0o700)
         self.assert_rejected('automatic_update_state_unknown', lambda: tool.recovery_run(
             self.directory, self.runtime, self.options()))
-        with mock.patch.object(tool, 'automatic_recovery_fence', return_value={'recovery_allowed': False}, create=True):
+        with mock.patch.object(tool, 'automatic_recovery_fence', return_value={'state': 'in_progress', 'recovery_allowed': False}, create=True):
             self.assert_rejected('automatic_update_blocks_recovery', lambda: tool.recovery_run(
                 self.directory, self.runtime, self.options()))
+        for invalid in ({'recovery_allowed': False}, {'state': 'idle', 'recovery_allowed': 1},
+                        {'state': 'in_progress', 'recovery_allowed': True}):
+            with mock.patch.object(tool, 'automatic_recovery_fence', return_value=invalid):
+                self.assert_rejected('automatic_update_state_unknown', lambda: tool.recovery_run(
+                    self.directory, self.runtime, self.options()))
         tool.recovery_stop(self.directory)
         self.assertFalse(tool.recovery_update_fence(self.directory)['update_allowed'])
         self.assert_rejected('recovery_blocks_update', lambda: tool.recovery_update_guard(self.directory).__enter__())

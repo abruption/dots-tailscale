@@ -69,7 +69,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Install pinned static checker
-        run: python -m pip install --disable-pip-version-check -r requirements-static.txt
+        run: python -m pip install --disable-pip-version-check --require-hashes -r requirements-static.txt
       - name: Verify the checker rejects an invalid fixture
         run: python scripts/check_python_static.py --self-test
       - name: Check tracked Python sources including dots-ts and research

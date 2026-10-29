@@ -330,6 +330,40 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())['state'], 'disabled')
         self.assertFalse((self.directory / tool.AUTOMATIC_DIRECTORY).exists())
 
+    def test_caller_acknowledgement_can_precede_worker_execution_commit(self):
+        self.configure()
+        def acknowledged_first(directory, runtime, **kwargs):
+            self.journals[self.TRANSACTION] = {'state': 'running', 'automatic': kwargs['automatic'], 'selection': kwargs['tag']}
+            with tool.automatic_store(directory, create=True) as folder:
+                settings = tool.automatic_settings(folder)
+                state = tool.automatic_state(folder, settings)
+                state['inflight'].update(phase='submitted', transaction_id=self.TRANSACTION)
+                tool.notice_write(folder, 'state.json', state)
+            tool.automatic_worker_commit(directory, Path(self.TRANSACTION), self.journals[self.TRANSACTION])
+            self.assertEqual(self.state()['inflight']['phase'], 'execution_committed')
+            return {'state': 'started', 'transaction_id': self.TRANSACTION}
+        self.apply.side_effect = acknowledged_first
+        self.assertEqual(tool.automatic_tick(self.directory, self.runtime)['state'], 'in_progress')
+        self.assertEqual(self.apply.call_count, 1)
+
+    def test_disable_still_wins_after_caller_ack_before_worker_commit(self):
+        self.configure()
+        def disabled_first(directory, runtime, **kwargs):
+            journal = {'state': 'running', 'automatic': kwargs['automatic'], 'selection': kwargs['tag']}
+            with tool.automatic_store(directory, create=True) as folder:
+                settings = tool.automatic_settings(folder)
+                state = tool.automatic_state(folder, settings)
+                state['inflight'].update(phase='submitted', transaction_id=self.TRANSACTION)
+                tool.notice_write(folder, 'state.json', state)
+            self.configure('disable')
+            with self.assertRaisesRegex(tool.ApplyError, 'automatic_cancelled_before_commit'):
+                tool.automatic_worker_commit(directory, Path(self.TRANSACTION), journal)
+            self.journals[self.TRANSACTION] = dict(journal, state='rejected')
+            return {'state': 'rejected', 'transaction_id': self.TRANSACTION}
+        self.apply.side_effect = disabled_first
+        self.assertEqual(tool.automatic_tick(self.directory, self.runtime)['status'], 'rejected')
+        self.assertFalse(tool.automatic_show(self.directory)['enabled'])
+
     def test_result_notification_is_cache_only_and_deduplicated(self):
         class Interactive(io.StringIO):
             def isatty(self): return True

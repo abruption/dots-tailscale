@@ -1,6 +1,6 @@
 # Python static checks and Actions maintenance
 
-The CI correctness gate uses **Ruff 0.17.3**, pinned in
+The CI correctness gate uses **Ruff 0.17.3**, version- and wheel-hash-pinned in
 [`requirements-static.txt`](../requirements-static.txt). It selects syntax/error
 rules `E9`, `F63`, `F7` and `F82`, including undefined names. It does not format
 the source, enforce a new style, or replace tests and security review. There are
@@ -19,7 +19,7 @@ Run from the repository checkout using a dedicated developer environment:
 
 ```bash
 python3 -m venv .venv-static
-.venv-static/bin/python -m pip install -r requirements-static.txt
+.venv-static/bin/python -m pip install --require-hashes -r requirements-static.txt
 .venv-static/bin/python scripts/check_python_static.py --self-test
 .venv-static/bin/python scripts/check_python_static.py
 ```
