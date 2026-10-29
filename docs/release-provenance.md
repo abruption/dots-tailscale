@@ -51,10 +51,16 @@ ref and source dependency must agree. The portable `release-provenance.json` is
 only an **untrusted selection descriptor** until those checks pass. The updater
 does not trust claims decoded from an unsigned DSSE payload or a saved
 "verification succeeded" text file. The verifier runs with a private empty GitHub
-configuration directory, no inherited GitHub tokens/proxy settings, no interactive
+configuration directory and home, a minimal fixed environment without inherited
+credentials or proxy/loader settings, no interactive
 prompts, a 30-second verification deadline and a 2 MiB stdout limit. Raw verifier
 errors are not copied into user diagnostics. The version probe has a separate
 5-second/4 KiB limit.
+
+The private temporary workspace is checked against the same protected-ancestor
+rules before running the verifier. An operator-selected `TMPDIR` under a writable
+shared ancestor is not made safe merely by giving its last directory mode 0700;
+an unsafe workspace is refused without executing the verifier.
 
 The trust-root file is copied into private temporary verification storage. With
 `--bundle` and `--custom-trusted-root`, `gh` verifies the supplied evidence without

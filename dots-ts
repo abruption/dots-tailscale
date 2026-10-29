@@ -343,6 +343,7 @@ PROVENANCE_ERRORS = frozenset({
     "provenance_trusted_root_required", "provenance_trusted_root_unsafe",
     "provenance_verification_failed", "provenance_verifier_output_limit", "provenance_verifier_timeout",
     "provenance_verifier_unavailable", "provenance_verifier_unsafe", "provenance_verifier_version_unsupported",
+    "provenance_work_directory_unsafe",
 })
 
 
@@ -564,19 +565,21 @@ def provenance_verify_payload(payload, tag=None, evidence=None, provenance_root=
         root_raw = provenance_trusted_root(provenance_root, forbidden_directories)
         verifier = provenance_gh(forbidden_directories)
         with tempfile.TemporaryDirectory(prefix="dots-ts-provenance-") as work:
-            work = pathlib.Path(work)
+            work = pathlib.Path(work).resolve()
             config = work / "gh-config"; config.mkdir(mode=0o700)
-            env = {key: value for key, value in os.environ.items()
-                   if key not in {"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST", "GH_REPO",
-                                  "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"}}
-            env.update(GH_CONFIG_DIR=str(config), GH_PROMPT_DISABLED="1", GH_NO_UPDATE_NOTIFIER="1",
-                       GH_NO_EXTENSION_UPDATE_NOTIFIER="1", NO_COLOR="1")
+            env = {'PATH': os.defpath, 'HOME': str(work), 'TMPDIR': str(work),
+                   'GH_CONFIG_DIR': str(config), 'GH_PROMPT_DISABLED': '1', 'GH_NO_UPDATE_NOTIFIER': '1',
+                   'GH_NO_EXTENSION_UPDATE_NOTIFIER': '1', 'NO_COLOR': '1'}
+            for name, raw in ((MANIFEST, payload[MANIFEST]), (PROVENANCE_BUNDLE, bundle_raw), ("trusted-root.jsonl", root_raw)):
+                path = work / name; path.write_bytes(raw); path.chmod(0o600)
+                try:
+                    provenance_safe_path(path)
+                except (OSError, ValueError, TypeError, RuntimeError):
+                    raise ProvenanceError('provenance_work_directory_unsafe') from None
             code, version_raw = provenance_run([verifier, "--version"], work, env, limit=4096, timeout=5)
             match = re.match(rb"gh version ([0-9]+\.[0-9]+\.[0-9]+)\b", version_raw)
             if code or not match or stable_version(match[1].decode("ascii")) < (2, 103, 3):
                 raise ProvenanceError("provenance_verifier_version_unsupported")
-            for name, raw in ((MANIFEST, payload[MANIFEST]), (PROVENANCE_BUNDLE, bundle_raw), ("trusted-root.jsonl", root_raw)):
-                path = work / name; path.write_bytes(raw); path.chmod(0o600)
             ref = "refs/tags/" + metadata["tag"]
             command = [verifier, "attestation", "verify", str(work / MANIFEST), "--hostname", "github.com",
                        "--repo", UPDATE_REPOSITORY,

@@ -96,11 +96,14 @@ class ProvenanceTests(unittest.TestCase):
         return report, runner
 
     def test_authorized_verified_result_and_fixed_policy_flags(self):
-        with mock.patch.dict(os.environ, {"GH_TOKEN": "PRIVATE", "HTTPS_PROXY": "http://PRIVATE.invalid"}):
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "PRIVATE", "HTTPS_PROXY": "http://PRIVATE.invalid",
+                                          "AWS_ACCESS_KEY_ID": "PRIVATE", "DYLD_INSERT_LIBRARIES": "PRIVATE"}):
             report, runner = self.verify(tag="v0.8.0")
         self.assertEqual(report["status"], "verified")
         self.assertEqual(report["source_commit"], "a" * 40)
         command = runner.call_args.args[0]
+        self.assertNotIn('AWS_ACCESS_KEY_ID', runner.call_args.args[2])
+        self.assertNotIn('DYLD_INSERT_LIBRARIES', runner.call_args.args[2])
         for flag, value in (("--repo", tool.UPDATE_REPOSITORY), ("--source-ref", "refs/tags/v0.8.0"),
                             ("--source-digest", "a" * 40), ("--predicate-type", "https://slsa.dev/provenance/v1")):
             self.assertEqual(command[command.index(flag) + 1], value)
@@ -124,6 +127,19 @@ class ProvenanceTests(unittest.TestCase):
                 result[0]["verificationResult"]["signature"]["certificate"][key] = value
                 with self.assertRaisesRegex(tool.ProvenanceError, "policy_mismatch"):
                     self.verify(result)
+
+    def test_unprotected_temporary_work_path_is_refused_before_verifier_execution(self):
+        original = tool.provenance_safe_path
+        def check(path, *args):
+            path = Path(path)
+            if path.name == tool.MANIFEST and path.parent.name.startswith('dots-ts-provenance-'):
+                raise ValueError('untrusted temporary ancestry')
+            return original(path, *args)
+        with mock.patch.object(tool, 'provenance_safe_path', side_effect=check), \
+                mock.patch.object(tool, 'provenance_gh', return_value='/trusted/gh'), \
+                mock.patch.object(tool, 'provenance_run', side_effect=AssertionError('unsafe work must not execute verifier')):
+            with self.assertRaisesRegex(tool.ProvenanceError, 'provenance_work_directory_unsafe'):
+                tool.provenance_verify_payload(self.payload, evidence=self.evidence, provenance_root=self.trusted_root)
 
     def test_wrong_predicate_source_binding_and_subject_are_rejected(self):
         variants = []
