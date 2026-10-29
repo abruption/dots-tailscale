@@ -1,5 +1,8 @@
 # Opt-in automatic package updates
 
+These features belong to the **v0.8.0 development candidate**. The latest published
+stable release is v0.7.1; publishing this branch does not upgrade an installation.
+
 Automatic updates are off by default. Installing or updating dots-tailscale does not register a task, install cron/systemd, create a watchdog, or start this runner. This feature updates the four package sources through the existing manual transaction; it does not update Tailscale binaries or migrate their declared baseline.
 
 This is an experimental execution path for a Linux installation with visible writable installation/runtime directories, working local components and socket, and the same Python/pidfd support required by manual `update apply`. Keep an independent cloud-computer recovery terminal available before enabling it. A connected SSH session is not an independent recovery path.

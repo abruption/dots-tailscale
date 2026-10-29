@@ -1,5 +1,8 @@
 # Inspecting updates when GitHub requests are limited
 
+These features belong to the **v0.8.0 development candidate**. The latest published
+stable release is v0.7.1; publishing this branch does not upgrade an installation.
+
 The package checker uses unauthenticated GitHub REST requests, even when a tag is
 specified. A shared outbound proxy can exhaust that address's quota independently
 of this installation. A `rate_limited` result is a failed check, not evidence that

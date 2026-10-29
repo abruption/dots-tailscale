@@ -1,5 +1,8 @@
 # Shim connection budget
 
+These features belong to the **v0.8.0 development candidate**. The latest published
+stable release is v0.7.1; publishing this branch does not upgrade an installation.
+
 The transport shim accepts at most **64 active connections** by default. A slot
 is reserved before a handler thread is created and stays reserved until the
 handler has closed its sockets and joined its bridge workers. Connections beyond

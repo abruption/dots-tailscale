@@ -1,5 +1,8 @@
 # Coordinated recovery (development)
 
+These features belong to the **v0.8.0 development candidate**. The latest published
+stable release is v0.7.1; publishing this branch does not upgrade an installation.
+
 [한국어](recovery-lifecycle.ko.md)
 
 This opt-in helper gives a packaged local watchdog and an explicitly integrated
