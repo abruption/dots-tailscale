@@ -1396,7 +1396,8 @@ def apply_environment(process):
     try:
         values = dict(item.split(b'=', 1) for item in pathlib.Path('/proc/{}/environ'.format(process['pid'])).read_bytes().split(b'\0') if item)
         environment = {'PATH': '/usr/bin:/bin', 'PYTHONNOUSERSITE': '1', 'PYTHONDONTWRITEBYTECODE': '1'}
-        for key, default in (('UPSTREAM_HOST', 'browser-proxy'), ('UPSTREAM_PORT', '8889'), ('SHIM_PORT', '18089')):
+        for key, default in (('UPSTREAM_HOST', 'browser-proxy'), ('UPSTREAM_PORT', '8889'),
+                             ('SHIM_PORT', '18089'), ('SHIM_MAX_CONNECTIONS', '64')):
             environment[key] = values.get(key.encode(), default.encode()).decode('ascii')
         for key in ('SSL_CERT_FILE', 'SSL_CERT_DIR'):
             if key.encode() in values:
@@ -1405,6 +1406,8 @@ def apply_environment(process):
                 environment[key] = value
         if not re.fullmatch(r'[A-Za-z0-9._:-]{1,253}', environment['UPSTREAM_HOST']): raise ValueError()
         if not 1 <= int(environment['UPSTREAM_PORT']) <= 65535 or environment['SHIM_PORT'] != '18089': raise ValueError()
+        if (not re.fullmatch(r'[1-9][0-9]{0,2}', environment['SHIM_MAX_CONNECTIONS'])
+                or int(environment['SHIM_MAX_CONNECTIONS']) > 256): raise ValueError()
     except (OSError, UnicodeError, ValueError): raise ApplyError('unsupported_shim_environment')
     if apply_identity(process['pid']) != process: raise ApplyError('shim_identity_changed')
     return environment

@@ -560,6 +560,21 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(result['SSL_CERT_DIR'], '/certs/ca')
         self.assertNotIn('HOME', result); self.assertNotIn('TOKEN', result)
 
+    def test_shim_connection_budget_survives_update_and_bad_values_refuse(self):
+        for value in ('1', '32', '64', '256', None):
+            env = b'UPSTREAM_HOST=fixture\0'
+            if value is not None:
+                env += b'SHIM_MAX_CONNECTIONS=' + value.encode() + b'\0'
+            with mock.patch.object(tool, 'apply_identity', return_value=self.baseline['shim']), \
+                    mock.patch.object(Path, 'read_bytes', return_value=env):
+                self.assertEqual(tool.apply_environment(self.baseline['shim'])['SHIM_MAX_CONNECTIONS'], value or '64')
+        for value in ('0', '257', '01', '-1', 'unlimited'):
+            env = b'SHIM_MAX_CONNECTIONS=' + value.encode() + b'\0'
+            with mock.patch.object(tool, 'apply_identity', return_value=self.baseline['shim']), \
+                    mock.patch.object(Path, 'read_bytes', return_value=env), \
+                    self.assertRaisesRegex(tool.ApplyError, 'unsupported_shim_environment'):
+                tool.apply_environment(self.baseline['shim'])
+
     def test_apply_public_errors_static_and_transaction_id_retained(self):
         class ProxyError(RuntimeError): pass
         proxy = mock.Mock(ProxyError=ProxyError)

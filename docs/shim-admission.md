@@ -12,6 +12,9 @@ is a per-process setting: configure it in the environment that actually launches
 the shim, rather than assuming a different shell's environment changes an already
 running process. The startup message prints the effective limit. Changing the
 value does not change a running process, install a scheduler, or restart services.
+The package updater preserves and validates that existing shim environment value
+when it launches either candidate or rollback code; an invalid value refuses the
+transaction before the old shim is stopped.
 
 An established control, DERP or raw tunnel can hold its slot as long as it is
 healthy. This setting does not add a stream lifetime or idle timeout. A lower

@@ -6,8 +6,8 @@ rules `E9`, `F63`, `F7` and `F82`, including undefined names. It does not format
 the source, enforce a new style, or replace tests and security review. There are
 no file exclusions or blanket ignores for existing findings.
 
-The checker selects tracked root Python files, the extensionless `dots-ts`
-entry point, and Python files under `scripts/`, `tests/` and **all of `research/`**.
+The checker selects every tracked `.py` file and the extensionless `dots-ts`
+entry point, including `scripts/`, `tests/`, **all of `research/`** and future directories.
 New source files must be added to Git before this tracked-file check includes
 them. Untracked worktrees and local installation/state files are not scanned.
 The Ruff default target is Python 3.8; research uses Python 3.12 and developer
@@ -24,8 +24,8 @@ python3 -m venv .venv-static
 .venv-static/bin/python scripts/check_python_static.py
 ```
 
-The self-test passes an isolated invalid fixture through the same config using
-the filename `dots-ts`. It succeeds only when Ruff rejects the undefined name
+The self-test writes a real isolated extensionless file named `dots-ts` and passes
+its path through the same config. It succeeds only when Ruff rejects the undefined name
 with `F821`, rather than accepting the fixture or failing to load its config.
 The ordinary gate checks the selected repository sources without changing them
 or creating a Ruff cache. A wrong/missing Ruff version fails with an installation
