@@ -2630,6 +2630,748 @@ def doctor(directory, runtime, target=None):
             "context": context, "advice": advice, "skipped_checks": skipped}, int(unhealthy)
 
 
+# Optional local recovery coordination. These files are operational state, not
+# package payload: source updates/rollback must never replace or rewind them.
+RECOVERY_DIRECTORY = '.recovery'
+RECOVERY_MAX_RECORDS = 256
+RECOVERY_STATE_LIMIT = 512 * 1024
+RECOVERY_START = b'''#!/usr/bin/env bash
+set -euo pipefail
+DOTS_TS_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+export DOTS_TS_DIR
+exec bash "$DOTS_TS_DIR/setup.sh" "${1:-start}"
+'''
+
+
+class RecoveryError(Exception):
+    pass
+
+
+def recovery_default():
+    return {'schema': 1, 'enabled': False, 'watchdog_wanted': False,
+            'restart_after_external': False, 'max_attempts_24h': 3,
+            'cooldown_seconds': 3600, 'timeout_seconds': 60,
+            'interval_seconds': 60, 'last_clock': 0,
+            'watchdog': None, 'attempts': []}
+
+
+def recovery_identifier(value):
+    return isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,79}', value) is not None
+
+
+def recovery_time(value):
+    return type(value) is int and 0 <= value <= 9999999999
+
+
+def recovery_identity_valid(value):
+    return (isinstance(value, dict) and set(value) == {'pid', 'ticks', 'uid', 'exe'}
+            and type(value['pid']) is int and value['pid'] > 0
+            and type(value['uid']) is int and value['uid'] == os.getuid()
+            and isinstance(value['ticks'], str) and re.fullmatch(r'[0-9]{1,30}', value['ticks'])
+            and isinstance(value['exe'], str) and value['exe'].startswith('/') and len(value['exe']) <= 4096)
+
+
+def recovery_validate(state):
+    default = recovery_default()
+    if not isinstance(state, dict) or set(state) != set(default) or type(state['schema']) is not int or state['schema'] != 1:
+        raise RecoveryError('invalid_recovery_state')
+    if any(type(state[key]) is not bool for key in ('enabled', 'watchdog_wanted', 'restart_after_external')):
+        raise RecoveryError('invalid_recovery_state')
+    for key, low, high in (('max_attempts_24h', 1, 12), ('cooldown_seconds', 60, 86400),
+                           ('timeout_seconds', 10, 120), ('interval_seconds', 15, 300)):
+        if type(state[key]) is not int or not low <= state[key] <= high:
+            raise RecoveryError('invalid_recovery_state')
+    if not recovery_time(state['last_clock']) or not isinstance(state['attempts'], list) or len(state['attempts']) > RECOVERY_MAX_RECORDS:
+        raise RecoveryError('invalid_recovery_state')
+    seen = set()
+    previous_time = -1
+    for row in state['attempts']:
+        keys = {'id', 'actor', 'reason', 'boot_id', 'created_at', 'finished_at', 'state',
+                'exit_code', 'external_confirmation', 'executor', 'child', 'counted', 'reconciled'}
+        if (not isinstance(row, dict) or set(row) != keys or not recovery_identifier(row['id'])
+                or row['id'] in seen or row['actor'] not in ('watchdog', 'external')
+                or row['reason'] not in ('components_missing', 'ssh_only', 'external_outage', 'healthy')
+                or not recovery_identifier(row['boot_id']) or not recovery_time(row['created_at'])
+                or row['finished_at'] is not None and not recovery_time(row['finished_at'])
+                or row['state'] not in ('running', 'local_ready', 'failed', 'unknown', 'not_executed', 'skipped_healthy')
+                or row['exit_code'] is not None and (type(row['exit_code']) is not int or not -255 <= row['exit_code'] <= 255)
+                or row['external_confirmation'] != 'pending' or type(row['counted']) is not bool
+                or type(row['reconciled']) is not bool
+                or any(row[key] is not None and not recovery_identity_valid(row[key]) for key in ('executor', 'child'))):
+            raise RecoveryError('invalid_recovery_state')
+        if row['state'] == 'running' and (row['finished_at'] is not None or not row['counted']):
+            raise RecoveryError('invalid_recovery_state')
+        if row['state'] != 'running' and row['finished_at'] is None:
+            raise RecoveryError('invalid_recovery_state')
+        if row['finished_at'] is not None and row['finished_at'] < row['created_at']:
+            raise RecoveryError('invalid_recovery_state')
+        if (row['created_at'] > state['last_clock'] or row['created_at'] < previous_time
+                or row['finished_at'] is not None and row['finished_at'] > state['last_clock']
+                or row['counted'] != (row['state'] != 'skipped_healthy')
+                or row['state'] == 'running' and row['executor'] is None):
+            raise RecoveryError('invalid_recovery_state')
+        previous_time = row['created_at']
+        seen.add(row['id'])
+    worker = state['watchdog']
+    if worker is not None and (not isinstance(worker, dict)
+            or set(worker) != {'id', 'boot_id', 'identity', 'state', 'code_hash'}
+            or not recovery_identifier(worker['id']) or not recovery_identifier(worker['boot_id'])
+            or worker['identity'] is not None and not recovery_identity_valid(worker['identity'])
+            or worker['state'] not in ('starting', 'running', 'stopped', 'code_changed')
+            or not isinstance(worker['code_hash'], str) or re.fullmatch('[0-9a-f]{64}', worker['code_hash']) is None):
+        raise RecoveryError('invalid_recovery_state')
+    return state
+
+
+def recovery_file(directory, relative, limit=RECOVERY_STATE_LIMIT, nonempty=True, executable=False):
+    path = directory / relative
+    for parent in (path.parent,) + tuple(path.parent.parents):
+        if parent.is_symlink():
+            raise RecoveryError('unsafe_recovery_path')
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1
+            or info.st_mode & 0o077 or nonempty and not info.st_size or info.st_size > limit
+            or executable and not info.st_mode & stat.S_IXUSR):
+        raise RecoveryError('unsafe_recovery_file')
+    return info
+
+
+def recovery_read(folder):
+    recovery_file(folder, 'state.json')
+    try:
+        return recovery_validate(parse_release_json(bounded_code_read(folder, 'state.json', RECOVERY_STATE_LIMIT)))
+    except (UpdateError, ValueError, TypeError):
+        raise RecoveryError('invalid_recovery_state') from None
+
+
+def recovery_write(folder, state):
+    recovery_validate(state)
+    raw = json.dumps(state, sort_keys=True).encode('ascii')
+    if len(raw) > RECOVERY_STATE_LIMIT:
+        raise RecoveryError('recovery_ledger_full')
+    apply_write(folder / 'state.json', raw)
+
+
+@contextlib.contextmanager
+def recovery_lock(folder, name):
+    fd = os.open(str(folder / name), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+            raise RecoveryError('unsafe_recovery_lock')
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RecoveryError('recovery_busy') from None
+        yield
+    finally:
+        os.close(fd)
+
+
+def recovery_folder(directory):
+    apply_private(directory)
+    return apply_private(directory / RECOVERY_DIRECTORY)
+
+
+def recovery_boot():
+    boot = apply_boot()
+    if not recovery_identifier(boot):
+        raise RecoveryError('execution_context_unavailable')
+    return boot
+
+
+def recovery_identity(pid):
+    try:
+        value = apply_identity(pid)
+    except ApplyError:
+        raise RecoveryError('process_identity_unknown') from None
+    if value is not None and not recovery_identity_valid(value):
+        raise RecoveryError('process_identity_unknown')
+    return value
+
+
+def recovery_clock(state):
+    now = int(time.time())
+    if not recovery_time(now) or now < state['last_clock']:
+        raise RecoveryError('clock_rollback_manual_review')
+    return now
+
+
+def recovery_worker_status(worker, boot):
+    if worker is None:
+        return 'not_started'
+    if worker['boot_id'] != boot:
+        return 'previous_boot'
+    if worker['state'] in ('stopped', 'code_changed'):
+        return worker['state']
+    if worker['identity'] is None:
+        return 'unknown'
+    current = recovery_identity(worker['identity']['pid'])
+    return 'running' if current == worker['identity'] else 'exited_unexpectedly' if current is None else 'identity_changed'
+
+
+def recovery_summary(state, boot):
+    now = recovery_clock(state)
+    counted = [row for row in state['attempts'] if row['counted'] and row['created_at'] > now - 86400]
+    pending = any(row['state'] in ('running', 'unknown') for row in state['attempts'])
+    worker = recovery_worker_status(state['watchdog'], boot)
+    return {'schema': 1, 'enabled': state['enabled'], 'scope': 'current_execution_context',
+            'watchdog': {'wanted': state['watchdog_wanted'], 'status': worker,
+                         'restart_after_external': state['restart_after_external'],
+                         'interval_seconds': state['interval_seconds']},
+            'policy': {'budget': 'shared_watchdog_and_external', 'max_attempts_24h': state['max_attempts_24h'],
+                       'cooldown_seconds': state['cooldown_seconds'], 'attempts_in_window': len(counted),
+                       'timeout_seconds': state['timeout_seconds'], 'retained_records': len(state['attempts']),
+                       'max_retained_records': RECOVERY_MAX_RECORDS},
+            'manual_review_required': pending, 'external_confirmation': 'pending',
+            'last_attempt': recovery_result(state['attempts'][-1]) if state['attempts'] else None}
+
+
+def recovery_result(row):
+    return {key: row[key] for key in ('id', 'actor', 'reason', 'state', 'created_at', 'finished_at',
+                                     'exit_code', 'external_confirmation', 'reconciled')}
+
+
+def recovery_update_fence(directory):
+    """Read-only evidence. Call the guard as well when authorizing an update."""
+    root = directory / RECOVERY_DIRECTORY
+    if not root.exists() and not root.is_symlink():
+        return {'state': 'not_configured', 'update_allowed': True}
+    try:
+        folder = recovery_folder(directory)
+        state = recovery_read(folder)
+        recovery_clock(state)
+        if any(row['state'] in ('running', 'unknown') for row in state['attempts']):
+            return {'state': 'manual_review_required', 'update_allowed': False}
+        return {'state': 'idle' if state['enabled'] else 'disabled', 'update_allowed': state['enabled']}
+    except Exception:
+        return {'state': 'unknown', 'update_allowed': False}
+
+
+@contextlib.contextmanager
+def recovery_update_guard(directory):
+    root = directory / RECOVERY_DIRECTORY
+    if not root.exists() and not root.is_symlink():
+        yield
+        return
+    folder = recovery_folder(directory)
+    with recovery_lock(folder, 'run.lock'):
+        fence = recovery_update_fence(directory)
+        if not fence['update_allowed']:
+            raise RecoveryError('recovery_blocks_update')
+        yield
+
+
+def recovery_automatic_fence(directory):
+    helper = globals().get('automatic_recovery_fence')
+    if callable(helper):
+        value = helper(directory)
+        if not isinstance(value, dict) or value.get('recovery_allowed') is not True:
+            raise RecoveryError('automatic_update_blocks_recovery')
+    else:
+        root = directory / '.automatic-updates'
+        if root.exists() or root.is_symlink():
+            raise RecoveryError('automatic_update_state_unknown')
+
+
+def recovery_preflight(directory, runtime):
+    apply_private(directory)
+    recovery_boot()
+    if recovery_identity(os.getpid()) is None:
+        raise RecoveryError('execution_context_unavailable')
+    if not os.path.isfile(sys.executable) or not os.access(sys.executable, os.X_OK):
+        raise RecoveryError('execution_context_unavailable')
+    for relative in ('shim', 'state', 'sshd'):
+        apply_private(directory / relative)
+    if runtime.exists() or runtime.is_symlink():
+        apply_private(runtime)
+    elif runtime.parent.is_symlink() or not os.access(str(runtime.parent), os.W_OK | os.X_OK):
+        raise RecoveryError('execution_context_unavailable')
+    sock = runtime / 'tailscaled.sock'
+    if sock.exists() or sock.is_symlink():
+        info = sock.lstat()
+        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+            raise RecoveryError('unsafe_daemon_socket')
+    for relative in ('installed', 'authenticated', 'state/tailscaled.state', 'shim/ca.crt',
+                     'shim/ca.key', 'shim/bundle.crt', 'sshd/sshd_config',
+                     'sshd/ssh_host_ed25519_key', 'sshd/authorized_keys'):
+        recovery_file(directory, relative, limit=16 * 1024 * 1024, nonempty=relative != 'authenticated')
+    for relative in ('start.sh', 'setup.sh', 'dots-ts', 'dots_proxy.py', 'tailscale', 'tailscaled', 'shim/shim.py'):
+        recovery_file(directory, relative, limit=96 * 1024 * 1024, executable=True)
+    if bounded_code_read(directory, 'start.sh', 4096) != RECOVERY_START:
+        raise RecoveryError('unsupported_start_script')
+    if package_report(directory)['integrity'] != 'match':
+        raise RecoveryError('untrusted_or_mixed_package')
+    for relative in ('.runtime-update-block',):
+        if (directory / relative).exists() or (directory / relative).is_symlink():
+            raise RecoveryError('runtime_update_blocks_recovery')
+    recovery_automatic_fence(directory)
+
+
+def recovery_capture(argv):
+    process = None
+    try:
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, close_fds=True)
+        deadline = time.monotonic() + MANAGEMENT_TIMEOUT
+        output = bytearray()
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise RecoveryError('local_probe_unknown')
+                chunk = os.read(process.stdout.fileno(), min(4096, 65537 - len(output)))
+                if not chunk:
+                    break
+                output.extend(chunk)
+                if len(output) > 65536:
+                    raise RecoveryError('local_probe_unknown')
+        if process.wait(timeout=max(.001, deadline - time.monotonic())):
+            raise RecoveryError('local_probe_unknown')
+        return parse_release_json(bytes(output))
+    except (OSError, subprocess.SubprocessError, UpdateError):
+        raise RecoveryError('local_probe_unknown') from None
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            process.stdout.close()
+
+
+def recovery_probe(directory, runtime):
+    processes = process_checks(directory)
+    sock = socket_status(runtime / 'tailscaled.sock')
+    if any(value == 'unknown' for value in processes.values()) or sock not in ('present', 'missing'):
+        return {'state': 'unknown', 'backend': 'unknown', 'ssh': 'unknown'}
+    backend = 'unavailable'
+    if sock == 'present':
+        value = recovery_capture([str(directory / 'tailscale'), '--socket=' + str(runtime / 'tailscaled.sock'), 'status', '--json'])
+        if not isinstance(value, dict) or not isinstance(value.get('BackendState'), str):
+            raise RecoveryError('local_probe_unknown')
+        backend = value['BackendState']
+        if backend in ('NeedsLogin', 'NeedsMachineAuth', 'NoState'):
+            return {'state': 'authentication_required', 'backend': backend, 'ssh': 'unknown'}
+        if backend != 'Running':
+            return {'state': 'unknown', 'backend': backend, 'ssh': 'unknown'}
+    if 'not_running' in processes.values():
+        reason = 'ssh_only' if processes.get('sshd') == 'not_running' and all(processes.get(k) == 'running' for k in ('shim', 'tailscaled')) else 'components_missing'
+        return {'state': reason, 'backend': backend, 'ssh': 'unavailable'}
+    if sock == 'missing':
+        return {'state': 'unknown', 'backend': backend, 'ssh': 'unknown'}
+    try:
+        with socket.create_connection(('127.0.0.1', 22), timeout=2) as connection:
+            banner = connection.recv(256)
+        if not banner.startswith(b'SSH-2.0-'):
+            raise OSError()
+    except OSError:
+        return {'state': 'unknown', 'backend': backend, 'ssh': 'unavailable'}
+    return {'state': 'healthy', 'backend': backend, 'ssh': 'banner_ready'}
+
+
+def recovery_external(options, now):
+    if options.actor == 'external':
+        if (type(options.claim_expires_at) is not int or not now < options.claim_expires_at <= now + 120
+                or type(options.observation_time) is not int or not 0 <= now - options.observation_time <= 150
+                or not options.ssh_failed or not options.ping_failed):
+            raise RecoveryError('invalid_or_stale_external_claim')
+    elif (options.claim_expires_at is not None or options.observation_time is not None
+          or options.ssh_failed or options.ping_failed):
+        raise RecoveryError('external_claim_flags_for_watchdog')
+
+
+def recovery_environment(directory):
+    environment = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': os.environ.get('HOME', '/home/agent'),
+                   'DOTS_TS_DIR': str(directory)}
+    if 'UPSTREAM_PROXY' in os.environ:
+        environment['UPSTREAM_PROXY'] = validate_proxy(os.environ['UPSTREAM_PROXY'])
+    for key in ('SHIM_MAX_CONNECTIONS',):
+        if key in os.environ:
+            environment[key] = os.environ[key]
+    return environment
+
+
+def recovery_run(directory, runtime, options):
+    if not recovery_identifier(options.request_id):
+        raise RecoveryError('invalid_request_id')
+    folder = recovery_folder(directory)
+    with recovery_lock(folder, 'run.lock'):
+        with recovery_lock(folder, 'control.lock'):
+            state = recovery_read(folder)
+            now = recovery_clock(state)
+            boot = recovery_boot()
+            prior = next((row for row in state['attempts'] if row['id'] == options.request_id), None)
+            if prior is not None:
+                if prior['actor'] != options.actor:
+                    raise RecoveryError('request_id_conflict')
+                return dict(recovery_result(prior), replayed=True)
+            recovery_external(options, now)
+            if not state['enabled'] or options.actor == 'watchdog' and not state['watchdog_wanted']:
+                raise RecoveryError('recovery_disabled')
+            if any(row['state'] in ('running', 'unknown') for row in state['attempts']):
+                raise RecoveryError('unknown_result_requires_reconciliation')
+            recovery_preflight(directory, runtime)
+            local = recovery_probe(directory, runtime)
+            if local['state'] == 'authentication_required':
+                raise RecoveryError('authentication_requires_manual_review')
+            if local['state'] not in ('healthy', 'components_missing', 'ssh_only'):
+                raise RecoveryError('local_probe_unknown')
+            now = recovery_clock(state)
+            recovery_external(options, now)
+            counted = [row for row in state['attempts'] if row['counted'] and row['created_at'] > now - 86400]
+            if local['state'] != 'healthy':
+                if len(counted) >= state['max_attempts_24h']:
+                    raise RecoveryError('shared_daily_budget_exhausted')
+                if counted and now < counted[-1]['created_at'] + state['cooldown_seconds']:
+                    raise RecoveryError('shared_cooldown')
+            if local['state'] == 'healthy' and options.actor == 'watchdog':
+                return {'state': 'healthy', 'external_confirmation': 'pending', 'counted': False}
+            if len(state['attempts']) >= RECOVERY_MAX_RECORDS:
+                raise RecoveryError('recovery_ledger_full')
+            row = {'id': options.request_id, 'actor': options.actor,
+                   'reason': local['state'] if options.actor == 'watchdog' or local['state'] == 'healthy' else 'external_outage',
+                   'boot_id': boot, 'created_at': now, 'finished_at': None, 'state': 'running',
+                   'exit_code': None, 'external_confirmation': 'pending', 'executor': recovery_identity(os.getpid()),
+                   'child': None, 'counted': True, 'reconciled': False}
+            state['last_clock'] = now
+            state['attempts'].append(row)
+            if local['state'] == 'healthy':
+                row.update(state='skipped_healthy', finished_at=now, counted=False)
+                recovery_write(folder, state)
+                return dict(recovery_result(row), local=local)
+            # Probe the package lock, then release it: start.sh must take that
+            # same lock itself. Holding it across the child would deadlock.
+            with recovery_lock(directory, '.operation.lock'):
+                pass
+            recovery_write(folder, state)
+            process = None
+            try:
+                process = subprocess.Popen(['/bin/bash', str(directory / 'start.sh')],
+                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.DEVNULL, close_fds=True,
+                                           start_new_session=True, env=recovery_environment(directory))
+                row['child'] = recovery_identity(process.pid)
+                recovery_write(folder, state)
+            except Exception:
+                # A child may already have started before persistence failed.
+                # Keep the durable running intent; future IDs must not retry it.
+                if process is not None:
+                    try:
+                        process.kill()
+                        process.wait(timeout=5)
+                    except Exception:
+                        pass
+                raise RecoveryError('execution_or_journal_uncertain') from None
+        outcome = 'unknown'
+        code = None
+        try:
+            code = process.wait(timeout=state['timeout_seconds'])
+            outcome = 'local_ready' if code == 0 and recovery_probe(directory, runtime)['state'] == 'healthy' else 'failed' if code else 'unknown'
+        except subprocess.TimeoutExpired:
+            # Do not kill the process group: it can contain newly started
+            # daemons. The result is unknown even if the launcher is killed.
+            try:
+                process.kill()
+                process.wait(timeout=5)
+            except Exception:
+                pass
+        except Exception:
+            outcome = 'unknown'
+        try:
+            with recovery_lock(folder, 'control.lock'):
+                state = recovery_read(folder)
+                now = recovery_clock(state)
+                row = next(item for item in state['attempts'] if item['id'] == options.request_id)
+                row.update(state=outcome, finished_at=now, exit_code=code)
+                state['last_clock'] = now
+                recovery_write(folder, state)
+                result = dict(recovery_result(row), local_result_only=True,
+                              external_claim_validation='caller_asserted_structure_and_freshness_only' if options.actor == 'external' else 'not_applicable')
+        except Exception:
+            raise RecoveryError('execution_or_journal_uncertain') from None
+    if options.actor == 'external' and outcome == 'local_ready':
+        try:
+            with recovery_lock(folder, 'control.lock'):
+                state = recovery_read(folder)
+                restart = state['enabled'] and state['watchdog_wanted'] and state['restart_after_external']
+            if restart:
+                result['watchdog_restart'] = recovery_watchdog_start(directory, runtime, explicit=False)['state']
+            else:
+                result['watchdog_restart'] = 'not_requested_or_stopped'
+        except Exception:
+            # A secondary watchdog failure cannot erase an already durable
+            # startup outcome or turn it into permission for another attempt.
+            result['watchdog_restart'] = 'unavailable_manual_review'
+    return result
+
+
+def recovery_configure(directory, runtime, options):
+    apply_private(directory)
+    root = directory / RECOVERY_DIRECTORY
+    created = False
+    if not root.exists() and not root.is_symlink():
+        root.mkdir(mode=0o700)
+        created = True
+    folder = recovery_folder(directory)
+    with recovery_lock(folder, 'control.lock'):
+        if created:
+            state = recovery_default()
+            # A rejected initial configuration leaves a valid disabled record,
+            # rather than an ambiguous directory that can never be configured.
+            recovery_write(folder, state)
+        else:
+            state = recovery_read(folder)
+        recovery_clock(state)
+        for option, key in (('enabled', 'enabled'), ('max_attempts', 'max_attempts_24h'),
+                            ('cooldown_seconds', 'cooldown_seconds'), ('timeout_seconds', 'timeout_seconds'),
+                            ('interval_seconds', 'interval_seconds'), ('restart_after_external', 'restart_after_external')):
+            value = getattr(options, option, None)
+            if value is not None:
+                state[key] = value
+        if not state['enabled']:
+            state['watchdog_wanted'] = False
+        recovery_validate(state)
+        if state['enabled']:
+            recovery_preflight(directory, runtime)
+        state['last_clock'] = int(time.time())
+        recovery_write(folder, state)
+        return recovery_summary(state, recovery_boot())
+
+
+def recovery_stop(directory):
+    folder = recovery_folder(directory)
+    with recovery_lock(folder, 'control.lock'):
+        state = recovery_read(folder)
+        state['enabled'] = False
+        state['watchdog_wanted'] = False
+        recovery_write(folder, state)
+        return {'state': 'disabled', 'inflight_action': 'an_already_started_command_can_finish', 'tailscale_stopped': False}
+
+
+def recovery_status(directory, runtime):
+    root = directory / RECOVERY_DIRECTORY
+    if not root.exists() and not root.is_symlink():
+        return {'schema': 1, 'state': 'not_configured', 'enabled': False, 'network': 'not_probed', 'external_confirmation': 'pending'}
+    state = recovery_read(recovery_folder(directory))
+    result = recovery_summary(state, recovery_boot())
+    try:
+        recovery_preflight(directory, runtime)
+        result['network'] = recovery_probe(directory, runtime)
+    except Exception:
+        result['network'] = {'state': 'unknown'}
+    return result
+
+
+def recovery_reconcile(directory, runtime, options):
+    if not options.confirm_reviewed or not recovery_identifier(options.request_id):
+        raise RecoveryError('explicit_review_required')
+    folder = recovery_folder(directory)
+    with recovery_lock(folder, 'run.lock'), recovery_lock(folder, 'control.lock'):
+        state = recovery_read(folder)
+        row = next((item for item in state['attempts'] if item['id'] == options.request_id), None)
+        if row is None or row['state'] not in ('running', 'unknown'):
+            raise RecoveryError('no_uncertain_attempt')
+        if row['boot_id'] == recovery_boot():
+            candidates = [row['child']] + ([row['executor']] if row['state'] == 'running' else [])
+            for identity in candidates:
+                if identity is not None and recovery_identity(identity['pid']) is not None:
+                    raise RecoveryError('attempt_process_not_proven_exited')
+        if options.outcome == 'local_ready':
+            recovery_preflight(directory, runtime)
+            if recovery_probe(directory, runtime)['state'] != 'healthy':
+                raise RecoveryError('local_readiness_not_confirmed')
+        now = recovery_clock(state)
+        row.update(state=options.outcome, finished_at=now, reconciled=True)
+        state['last_clock'] = now
+        recovery_write(folder, state)
+        return recovery_result(row)
+
+
+def recovery_watchdog_start(directory, runtime, explicit=True):
+    import uuid
+    folder = recovery_folder(directory)
+    with recovery_lock(folder, 'control.lock'):
+        state = recovery_read(folder)
+        if not state['enabled']:
+            raise RecoveryError('recovery_disabled')
+        if not explicit and (not state['watchdog_wanted'] or not state['restart_after_external']):
+            return {'state': 'not_requested_or_stopped'}
+        recovery_preflight(directory, runtime)
+        boot = recovery_boot()
+        status = recovery_worker_status(state['watchdog'], boot)
+        if status == 'running':
+            if explicit and not state['watchdog_wanted']:
+                state['watchdog_wanted'] = True
+                recovery_write(folder, state)
+            return {'state': 'already_running'}
+        if status in ('unknown', 'identity_changed'):
+            raise RecoveryError('watchdog_identity_unknown')
+        state['watchdog_wanted'] = True
+        identifier = uuid.uuid4().hex
+        state['watchdog'] = {'id': identifier, 'boot_id': boot, 'identity': None, 'state': 'starting',
+                             'code_hash': hashlib.sha256(bounded_code_read(directory, 'dots-ts', 8 * 1024 * 1024)).hexdigest()}
+        recovery_write(folder, state)
+        process = subprocess.Popen([sys.executable, '-E', '-s', '-B', str(directory / 'dots-ts'),
+                                    'recovery', '_watchdog', '--id', identifier],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+                                   env=recovery_environment(directory))
+        identity = recovery_identity(process.pid)
+        if identity is None:
+            raise RecoveryError('watchdog_start_uncertain')
+        state['watchdog'].update(identity=identity, state='running')
+        recovery_write(folder, state)
+        return {'state': 'started', 'boot_id': boot, 'pid': process.pid}
+
+
+def recovery_watchdog_stop(directory):
+    # The worker checks this durable intention before every run. Do not kill an
+    # in-flight startup command or revive an older private watchdog process.
+    folder = recovery_folder(directory)
+    with recovery_lock(folder, 'control.lock'):
+        state = recovery_read(folder)
+        state['watchdog_wanted'] = False
+        if state['watchdog'] is not None:
+            try:
+                with recovery_lock(folder, 'watchdog.lock'):
+                    # No packaged worker holds the lifetime lock. A pending
+                    # process must still check wanted/id before any action.
+                    state['watchdog']['state'] = 'stopped'
+            except RecoveryError as error:
+                if str(error) != 'recovery_busy':
+                    raise
+        recovery_write(folder, state)
+        return {'state': 'stop_requested', 'watchdog_wanted': False,
+                'inflight_action': 'can_finish', 'tailscale_stopped': False}
+
+
+def recovery_watchdog_worker(directory, runtime, identifier):
+    import uuid
+    folder = recovery_folder(directory)
+    own = recovery_identity(os.getpid())
+    if own is None:
+        raise RecoveryError('process_identity_unknown')
+    with recovery_lock(folder, 'watchdog.lock'):
+        # Parent holds control.lock while launching and persisting this identity.
+        deadline = time.monotonic() + 3
+        while True:
+            try:
+                with recovery_lock(folder, 'control.lock'):
+                    state = recovery_read(folder)
+                    worker = state['watchdog']
+                    if (not worker or worker['id'] != identifier or worker['identity'] != own
+                            or worker['boot_id'] != recovery_boot()):
+                        raise RecoveryError('watchdog_identity_unknown')
+                break
+            except RecoveryError as error:
+                if str(error) != 'recovery_busy' or time.monotonic() >= deadline:
+                    raise
+                time.sleep(.05)
+        while True:
+            state = recovery_read(folder)
+            worker = state['watchdog']
+            if (not worker or worker['id'] != identifier or worker['identity'] != own
+                    or worker['boot_id'] != recovery_boot()):
+                raise RecoveryError('watchdog_identity_unknown')
+            if not state['enabled'] or not state['watchdog_wanted']:
+                with recovery_lock(folder, 'control.lock'):
+                    state = recovery_read(folder)
+                    # An explicit start may have resumed this same process
+                    # while it was entering shutdown. Recheck under the lock.
+                    if state['enabled'] and state['watchdog_wanted']:
+                        continue
+                    if state['watchdog'] and state['watchdog']['id'] == identifier:
+                        state['watchdog']['state'] = 'stopped'
+                        recovery_write(folder, state)
+                return 0
+            digest = hashlib.sha256(bounded_code_read(directory, 'dots-ts', 8 * 1024 * 1024)).hexdigest()
+            if digest != worker['code_hash']:
+                with recovery_lock(folder, 'control.lock'):
+                    state = recovery_read(folder)
+                    if state['watchdog']['id'] == identifier:
+                        state['watchdog']['state'] = 'code_changed'
+                        recovery_write(folder, state)
+                return 0
+            options = argparse.Namespace(actor='watchdog', request_id=uuid.uuid4().hex,
+                                         claim_expires_at=None, observation_time=None,
+                                         ssh_failed=False, ping_failed=False)
+            try:
+                recovery_run(directory, runtime, options)
+            except (RecoveryError, ApplyError, OSError):
+                # Durable unknown results stay fenced; every later tick rereads
+                # policy rather than treating a retry time as authorization.
+                pass
+            # A stopped worker exits within one configured interval. This is a
+            # user process, not a platform boot hook or an installed scheduler.
+            time.sleep(state['interval_seconds'])
+
+
+def recovery_main(argv, directory, runtime):
+    parser = SafeParser(description='Opt-in local recovery coordination; never installs/authenticates.')
+    commands = parser.add_subparsers(dest='recovery_command', required=True)
+    configure = commands.add_parser('configure')
+    enabled = configure.add_mutually_exclusive_group()
+    enabled.add_argument('--enable', dest='enabled', action='store_const', const=True, default=None)
+    enabled.add_argument('--disable', dest='enabled', action='store_const', const=False)
+    configure.add_argument('--max-attempts', type=int)
+    configure.add_argument('--cooldown-seconds', type=int)
+    configure.add_argument('--timeout-seconds', type=int)
+    configure.add_argument('--interval-seconds', type=int)
+    restart = configure.add_mutually_exclusive_group()
+    restart.add_argument('--restart-watchdog-after-external', dest='restart_after_external', action='store_const', const=True, default=None)
+    restart.add_argument('--no-restart-watchdog-after-external', dest='restart_after_external', action='store_const', const=False)
+    run = commands.add_parser('run')
+    run.add_argument('--actor', choices=('watchdog', 'external'), required=True)
+    run.add_argument('--request-id', required=True)
+    run.add_argument('--claim-expires-at', type=int)
+    run.add_argument('--observation-time', type=int)
+    run.add_argument('--ssh-failed', action='store_true')
+    run.add_argument('--ping-failed', action='store_true')
+    status = commands.add_parser('status')
+    stop = commands.add_parser('stop')
+    reconcile = commands.add_parser('reconcile')
+    reconcile.add_argument('--request-id', required=True)
+    reconcile.add_argument('--outcome', choices=('not_executed', 'failed', 'local_ready'), required=True)
+    reconcile.add_argument('--confirm-reviewed', action='store_true')
+    watchdog = commands.add_parser('watchdog')
+    watchdog_commands = watchdog.add_subparsers(dest='watchdog_command', required=True)
+    for name in ('start', 'stop', 'status'):
+        watchdog_commands.add_parser(name).add_argument('--json', action='store_true')
+    internal = commands.add_parser('_watchdog', help=argparse.SUPPRESS)
+    internal.add_argument('--id', required=True)
+    for command in (configure, run, status, stop, reconcile):
+        command.add_argument('--json', action='store_true')
+    try:
+        options = parser.parse_args(argv)
+        if options.recovery_command == '_watchdog':
+            return recovery_watchdog_worker(directory, runtime, options.id)
+        if options.recovery_command == 'configure':
+            report = recovery_configure(directory, runtime, options)
+        elif options.recovery_command == 'run':
+            report = recovery_run(directory, runtime, options)
+        elif options.recovery_command == 'stop':
+            report = recovery_stop(directory)
+        elif options.recovery_command == 'reconcile':
+            report = recovery_reconcile(directory, runtime, options)
+        elif options.recovery_command == 'watchdog' and options.watchdog_command == 'start':
+            report = recovery_watchdog_start(directory, runtime)
+        elif options.recovery_command == 'watchdog' and options.watchdog_command == 'stop':
+            report = recovery_watchdog_stop(directory)
+        else:
+            report = recovery_status(directory, runtime)
+    except RecoveryError as error:
+        uncertain = str(error) == 'execution_or_journal_uncertain'
+        report = {'state': 'unknown' if uncertain else 'rejected', 'error': str(error), 'external_confirmation': 'pending'}
+        if uncertain:
+            report['id'] = options.request_id
+    except (OSError, ApplyError, UpdateError, ValueError, TypeError, KeyError):
+        report = {'state': 'rejected', 'error': 'recovery_context_or_state_unavailable', 'external_confirmation': 'pending'}
+    print(json.dumps(report, sort_keys=True))
+    return int(report.get('state') in ('rejected', 'unknown', 'failed', 'running') or bool(report.get('error')))
+
+
 class SafeParser(argparse.ArgumentParser):
     def error(self, message):
         raise ValueError("invalid_arguments")
@@ -2674,6 +3416,8 @@ def main(argv=None):
                 return 1
             return 0
         directory, runtime = directories()
+        if argv and argv[0] == 'recovery':
+            return recovery_main(argv[1:], directory, runtime)
         if argv and argv[0] == "cli":
             os.execv(str(directory / "tailscale"), [str(directory / "tailscale"), "--socket=" + str(runtime / "tailscaled.sock")] + argv[1:])
         if argv and argv[0] == "proxy":
