@@ -72,8 +72,8 @@ a new boot, an active socket or an uninspectable process/table remains unknown.
 Connection refusal alone is never proof that a socket can be removed.
 
 After checking the shared attempt budget, the helper takes the package operation
-lock, repeats preflight and the complete stale proof, and durably records a
-`socket_cleanup=intent` before removing only the checked `tailscaled.sock` through
+lock, repeats preflight, durably records `socket_cleanup=intent`, then repeats the
+complete stale proof before removing only the checked `tailscaled.sock` through
 the verified private directory descriptor. It records `removed`, releases that
 lock, then invokes the unchanged installed `start.sh`, which acquires its own
 lock. An interruption or failed result write leaves the attempt fenced; a new ID
