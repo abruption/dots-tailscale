@@ -66,7 +66,7 @@ The relay preserves the original diagnostic `state` and adds
 when `state` is `verified_running` or `prior_boot`, SSH `command_succeeded` and
 `probe_valid` are exactly `true`, ping `responded` is exactly `true`, both exit
 codes are integers equal to zero, and both error classes are absent or `ok`.
-Other diagnostic states remain `unconfirmed` in this conservative change.
+Other accepted diagnostic states remain `unconfirmed` in this conservative change.
 The field describes evidence for recovery confirmation; it does not certify
 that the watchdog or application is running correctly.
 
@@ -78,6 +78,9 @@ absent, the legacy `verified_running` confirmation rule remains in effect.
 Duplicate timestamps never upgrade or advance proof. All sample timing,
 first-report, daily-budget and incident-boundary requirements above still apply;
 existing claims without proof slots and historical observations are not backfilled.
+A latest claim issued by the #61 code with an existing unconfirmed slot can earn
+confirmation from natural samples arriving after this relay upgrade. That is new
+evidence, not retroactive processing of old observations.
 
 ## What status means
 
@@ -113,8 +116,14 @@ KR's existing mail connector changes must be retained: add the new argument to
 For the #75 observation extension, deploy the reviewed broker first: it accepts
 both legacy relay payloads and the optional field. Then deploy the updated
 relay. An updated relay sending the new field to an old broker is rejected
-(HTTP 400); there is no automatic field-stripping fallback. Roll back the relay
+(HTTP 400, or a failed SSH ingest); there is no automatic field-stripping fallback.
+Reversing the order rejects failure observations as well as healthy ones and can
+stop outage detection. Check relay rejection/stale-delivery diagnostics before
+calling the rollout healthy. Roll back the relay
 first, then the broker, retaining any existing integrated mail connector code.
+Code rollback does not erase already earned confirmation or revoke it merely
+because it was earned under the explicit-health contract. Preserve that evidence
+and reassess current eligibility rather than restoring an older ledger.
 This protocol change does not require changing live cooldown configuration,
 issuing claims, or rewinding history. Verify natural fresh samples and the
 queried incident's `effective_cooldown_seconds` and `cooldown_basis`; a configured
