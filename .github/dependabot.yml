@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - ci
+    groups:
+      github-actions:
+        patterns:
+          - '*'
+    # Full commit-SHA pins remain in the workflows. Updates are reviewed PRs;
+    # this configuration does not authorize merging or deploying them.
