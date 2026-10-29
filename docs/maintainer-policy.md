@@ -36,6 +36,17 @@ documented emergency, retain the exact revision and reason in a linked issue,
 perform independent review as soon as possible and verify the required checks
 afterward. Do not use the exception as the routine release or merge path.
 
+An agent or automation using the owner's administrator credential has the same
+bypass authority as the owner. These settings do not turn that credential into
+a restricted contributor identity. Use a separate non-administrator credential
+for routine automation if technical enforcement against it is required; this
+change does not create, copy or rotate such credentials.
+
+The new `Python static checks` job must land before older PRs can satisfy the
+new required context. Merge the reviewed CI-bearing change first, then update
+other branches from main. In particular, PR #62 must be rebased or superseded;
+do not routinely bypass a missing check just to preserve its old base.
+
 ## Apply, inspect and roll back
 
 Use the reviewed `scripts/repository_security.py` helper. `inspect` is read-only;

@@ -20,7 +20,9 @@ class StaticGateTests(unittest.TestCase):
         self.assertEqual(selected, sorted([
             "dots-ts", "shim.py", "scripts/source_manifest.py", "tests/test_example.py",
             "research/mcp-events/server.py", "research/lifecycle-20/collector.py",
+            "other/unrelated.py",
         ]))
+        self.assertIn("other/unrelated.py", selected)
 
     def test_unsafe_source_paths_are_refused(self):
         for name in ("../shim.py", "/tmp/shim.py", "research/../../shim.py"):

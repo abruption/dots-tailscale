@@ -386,10 +386,18 @@ class ConnectionAdmission:
         if type(limit) is not int or not 1 <= limit <= MAX_CONNECTION_LIMIT:
             raise ValueError("invalid connection limit")
         self._slots = threading.BoundedSemaphore(limit)
+        self._notice_lock = threading.Lock()
+        self._next_limit_notice = 0.0
 
     def dispatch(self, conn):
         if not self._slots.acquire(blocking=False):
             close(conn)
+            # Close first; emit at most one fixed warning per 30 seconds.
+            with self._notice_lock:
+                now = time.monotonic()
+                if now >= self._next_limit_notice:
+                    self._next_limit_notice = now + 30
+                    print("shim: active connection limit reached; excess connections closed", file=sys.stderr, flush=True)
             return False
 
         # Release once even if thread startup is interrupted after the new

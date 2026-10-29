@@ -5,6 +5,7 @@ import json
 from pathlib import Path, PurePosixPath
 import subprocess
 import sys
+import tempfile
 
 
 RUFF_VERSION = "0.17.3"
@@ -18,10 +19,7 @@ def source_paths(tracked_paths):
         path = PurePosixPath(name)
         if path.is_absolute() or ".." in path.parts:
             raise ValueError("unexpected tracked source path")
-        if name == "dots-ts" or (
-            path.suffix == ".py"
-            and (len(path.parts) == 1 or path.parts[0] in ("scripts", "tests", "research"))
-        ):
+        if name == "dots-ts" or path.suffix == ".py":
             selected.append(name)
     return sorted(set(selected))
 
@@ -54,10 +52,12 @@ def main(argv=None):
         return 2
     command = [sys.executable, "-m", "ruff", "check", "--no-cache", "--config", str(ROOT / "ruff.toml")]
     if args.self_test:
-        probe = subprocess.run(
-            command + ["--output-format", "json", "--stdin-filename", "dots-ts", "-"],
-            input="print(static_gate_undefined_name)\n", capture_output=True, text=True, cwd=ROOT,
-        )
+        # Exercise a real extensionless file through the same explicit path flow.
+        with tempfile.TemporaryDirectory(prefix="dots-static-") as directory:
+            fixture = Path(directory) / "dots-ts"
+            fixture.write_text("print(static_gate_undefined_name)\n")
+            probe = subprocess.run(command + ["--output-format", "json", "--", str(fixture)],
+                                   capture_output=True, text=True, cwd=ROOT)
         if not fixture_rejected(probe.returncode, probe.stdout):
             print("Static gate did not reject the undefined-name fixture as expected.", file=sys.stderr)
             return 1

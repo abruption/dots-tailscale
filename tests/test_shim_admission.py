@@ -192,10 +192,10 @@ class AdmissionTests(unittest.TestCase):
         peer, conn = self.pair()
         server, upstream = self.pair()
         budget = 0.05
+        peer.sendall(b"CONNECT example.test:22 HTTP/1.1\r\n\r\ninitial")
         with self.track_threads(), mock.patch.object(shim, "SETUP_TIMEOUT", budget), \
                 mock.patch.object(shim, "upstream_connect", return_value=(upstream, b"")):
             self.assertTrue(admission.dispatch(conn))
-            peer.sendall(b"CONNECT example.test:22 HTTP/1.1\r\n\r\ninitial")
             self.assertIn(b"200", head(peer))
             self.assertEqual(exact(server, 7), b"initial")
             extra_peer, extra_conn = self.pair()

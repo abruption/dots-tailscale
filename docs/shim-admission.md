@@ -23,6 +23,13 @@ admitted connection, with one additional timer thread during a non-upgraded HTTP
 response setup stage. Certificate generation and buffers also consume resources;
 this is a concurrency limit, not a complete memory or bandwidth quota.
 
+Every client shares this budget, including tailscaled itself. Saturation can
+reject its control/DERP reconnects; even an idle connection can hold a setup slot
+until its deadline. A fixed warning reports saturation at most once every 30
+seconds, after closing the excess socket. It does not identify clients or log
+their CONNECT targets. Use the intended tailnet policy rather than arbitrary
+stream lifetime limits to control who can reach this unauthenticated service.
+
 The listener remains bound to `127.0.0.1`. This does **not** by itself make it
 inaccessible to tailnet peers: Tailscale userspace networking can forward inbound
 TCP for the node address to the same loopback port. Local processes and peers
@@ -32,8 +39,12 @@ authentication and does not replace that policy, setup deadlines, or CONNECT
 target validation. No actual resource-exhaustion incident is established by these
 tests.
 
+A permitted peer can also attempt to use the CONNECT proxy, subject to its target
+validation and the upstream platform proxy's policy. Loopback binding is neither
+proxy authentication nor proof that the peer is restricted to slot occupancy.
+
 The regression suite uses isolated socket pairs and controlled startup failures
 to verify rejection without new threads, capacity reuse, socket cleanup, joining
-an upload worker when the response timer cannot start, and a raw stream that
-remains usable after its setup deadline. These checks do not establish behavior
+workers/timers even when startup raises after the thread began, and normal raw
+and multiple WebSocket streams that remain usable after setup deadlines. These checks do not establish behavior
 under a live Dots outage, a VM replacement, or a production load test.
