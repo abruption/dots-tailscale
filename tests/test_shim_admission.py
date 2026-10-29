@@ -315,7 +315,9 @@ class AdmissionTests(unittest.TestCase):
                 mock.patch.object(shim, "up_ctx", IdentityTLS()):
             self.assertTrue(admission.dispatch(conn))
             self.joined()
-            self.assertIn((self.started[1], self.started[0]), joins)
+            # A child may run before its parent's start() wrapper returns, so
+            # completion/list-append order is not the thread ownership order.
+            self.assertIn((self.attempted[1], self.attempted[0]), joins)
         with self.track_threads():
             self.reusable(admission)
 
