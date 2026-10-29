@@ -10,6 +10,31 @@
 
 **默认基线为 1.102.4 的现有软件包（包括 v0.6.0）：** 更新到 v0.7.1 时，请使用[先更新运行时、再迁移基线的流程（英文）](security-baseline.md)。下方普通 apply 示例仅适用于已经声明 1.104.4 的软件包；`TS_VERSION` 变更仍会被拒绝，请勿编辑声明或重新生成清单来绕过检查。
 
+<a id="development-v080"></a>
+
+## v0.8.0 开发候选版本说明
+
+最新发布的稳定版是 **v0.7.1**。此分支也包含 v0.8.0 的开发内容，但下方新命令并不代表 v0.8.0 已正式发布。本页的稳定版安装示例和历史更新示例仍固定为 v0.7.1。
+
+- **查看实际观测到的版本。** `version` 不会查询运行中的守护进程，只比较本地 CLI、守护进程二进制与声明的基线。`doctor` 还会通过有时间限制的套接字响应读取后端版本。缺失、非稳定版本和不一致都会明确保留，现有退出码和连接健康判定不变。`healthy` 或达到基线不等于安全结论。请参阅[基线诊断（英文）](baseline-diagnostics.md)。
+- **比较与信任判断要分开。** `update check --bundle` 不连接 GitHub、不更改安装，只读取原始清单和四个源文件。这是本地证据，不是重新验证最新发布状态或发布者身份。API 超额仍是错误；有界的重试时间提示和本地退避，不会把缓存的错误变成成功。请参阅[请求限制与离线检查（英文）](update-check-resilience.md)。
+- **应用前验证软件包来源。** 目标为 v0.8.0 及以上版本时，需要原始来源证明、预装的可信 `gh` **2.103.3 或更新版本**，以及在安装目录、候选目录之外单独准备的 `--provenance-root`。未签名的旧版本需要明确的人工 `--allow-unsigned-legacy` 例外，自动更新不会使用它。开发文件包或哈希一致也不能绕过证明要求。请参阅[来源验证与首次迁移（英文）](release-provenance.md)。
+- **可选执行器需要明确启用。** 软件包自动更新默认关闭，启用前必须已安装源文件完整性匹配的 v0.8.0 或以上稳定软件包；尚未发布的开发构建不符合条件。它重用现有手动源码更新流程，不更新 Tailscale 二进制文件。操作人员需要另行安排调用 `tick` 的执行方，或亲自运行有时间限制的前台 `watch`。本功能不会安装 cron、systemd 或 ChatGPT 任务，VM 消失后的执行进程也无法自行重启。请参阅[自动更新（英文）](automatic-updates.md)。
+- **两条恢复路径要一起切换。** 请先停止旧 watchdog。只有软件包 watchdog 和外部任务都改用 `dots-ts recovery`，才会共用本地恢复记录与尝试预算。仍直接执行 `start.sh` 的旧任务不会经过该记录，安装软件包也不会自动切换生产任务。持久停止设置和结果不明时的执行阻止机制仍然生效。请参阅[恢复协调（英文）](recovery-lifecycle.md)。
+- **限制新建 shim 连接数量。** 默认上限是 **64个活动连接**。运维人员管理的启动方式可通过 `SHIM_MAX_CONNECTIONS` 选择 **1–256个**，这并非软件包自动修改的设置。超出的连接会立即关闭，但正常 control/DERP 连接的存活时间不受限制。userspace networking 下，仅绑定回环地址并不能排除 tailnet 访问，因此仍需检查 ACL。请参阅[shim 连接限制（英文）](shim-admission.md)。
+
+以下命令只读取候选版本的状态：
+
+```bash
+/workspace/.dots-tailscale/dots-ts version --json
+/workspace/.dots-tailscale/dots-ts doctor --json
+/workspace/.dots-tailscale/dots-ts update check --bundle /workspace/reviewed-release --json
+/workspace/.dots-tailscale/dots-ts update automatic status --json
+/workspace/.dots-tailscale/dots-ts recovery status --json
+```
+
+外部 MCP 路径仍是高级用户预览。另一个真实账号的连接、设置、恢复和取消订阅复现测试**尚未完成**；离线账号隔离测试不能替代它。请查看[预览准备情况（英文）](recovery-support-readiness.md)。本地启动成功与新的外部 SSH、ping 确认是两回事，boot ID 改变或目录被保留，也不能单独证明 VM 替换后的行为。
+
 <a id="download-proxy"></a>
 
 ## 下载连通性与代理设置
@@ -207,7 +232,7 @@ JSON 将 `package.declared_version`、`package.source_revision`、`package.integ
 /workspace/.dots-tailscale/dots-ts update apply --bundle /workspace/reviewed-bundle --confirm-recovery-terminal --json
 ```
 
-源文件包必须包含四个源文件和与之匹配的原始清单。本地选择可以是开发版本，但不会被标记为已发布的 GitHub 版本。更新器会在替换文件前验证哈希和语法。校验和匹配只能证明文件与所选源文件包一致，不能独立证明发布者可信。
+源文件包必须包含四个源文件和相匹配的原始清单。稳定版 v0.7.1 的更新器可以处理明确审核过的开发文件包，但不会将其视为已发布的版本。v0.8.0 候选版本增加了更严格的规则：即使从本地选择，目标为 v0.8.0 及以上时也需要来源证明，未签名的开发文件包不是例外。v0.8.0 以下的未签名目标需要人工指定 `--allow-unsigned-legacy`。哈希一致本身不能认证发布者。请查看[来源验证与首次迁移说明（英文）](release-provenance.md)。
 
 `started` 表示已脱离会话运行的工作进程接受了操作，不表示更新成功。重新连接后，请轮询 `update status`。最终状态包括 `applied`、`failed_rolled_back` 和 `rollback_failed_manual_required`。本地就绪状态和版本验证不能证明外部 SSH 可用：更新成功或成功回滚后，请使用严格主机密钥验证新建 SSH 连接，并单独测试所需连接。
 

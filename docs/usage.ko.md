@@ -10,6 +10,31 @@
 
 **v0.6.0 등 기본값이 1.102.4인 기존 패키지:** v0.7.1으로 이동하려면 [실행 파일 우선 전환 절차](security-baseline.ko.md)를 따르세요. 아래 일반 apply 예시는 이미 1.104.4를 선언하는 패키지에만 적용됩니다. `TS_VERSION` 변경은 거부되며 선언이나 manifest를 고쳐 우회하면 안 됩니다.
 
+<a id="development-v080"></a>
+
+## v0.8.0 개발 후보 안내
+
+최신으로 발행된 안정 버전은 **v0.7.1**입니다. 이 브랜치에는 v0.8.0 개발 작업도 포함돼 있지만, 아래 새 명령이 있다는 이유로 v0.8.0이 정식 출시된 것은 아닙니다. 이 페이지의 안정 버전 설치 예시와 과거 업데이트 예시는 계속 v0.7.1로 고정돼 있습니다.
+
+- **실제로 관측한 버전을 확인하세요.** `version`은 실행 중인 데몬에 접속하지 않고 로컬 CLI·데몬 바이너리를 설치에 선언된 기준과 비교합니다. `doctor`는 제한 시간 안에 받은 소켓 응답으로 백엔드 버전도 확인합니다. 누락·비정식·불일치 결과를 숨기지 않으며, 기존 종료 코드와 연결 상태 판정은 유지합니다. `healthy`나 기준 충족이 보안 판정은 아닙니다. [기준 버전 진단](baseline-diagnostics.ko.md)을 참고하세요.
+- **비교와 신뢰 판단은 별개입니다.** `update check --bundle`은 GitHub에 접속하거나 설치를 바꾸지 않고 원본 명세와 소스 네 개를 읽습니다. 로컬 자료에 대한 확인이며, 최신 발행 여부나 배포자 신원을 새로 증명하지 않습니다. API 한도 초과는 오류로 남고, 제한된 재시도 시각 안내와 로컬 대기가 캐시에 저장된 오류를 성공으로 바꾸지는 않습니다. [요청 제한과 오프라인 확인](update-check-resilience.ko.md)을 참고하세요.
+- **적용 전에 패키지 출처를 검증합니다.** v0.8.0 이상 대상은 원본 출처 증거, 미리 설치한 신뢰할 수 있는 `gh` **2.103.3 이상**, 설치·후보 디렉터리 밖에서 별도로 준비한 `--provenance-root`가 필요합니다. 서명 없는 이전 버전에는 명시적인 수동 `--allow-unsigned-legacy`가 필요하며 자동 업데이트는 이 예외를 쓰지 않습니다. 개발 묶음이거나 해시가 일치한다는 이유로 검증을 건너뛸 수 없습니다. [출처 검증과 첫 전환 절차](release-provenance.ko.md)를 참고하세요.
+- **선택 기능은 직접 켜야 합니다.** 패키지 자동 업데이트는 기본적으로 꺼져 있고, 활성화하려면 무결성이 맞는 v0.8.0 이상 안정 패키지가 이미 설치돼 있어야 합니다. 미발행 개발 빌드는 대상이 아닙니다. 기존 수동 소스 업데이트를 재사용하며 Tailscale 바이너리는 바꾸지 않습니다. 운영자가 `tick`을 호출할 별도 실행 주체를 두거나, 실행 시간을 정해 터미널에서 `watch`를 직접 실행해야 합니다. cron·systemd·ChatGPT 작업은 설치하지 않고, VM과 함께 사라진 실행기가 스스로 다시 켜지지도 않습니다. [자동 업데이트](automatic-updates.ko.md)를 참고하세요.
+- **두 복구 경로를 함께 전환하세요.** 먼저 기존 watchdog을 중지하세요. 패키지 watchdog과 외부 작업이 모두 `dots-ts recovery`를 사용할 때만 공통 로컬 원장이 적용됩니다. `start.sh`를 직접 실행하는 기존 작업은 이 원장을 거치지 않으며, 패키지 설치만으로 운영 작업이 전환되지는 않습니다. 지속되는 중지 설정과 결과 불명 시 실행 차단도 유지합니다. [복구 경로 조정](recovery-lifecycle.ko.md)을 참고하세요.
+- **새 shim 연결 수를 제한합니다.** 기본값은 활성 연결 **64개**입니다. 운영자가 관리하는 실행에서는 `SHIM_MAX_CONNECTIONS`로 **1–256개**를 정할 수 있으며, 패키지가 자동으로 바꾸는 새 설정은 아닙니다. 초과 연결은 바로 닫지만 정상적인 control/DERP 연결의 수명은 제한하지 않습니다. userspace networking에서는 루프백 바인딩만으로 tailnet 접근을 배제할 수 없으므로 ACL도 확인해야 합니다. [shim 연결 수 제한(영문)](shim-admission.md)을 참고하세요.
+
+개발 후보에서 다음 명령은 상태를 읽기만 합니다.
+
+```bash
+/workspace/.dots-tailscale/dots-ts version --json
+/workspace/.dots-tailscale/dots-ts doctor --json
+/workspace/.dots-tailscale/dots-ts update check --bundle /workspace/reviewed-release --json
+/workspace/.dots-tailscale/dots-ts update automatic status --json
+/workspace/.dots-tailscale/dots-ts recovery status --json
+```
+
+외부 MCP 경로는 고급 사용자용 미리보기로 남아 있습니다. 다른 실제 계정에서 연결·설정·복구·구독 해제를 재현한 시험은 **아직 완료하지 않았습니다**. 오프라인 계정 분리 시험이 이를 대신하지는 않습니다. [실험 지원 준비 상태](recovery-support-readiness.ko.md)를 확인하세요. 로컬 시작 성공은 새로운 외부 SSH·ping 확인과 다르며, boot ID가 바뀌거나 디렉터리가 남았다는 사실만으로 VM 교체 후 동작을 입증할 수는 없습니다.
+
 <a id="download-proxy"></a>
 
 ## 다운로드와 프록시 연결 확인
@@ -156,7 +181,7 @@ v0.4.0에 포함된 기능으로 해당 버전의 도구가 설치되어 있어�
 /workspace/.dots-tailscale/dots-ts update apply --bundle /workspace/reviewed-bundle --confirm-recovery-terminal --json
 ```
 
-소스 파일 네 개와 해당 파일에 일치하는 원본 명세가 필요합니다. 로컬 묶음에는 개발 버전을 사용할 수 있지만, 이를 GitHub에 발행된 릴리스로 표시하지는 않습니다. 교체 전에 해시와 문법을 검사합니다. 체크섬 일치는 선택한 묶음과 파일이 같다는 뜻이며, 작성자의 신뢰성을 별도로 증명하지는 않습니다.
+묶음에는 소스 네 개와 그에 맞는 원본 명세가 필요합니다. 안정 버전 v0.7.1의 updater는 명시적으로 검토한 개발 묶음을 발행된 릴리스로 표시하지 않고 다룰 수 있습니다. v0.8.0 개발 후보에는 더 엄격한 규칙이 추가됩니다. 로컬에서 고른 경우도 v0.8.0 이상 대상에는 출처 증명이 필요하며, 서명 없는 개발 묶음은 예외가 아닙니다. v0.8.0 미만의 서명 없는 대상에는 수동 `--allow-unsigned-legacy`가 필요합니다. 해시 일치만으로 배포자를 인증할 수는 없습니다. [출처 검증과 첫 전환 안내](release-provenance.ko.md)를 확인하세요.
 
 `started`는 분리된 작업 프로세스가 작업을 접수했다는 뜻으로, 업데이트 성공이 아닙니다. 재접속 후 `update status`로 확인하세요. 최종 결과는 `applied`, `failed_rolled_back`, `rollback_failed_manual_required`로 구분합니다. 로컬 준비 상태와 버전 확인만으로 외부 SSH 접속까지 확인되지는 않습니다. 적용이나 원복 성공 후에는 엄격한 호스트 키 검증을 유지한 새 SSH 연결로 실제 접속을 별도로 확인하세요.
 

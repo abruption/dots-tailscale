@@ -10,6 +10,31 @@ At the initial public publication, the repository clone and raw downloads were v
 
 **Existing 1.102.4-baseline packages (including v0.6.0):** use the [runtime-first baseline migration](security-baseline.md) to reach v0.7.1. The ordinary apply examples below are only for packages already declaring 1.104.4; they intentionally reject a changed `TS_VERSION`. Do not edit the declaration or regenerate a manifest to bypass the check.
 
+<a id="development-v080"></a>
+
+## v0.8.0 development candidate
+
+The latest published stable release is **v0.7.1**. This branch also contains v0.8.0 development work; the new commands below require that candidate and must not be read as a v0.8.0 release announcement. The stable installation and historical update examples elsewhere on this page remain pinned to v0.7.1.
+
+- **Read the actual versions.** `version` compares the local CLI and daemon binaries with the declared baseline without querying a running daemon. `doctor` also uses its bounded socket reply for the backend version. Missing, nonstable and mismatched versions remain explicit. Exit codes and connection-health results keep their existing meaning; neither `healthy` nor meeting the baseline proves security. See [baseline diagnostics](baseline-diagnostics.md).
+- **Separate inspection from trust.** `update check --bundle` reads the original manifest and four sources without changing the installation or contacting GitHub. It is local evidence, not a fresh publication or publisher check. A quota failure remains an error; bounded retry/reset diagnostics and local backoff do not turn cached errors into success. See [rate-limit and offline checks](update-check-resilience.md).
+- **Authenticate a package before applying it.** Targets from v0.8.0 onward require the original attestation evidence, preinstalled trusted `gh` **2.103.3 or newer**, and an independently prepared `--provenance-root` outside the installation and candidate directories. Older unsigned targets require explicit manual `--allow-unsigned-legacy`; automatic updates never use it. A development bundle or matching hashes cannot bypass proof requirements. See [release provenance and first-upgrade bootstrap](release-provenance.md).
+- **Keep optional runners optional.** Automatic package updates are off by default and require a stable installed package at least v0.8.0 before activation; an unreleased development build is not eligible. They reuse the manual source transaction and do not update Tailscale binaries. The operator must explicitly provide a caller for `tick` or run a bounded foreground `watch`. No cron, systemd service or ChatGPT task is installed, and a runner cannot restart itself after its VM disappears. See [automatic updates](automatic-updates.md).
+- **Switch both recovery actors together.** Stop any older watchdog first. The packaged watchdog and external task share a local ledger only when both use `dots-ts recovery`; a legacy task that directly calls `start.sh` bypasses that ledger. Installation does not switch the existing production task. Durable stop and unknown-result fences remain effective. See [coordinated recovery](recovery-lifecycle.md).
+- **Bound new shim connections.** Admission defaults to **64 active connections**. An operator-managed launch can select **1–256** with `SHIM_MAX_CONNECTIONS`; this is not a new automatic package setting. Excess connections are closed promptly, while healthy control/DERP streams keep their normal lifetime. A loopback bind alone does not exclude tailnet access under userspace networking; ACLs still matter. See [shim admission](shim-admission.md).
+
+These are read-only candidate checks:
+
+```bash
+/workspace/.dots-tailscale/dots-ts version --json
+/workspace/.dots-tailscale/dots-ts doctor --json
+/workspace/.dots-tailscale/dots-ts update check --bundle /workspace/reviewed-release --json
+/workspace/.dots-tailscale/dots-ts update automatic status --json
+/workspace/.dots-tailscale/dots-ts recovery status --json
+```
+
+The external MCP route remains an advanced preview. A second real account has **not** completed linking, setup, recovery and unsubscribe reproduction; offline account-isolation fixtures are not that test. Read the [preview readiness decision](recovery-support-readiness.md). Local startup success is not fresh external SSH/ping confirmation, and neither a new boot ID nor a preserved directory proves VM-replacement support.
+
 <a id="download-proxy"></a>
 
 ## Download connectivity and proxy settings
@@ -207,7 +232,7 @@ The selected release must be published before applying it. Replace `TRANSACTION_
 /workspace/.dots-tailscale/dots-ts update apply --bundle /workspace/reviewed-bundle --confirm-recovery-terminal --json
 ```
 
-The bundle must contain the four source files and their matching original manifest. Local selection can contain a development version; it is not presented as a published GitHub release. The updater validates hashes and syntax before replacing files. A matching checksum proves consistency with the selected bundle, not independent trust in its author.
+The bundle must contain the four sources and their matching original manifest. The stable v0.7.1 updater can handle an explicitly reviewed development bundle without presenting it as a published release. The v0.8.0 candidate adds a stricter rule: targets from v0.8.0 onward require provenance, including for local selection; an unsigned development bundle is not an exception. Unsigned targets below v0.8.0 require manual `--allow-unsigned-legacy`. Hash consistency alone is not publisher authentication. See the [provenance and bootstrap guide](release-provenance.md).
 
 `started` means the detached worker has accepted the operation, not that the update succeeded. Poll `update status` after reconnecting. Terminal outcomes distinguish `applied`, `failed_rolled_back`, and `rollback_failed_manual_required`. Local readiness and version verification do not prove external SSH access: after `applied` or a successful rollback, open a new SSH connection with strict host-key checking and test the intended connection separately.
 
