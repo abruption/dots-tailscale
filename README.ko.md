@@ -93,7 +93,7 @@ v0.6.0 이상 도구가 설치됐다면 공식 Tailscale 안정 버전을 확인
 
 - [실제 Dots 시험](docs/validation/runtime-update-trial-20261026.md)에서 검토한 개발 패키지로 Tailscale 1.102.4를 1.104.2로 업데이트했습니다. 기존 기기 정보와 SSH 키를 유지했고, 이후 새 외부 SSH 연결과 릴레이 ping도 확인했습니다.
 - [v0.6.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)에는 최종 커밋의 기본·연구 테스트와 격리된 환경에서 수행한 공식 실행 파일 검증 기록이 있습니다. 앞으로 나올 모든 버전과의 호환성이나 실환경 장애 복구, 이전 버전으로 되돌릴 때의 상태 호환성을 입증한 것은 아닙니다.
-- [v0.7.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)에는 격리된 신규 설치·소스 전환 테스트가 추가됐습니다. 새 소스 전환은 아직 실환경에서 실행하지 않았습니다. 근거와 한계는 [날짜별 기본 버전·TLS 점검 기록](docs/validation/security-baseline-20261028.md)을 확인하세요.
+- [v0.7.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)에는 격리된 신규 설치·소스 전환 테스트가 추가됐습니다. 이후 [2026-10-28 실환경 소스 전환 시험](docs/validation/v0.7.0-migration-trial-20261028.md)에서 기존 설치 한 건의 패키지를 0.6.0에서 0.7.0으로 옮겼습니다. 이미 설치된 Tailscale 1.104.4 실행 환경과 기기·SSH 정보를 유지했고, 전환 후 엄격한 호스트 키 검증을 적용한 새 SSH 연결과 릴레이 ping이 성공했습니다. 신규 설치, 다른 계정, 실환경 장애 주입, 중단된 작업 복구, VM 교체, 실행 상태의 하위 버전 전환이나 앞으로의 모든 버전을 검증한 것은 아닙니다. [공개 전 기본 버전·TLS 점검](docs/validation/security-baseline-20261028.md)은 별도의 과거 기록입니다.
 - `/workspace`가 남아 있어야 사용할 수 있으며, 플랫폼이 이 경로의 보존을 보장한다는 뜻은 아닙니다. 실행 중 필요한 소켓·PID·로그는 `/tmp`에 다시 만듭니다. 새 실행 환경에서는 여전히 시작 명령을 실행할 방법이 필요합니다.
 - 로컬에서 `Running`이 나와도 외부에서 접속된다는 뜻은 아닙니다. 새 SSH 연결과 실제 사용하는 앱의 접속 경로를 확인하세요. 1.104.2 업데이트로 Tailworm 문제가 해결됐다고 주장하지도 않습니다.
 
