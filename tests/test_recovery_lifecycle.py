@@ -577,6 +577,29 @@ class RecoveryLifecycleTests(unittest.TestCase):
                 with self.subTest(program=program):
                     self.assert_rejected('local_probe_unknown', lambda: ORIGINAL_CAPTURE([sys.executable, '-c', program]))
 
+    def test_nonzero_start_result_is_failed_and_still_consumes_shared_budget(self):
+        self.configure()
+        self.probe.return_value = {'state': 'components_missing'}
+        self.popen.return_value = FakeProcess(code=17)
+        report = tool.recovery_run(self.directory, self.runtime, self.options())
+        self.assertEqual(report['state'], 'failed')
+        self.assertEqual(report['exit_code'], 17)
+        self.assertEqual(tool.recovery_status(self.directory, self.runtime)['policy']['attempts_in_window'], 1)
+        self.assert_rejected('shared_cooldown', lambda: tool.recovery_run(
+            self.directory, self.runtime, self.options(identifier='another-id')))
+        self.assertEqual(self.popen.call_count, 1)
+
+    def test_known_healthy_probe_does_not_silently_reconcile_an_unknown_result(self):
+        self.configure()
+        self.probe.return_value = {'state': 'components_missing'}
+        self.popen.return_value = FakeProcess(timeout=True)
+        tool.recovery_run(self.directory, self.runtime, self.options())
+        self.probe.return_value = {'state': 'healthy'}
+        self.assert_rejected('unknown_result_requires_reconciliation', lambda: tool.recovery_run(
+            self.directory, self.runtime, self.options(identifier='healthy-new-id')))
+        self.assertTrue(tool.recovery_status(self.directory, self.runtime)['manual_review_required'])
+        self.assertEqual(self.popen.call_count, 1)
+
 
 if __name__ == '__main__':
     unittest.main()

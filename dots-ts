@@ -3159,8 +3159,10 @@ def recovery_status(directory, runtime):
     try:
         recovery_preflight(directory, runtime)
         result['network'] = recovery_probe(directory, runtime)
+    except RecoveryError as error:
+        result['network'] = {'state': 'unknown', 'reason': str(error)}
     except Exception:
-        result['network'] = {'state': 'unknown'}
+        result['network'] = {'state': 'unknown', 'reason': 'recovery_context_or_state_unavailable'}
     return result
 
 
