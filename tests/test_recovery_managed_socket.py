@@ -356,8 +356,8 @@ int main(int argc, char **argv) {
                 self.assertNotIn('managed_socket_cleanup', eligible)
                 before = tool.recovery_socket_metadata(self.runtime)
                 self.probe.side_effect = lifecycle.ORIGINAL_PROBE
-                self.assert_rejected('local_probe_unknown', lambda: tool.recovery_run(
-                    self.directory, self.runtime, self.options()))
+                with self.assertRaisesRegex(tool.RecoveryError, '^local_probe_unknown$'):
+                    tool.recovery_run(self.directory, self.runtime, self.options())
                 self.assertEqual(self.state()['attempts'], [])
                 self.assertEqual(tool.recovery_socket_metadata(self.runtime), before)
                 self.assertTrue((self.runtime / 'tailscaled.sock').exists())
