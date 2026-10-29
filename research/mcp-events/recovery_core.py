@@ -26,7 +26,11 @@ class RecoveryIneligible(ValueError):
 
 class RecoveryCore(EventCore):
     def __init__(self, db_path, allowed_origins, owner, transport=None, clock=time.time, *,
-                 max_claims_per_24h=3, cooldown_seconds=3600, new_incident_cooldown_seconds=None):
+                 max_claims_per_24h=3, cooldown_seconds=3600, new_incident_cooldown_seconds=None,
+                 local_coordination=False):
+        if type(local_coordination) is not bool:
+            raise ValueError('local_coordination must be a boolean')
+        self.local_coordination = local_coordination
         if type(max_claims_per_24h) is not int or not 1 <= max_claims_per_24h <= 24:
             raise ValueError('max_claims_per_24h must be an integer from 1 to 24')
         if type(cooldown_seconds) is not int or not 300 <= cooldown_seconds <= 86400:
@@ -47,6 +51,7 @@ class RecoveryCore(EventCore):
             CREATE TABLE IF NOT EXISTS recovery_eligibility(incident_id TEXT PRIMARY KEY,policy_blocked INTEGER NOT NULL,notification_count INTEGER NOT NULL,latest_event_id TEXT);
             CREATE TABLE IF NOT EXISTS recovery_confirmations(incident_id TEXT PRIMARY KEY,since REAL,last REAL,streak INTEGER NOT NULL CHECK(streak BETWEEN 0 AND 3),confirmed_at REAL);
             CREATE TABLE IF NOT EXISTS recovery_reports(incident_id TEXT PRIMARY KEY,outcome TEXT NOT NULL,reported_at REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS recovery_execution_contracts(incident_id TEXT PRIMARY KEY,claim_id TEXT UNIQUE NOT NULL,mode TEXT NOT NULL,expires_at INTEGER NOT NULL,observation_time INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS preflight_reports(incident_id TEXT PRIMARY KEY,reason TEXT NOT NULL,reported_at REAL NOT NULL,report_count INTEGER NOT NULL);
             ''')
 
@@ -204,6 +209,7 @@ class RecoveryCore(EventCore):
             recent[len(recent)-self.max_claims_per_24h]+86400 if daily_blocked else now,
             cooldown_until if cooldown_blocked else now)
         result = {'target_id': 'dots', 'observation_fresh': fresh,
+                  'execution_mode': 'coordinated' if self.local_coordination else 'legacy_start',
                   'observation': None if obs is None else {'observed_at':obs['stamp'],'ssh':obs['ssh'],'ping':obs['ping'],'failure_streak':obs['streak']},
                   'incident': None, 'claimable': False, 'eligibility_reason':'no_incident', 'retry_at':None,
                   'policy': {'window_seconds':86400, 'max_claims_per_24h':self.max_claims_per_24h,
@@ -214,6 +220,8 @@ class RecoveryCore(EventCore):
         if row:
             state = 'externally_recovered' if row['closed'] is not None else ('pending' if row['claim_id'] is None else 'attempted')
             result['incident'] = {'incident_id': row['id'], 'event_id':row['event_id'], 'created_at':row['created'], 'state':state, 'outcome':row['outcome'] or ('unknown' if row['claim_id'] else None), 'closed_at':row['closed']}
+            contract = db.execute('SELECT mode,expires_at,observation_time FROM recovery_execution_contracts WHERE incident_id=?', (row['id'],)).fetchone()
+            result['incident']['execution_contract'] = dict(contract) if contract else None
             preflight = db.execute('SELECT reason,reported_at,report_count FROM preflight_reports WHERE incident_id=?', (row['id'],)).fetchone()
             result['incident']['preflight_report'] = dict(preflight) if preflight else None
             first_report = db.execute('SELECT outcome,reported_at FROM recovery_reports WHERE incident_id=?', (row['id'],)).fetchone()
@@ -292,9 +300,20 @@ class RecoveryCore(EventCore):
                 raise RecoveryIneligible(state)
             claim = 'claim_'+secrets.token_hex(16)
             now = self.clock()
+            expiry = int(now + 120)
+            observed = int(state['observation']['observed_at'])
+            mode = 'coordinated' if self.local_coordination else 'legacy_start'
+            argv = (['/workspace/.dots-tailscale/dots-ts', 'recovery', 'run', '--actor', 'external',
+                     '--request-id', claim, '--claim-expires-at', str(expiry),
+                     '--observation-time', str(observed), '--ssh-failed', '--ping-failed', '--json']
+                    if self.local_coordination else ['bash', '/workspace/.dots-tailscale/start.sh'])
             db.execute('UPDATE recovery_incidents SET claim_id=?,claimed=?,outcome=? WHERE id=?', (claim,now,'unknown',incident_id))
             db.execute('INSERT INTO recovery_confirmations VALUES(?,NULL,NULL,0,NULL)', (incident_id,))
-        return {'incident_id':incident_id, 'claim_id':claim, 'command':COMMAND, 'expires_at':now+120, 'instructions':'Run the fixed command once immediately in your cloud computer. Never reuse this claim or execute after expires_at. Report only a sanitized outcome. Success is not external recovery confirmation.'}
+            db.execute('INSERT INTO recovery_execution_contracts VALUES(?,?,?,?,?)',
+                       (incident_id, claim, mode, expiry, observed))
+        return {'incident_id':incident_id, 'claim_id':claim, 'command':' '.join(argv), 'command_argv':argv,
+                'execution_mode':mode, 'expires_at':now+120,
+                'instructions':'Run the fixed command once immediately in your cloud computer. Never reuse this claim or execute after expires_at. Report only a sanitized outcome. Success is not external recovery confirmation. Coordinated mode also requires explicit local recovery opt-in and its separate durable execution budget; arguments are not local proof of OAuth authorization.'}
 
     def report_preflight(self, principal, incident_id, reason):
         """Record why execution was blocked before a claim, without authorizing a retry."""
