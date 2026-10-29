@@ -14,7 +14,10 @@ CHECKS = {"Python 3.11 tests", "Python 3.13 tests", "Shell syntax and ShellCheck
 
 
 class PolicyError(Exception):
-    pass
+    def __init__(self, code, phase="preflight", mutation_attempted=False):
+        super().__init__(code)
+        self.phase = phase
+        self.mutation_attempted = mutation_attempted
 
 
 def github(path, method="GET", value=None):
@@ -38,6 +41,9 @@ def validate_policy(value):
         checks = value["required_status_checks"]
         reviews = value["required_pull_request_reviews"]
         if (set(value) != expected or checks["strict"] is not True
+                or set(checks) != {"strict", "checks"}
+                or set(reviews) != {"dismiss_stale_reviews", "require_code_owner_reviews",
+                                    "required_approving_review_count", "require_last_push_approval"}
                 or len(checks["checks"]) != len(CHECKS)
                 or {(item["context"], item["app_id"]) for item in checks["checks"]} != {(name, 15368) for name in CHECKS}
                 or value["enforce_admins"] is not False or value["restrictions"] is not None
@@ -70,6 +76,9 @@ def policy_matches(protection, expected):
                 and protection["required_pull_request_reviews"]["required_approving_review_count"]
                 == expected["required_pull_request_reviews"]["required_approving_review_count"]
                 and protection["required_pull_request_reviews"]["dismiss_stale_reviews"] is True
+                and protection["required_pull_request_reviews"]["require_code_owner_reviews"] is False
+                and protection["required_pull_request_reviews"]["require_last_push_approval"] is False
+                and protection.get("restrictions") is None
                 and protection["enforce_admins"]["enabled"] is False
                 and protection["required_conversation_resolution"]["enabled"] is True
                 and protection["allow_force_pushes"]["enabled"] is False
@@ -86,12 +95,19 @@ def apply_policy(policy, confirm, backup, api=github):
     # Backup must succeed before the first repository setting is changed.
     backup({"captured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "before": before,
             "candidate": policy, "repository": REPOSITORY})
-    api("/private-vulnerability-reporting", "PUT")
-    api("/branches/main/protection", "PUT", policy)
-    after = inspect(api)
+    phase = "private_reporting_put"
+    try:
+        api("/private-vulnerability-reporting", "PUT")
+        phase = "branch_protection_put"
+        api("/branches/main/protection", "PUT", policy)
+        phase = "effective_readback"
+        after = inspect(api)
+    except (PolicyError, OSError, ValueError):
+        # A timeout can happen after GitHub applied a PUT. Do not claim no change.
+        raise PolicyError("partial_or_unknown_inspect_settings", phase, True) from None
     if (after["private_reporting"].get("enabled") is not True
             or not policy_matches(after["protection"], policy)):
-        raise PolicyError("effective_policy_mismatch_inspect_backup")
+        raise PolicyError("effective_policy_mismatch_inspect_backup", phase, True)
     return {"applied": True, "private_reporting": True, "main_protected": True,
             "required_checks": sorted(CHECKS), "required_approvals":
             policy["required_pull_request_reviews"]["required_approving_review_count"],
@@ -137,7 +153,11 @@ def main(argv=None):
             print(json.dumps(result, sort_keys=True))
         return 0
     except (PolicyError, OSError, ValueError) as error:
-        print(json.dumps({"applied": False, "error": str(error) if isinstance(error, PolicyError) else "policy_io_failed",
+        attempted = isinstance(error, PolicyError) and error.mutation_attempted
+        print(json.dumps({"applied": None if attempted else False,
+                          "state": "partial_or_unknown" if attempted else "not_attempted",
+                          "phase": error.phase if isinstance(error, PolicyError) else "preflight",
+                          "error": str(error) if isinstance(error, PolicyError) else "policy_io_failed",
                           "action": "inspect_settings_and_private_backup_no_automatic_rollback"}))
         return 1
 

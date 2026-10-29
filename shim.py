@@ -275,20 +275,20 @@ def _ws_bridge(c, u, req_head, host, initial_data=b""):
     try:
         if initial_data:
             u.sendall(ws_frame(2, initial_data))
-        candidate = threading.Thread(target=up_to_client, daemon=True)
-        candidate.start()
-        worker = candidate
+        worker = threading.Thread(target=up_to_client, daemon=True)
+        worker.start()
         while (d := c.recv(65536)):
             with wlock: u.sendall(ws_frame(2, d))
     except OSError: pass
     finally:
         shutdown(c, u)
-        if worker is not None:
+        if worker is not None and worker.ident is not None:
             worker.join()
 
 def handle(c):
     u = None
     worker = None
+    timer = None
     try:
         head, initial = read_head(c)
         method, target, _ = head.split("\r\n")[0].split(" ", 2)
@@ -336,9 +336,8 @@ def handle(c):
         # scoped timer instead; after it is cancelled both streams stay blocking.
         c.settimeout(None)
         u.settimeout(None)
-        candidate = threading.Thread(target=pipe, args=(c, u, ">" + host), daemon=True)
-        candidate.start()
-        worker = candidate
+        worker = threading.Thread(target=pipe, args=(c, u, ">" + host), daemon=True)
+        worker.start()
         if port == "443":
             # Forward request-body bytes concurrently while bounding the first
             # HTTP response. Do not deadlock uploads waiting for their response.
@@ -364,7 +363,11 @@ def handle(c):
     finally:
         shutdown(c, u)
         try:
-            if worker is not None:
+            if timer is not None:
+                timer.cancel()
+                if timer.ident is not None:
+                    timer.join()
+            if worker is not None and worker.ident is not None:
                 worker.join()
         finally:
             close(c, u)

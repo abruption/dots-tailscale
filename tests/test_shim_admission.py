@@ -7,12 +7,23 @@ import unittest
 from unittest import mock
 
 import shim
-from test_shim_payload import IdentityTLS, ScriptedSocket
+from test_shim_payload import IdentityTLS, ScriptedSocket, decode_client_frames
 from test_shim_transport import exact, head
 from ws_test_helpers import valid_response
 
 
 WAIT = 3
+
+
+class SocketTLS:
+    """Keep real socket concurrency while making TLS itself an explicit fixture."""
+    def wrap_socket(self, sock, **kwargs):
+        class Wrapped:
+            def __getattr__(self, name):
+                return getattr(sock, name)
+            def do_handshake(self):
+                pass
+        return Wrapped()
 
 
 class AdmissionTests(unittest.TestCase):
@@ -259,6 +270,106 @@ class AdmissionTests(unittest.TestCase):
             self.assertEqual(len(self.attempted), 2)
             self.assertTrue(conn.closed.is_set())
             self.assertTrue(upstream.closed.is_set())
+        with self.track_threads():
+            self.reusable(admission)
+
+    def test_started_upload_worker_keeps_slot_until_its_join_finishes(self):
+        admission = shim.ConnectionAdmission(1)
+        peer, conn = self.pair()
+        server, upstream = self.pair()
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        def held_pipe(*args):
+            entered.set()
+            self.assertTrue(release.wait(WAIT))
+        peer.sendall(b"CONNECT example.test:22 HTTP/1.1\r\n\r\n")
+        with self.track_threads(fail_at=2, fail_after_start=True), \
+                mock.patch.object(shim, "pipe", side_effect=held_pipe), \
+                mock.patch.object(shim, "upstream_connect", return_value=(upstream, b"")):
+            self.assertTrue(admission.dispatch(conn))
+            self.assertTrue(entered.wait(WAIT))
+            # Shutdown cannot end this controlled worker; only its release can.
+            extra_peer, extra = self.pair()
+            self.assertFalse(admission.dispatch(extra))
+            self.eof(extra_peer)
+            self.assertEqual(len(self.attempted), 2)
+            release.set()
+            self.joined()
+        with self.track_threads():
+            self.reusable(admission)
+
+    def test_started_websocket_worker_is_joined_by_its_handler(self):
+        admission = shim.ConnectionAdmission(1)
+        conn = ScriptedSocket([b"CONNECT example.test:443 HTTP/1.1\r\n\r\n",
+                               b"GET /derp HTTP/1.1\r\nHost: example.test\r\nUpgrade: DERP\r\n\r\n"])
+        upstream = ScriptedSocket([valid_response], wait_at_eof=True)
+        original_join = threading.Thread.join
+        joins = []
+        def join(worker, *args, **kwargs):
+            joins.append((worker, threading.current_thread()))
+            return original_join(worker, *args, **kwargs)
+        with self.track_threads(fail_at=2, fail_after_start=True), \
+                mock.patch.object(shim.threading.Thread, "join", join), \
+                mock.patch.object(shim, "upstream_connect", return_value=(upstream, b"")), \
+                mock.patch.object(shim, "leaf", return_value=IdentityTLS()), \
+                mock.patch.object(shim, "up_ctx", IdentityTLS()):
+            self.assertTrue(admission.dispatch(conn))
+            self.joined()
+            self.assertIn((self.started[1], self.started[0]), joins)
+        with self.track_threads():
+            self.reusable(admission)
+
+    def test_started_response_timer_interruption_is_cancelled_and_joined(self):
+        admission = shim.ConnectionAdmission(1)
+        conn = ScriptedSocket([b"CONNECT example.test:443 HTTP/1.1\r\n\r\n",
+                               b"POST / HTTP/1.1\r\nHost: example.test\r\n\r\n"], wait_at_eof=True)
+        upstream = ScriptedSocket([], wait_at_eof=True)
+        with self.track_threads(fail_at=3, fail_after_start=True), \
+                mock.patch.object(shim, "upstream_connect", return_value=(upstream, b"")), \
+                mock.patch.object(shim, "leaf", return_value=IdentityTLS()), \
+                mock.patch.object(shim, "up_ctx", IdentityTLS()):
+            self.assertTrue(admission.dispatch(conn))
+            self.joined()
+            self.assertEqual(len(self.started), 3)
+            self.assertFalse(any(worker.is_alive() for worker in self.started))
+        with self.track_threads():
+            self.reusable(admission)
+
+    def test_two_normal_websocket_bridges_stay_bounded_and_outlive_setup(self):
+        admission = shim.ConnectionAdmission(2)
+        clients = [self.pair() for _ in range(2)]
+        servers = [self.pair() for _ in range(2)]
+        budget = 0.2
+        with self.track_threads(), mock.patch.object(shim, "SETUP_TIMEOUT", budget), \
+                mock.patch.object(shim, "upstream_connect", side_effect=[(u, b"") for _, u in servers]), \
+                mock.patch.object(shim, "leaf", return_value=SocketTLS()), \
+                mock.patch.object(shim, "up_ctx", SocketTLS()):
+            for (peer, conn), (server, upstream) in zip(clients, servers):
+                self.assertTrue(admission.dispatch(conn))
+                peer.sendall(b"CONNECT example.test:443 HTTP/1.1\r\n\r\n")
+                self.assertIn(b"200", head(peer))
+                peer.sendall(b"GET /derp HTTP/1.1\r\nHost: example.test\r\nUpgrade: DERP\r\n\r\n")
+                request = head(server)
+                server.sendall(valid_response(request))
+                self.assertIn(b"101", head(peer))
+                server.sendall(b"\x82\x01x")
+                self.assertEqual(exact(peer, 1), b"x")
+                peer.sendall(b"y")
+                self.assertEqual(decode_client_frames(exact(server, 7)), [b"y"])
+            extra_peer, extra = self.pair()
+            self.assertFalse(admission.dispatch(extra))
+            self.eof(extra_peer)
+            self.assertEqual(len(self.started), 4)
+            self.assertLessEqual(self.peak_threads, 4)
+            # An intentional lifetime check, after both handshakes completed.
+            self.assertFalse(threading.Event().wait(budget * 2))
+            for (peer, conn), (server, upstream) in zip(clients, servers):
+                server.sendall(b"\x82\x01z")
+                self.assertEqual(exact(peer, 1), b"z")
+                self.assertIsNone(conn.gettimeout())
+                self.assertIsNone(upstream.gettimeout())
+                peer.shutdown(socket.SHUT_WR)
+            self.joined()
         with self.track_threads():
             self.reusable(admission)
 

@@ -69,6 +69,36 @@ class RepositoryPolicyTests(unittest.TestCase):
                 tool.save_backup(folder, {})
             self.assertEqual((folder / "repository-security-before.json").stat().st_mode & 0o777, 0o600)
 
+    def test_failed_put_or_readback_does_not_claim_no_mutation(self):
+        for failure in ("private_reporting_put", "branch_protection_put", "effective_readback"):
+            self.calls, self.protected = [], False
+            mutation_count = 0
+            def failing_api(path, method="GET", value=None):
+                nonlocal mutation_count
+                if method == "PUT":
+                    mutation_count += 1
+                    if ((failure == "private_reporting_put" and mutation_count == 1)
+                            or (failure == "branch_protection_put" and mutation_count == 2)):
+                        raise tool.PolicyError("timeout_after_possible_mutation")
+                elif failure == "effective_readback" and mutation_count == 2:
+                    raise tool.PolicyError("readback_timeout")
+                return self.api(path, method, value)
+            with self.assertRaises(tool.PolicyError) as caught:
+                tool.apply_policy(self.policy, True, lambda value: None, failing_api)
+            self.assertTrue(caught.exception.mutation_attempted)
+            self.assertEqual(caught.exception.phase, failure)
+
+    def test_readback_checks_all_selected_review_restrictions(self):
+        self.calls, self.protected = [], True
+        correct = self.api("/branches/main/protection")
+        self.assertTrue(tool.policy_matches(correct, self.policy))
+        for field in ("require_code_owner_reviews", "require_last_push_approval"):
+            altered = copy.deepcopy(correct)
+            altered["required_pull_request_reviews"][field] = True
+            self.assertFalse(tool.policy_matches(altered, self.policy))
+        altered = dict(correct, restrictions={"users": []})
+        self.assertFalse(tool.policy_matches(altered, self.policy))
+
 
 if __name__ == "__main__":
     unittest.main()
