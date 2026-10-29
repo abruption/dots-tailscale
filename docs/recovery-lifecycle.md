@@ -92,8 +92,8 @@ reconciliation, establish that the socket was not removed and startup did not ru
 a surviving pathname alone does not establish its original identity.
 
 Process visibility and the bounded Unix table are conservative prerequisites.
-An unreadable same-UID process, invalid UTF-8 table path or table above 2 MiB can
-make recovery unknown. This mode does not promise cleanup in every Dots context.
+An unreadable process entry (including owner-stat failures before UID filtering),
+invalid UTF-8 table path or table above 2 MiB can make recovery unknown. This mode does not promise cleanup in every Dots context.
 A previously abandoned automatic preparation can also be blocked by the nested
 operation-lock check during recovery. First use the proof-only
 [`update automatic abandon-preparation` procedure](automatic-updates.md#a-preparer-exits-before-staging),
@@ -108,7 +108,8 @@ configured executable, verifies its real `/proc` identity/FD ownership, kills on
 that fixture, and exercises cleanup ordering with a staged startup stub. The full
 host inventory is checked separately: unknown visibility must preserve the socket.
 For the positive flow, the original process inspector enumerates only the
-controller and dummy fixture PIDs; entry contents and the separate PID identity,
+controller and dummy fixture PIDs, recognizing the live dummy before kill and
+its absence after wait. Entry contents and the separate PID identity,
 namespace, FD, Unix-table and socket metadata checks remain real. This controlled
 inventory is neither an actual isolated PID namespace nor evidence that the full
 CI host or a Dots context permits those observations. It is not a Tailscale-node,

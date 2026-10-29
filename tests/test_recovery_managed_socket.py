@@ -293,6 +293,24 @@ int main(int argc, char **argv) {
         self.addCleanup(cleanup)
         self.assertTrue(select.select([daemon.stdout], [], [], 3)[0], 'dummy listener did not become ready')
         self.assertEqual(os.read(daemon.stdout.fileno(), 1), b'R')
+        full_pathlib = tool.pathlib
+        fixture_pids = {str(os.getpid()), str(daemon.pid)}
+        controlled_processes = []
+        class FixtureProcRoot:
+            def iterdir(self):
+                return (entry for entry in full_pathlib.Path('/proc').iterdir() if entry.name in fixture_pids)
+        class FixtureInventoryPathlib:
+            def __getattr__(self, name):
+                return getattr(full_pathlib, name)
+            def Path(self, *args, **kwargs):
+                if args == ('/proc',) and not kwargs:
+                    return FixtureProcRoot()
+                return full_pathlib.Path(*args, **kwargs)
+        def fixture_inventory(directory):
+            with mock.patch.object(tool, 'pathlib', FixtureInventoryPathlib()):
+                value = REAL_PROCESS_CHECKS(directory)
+            controlled_processes.append(value)
+            return value
         with mock.patch.object(tool, 'recovery_identity', REAL_IDENTITY), \
                 mock.patch.object(tool, 'recovery_boot', REAL_BOOT), \
                 mock.patch.object(tool, 'process_checks', REAL_PROCESS_CHECKS):
@@ -303,10 +321,12 @@ int main(int argc, char **argv) {
             self.assertEqual(registry['daemon']['exe'], str(self.directory / 'tailscaled'))
             self.assertNotIn('argv', registry['daemon'])
             self.assertNotIn('env', registry['daemon'])
-            with self.assertRaises(tool.RecoveryError):
+            self.assertEqual(fixture_inventory(self.directory)['tailscaled'], 'running')
+            with self.assertRaisesRegex(tool.RecoveryError, '^managed_socket_owner_not_proven_exited$'):
                 tool.recovery_managed_socket_stale(self.directory, self.runtime, self.state())
             daemon.kill()
             daemon.wait(timeout=3)
+            self.assertEqual(fixture_inventory(self.directory)['tailscaled'], 'not_running')
             self.assertTrue((self.runtime / 'tailscaled.sock').exists())
             inspected_processes = []
             inspected_sockets = []
@@ -327,11 +347,19 @@ int main(int argc, char **argv) {
             inspection = {'probe': eligible, 'process_checks': inspected_processes,
                           'socket_status': inspected_sockets}
             self.assertEqual(inspected_sockets, ['present'], inspection)
+            print('Managed socket full-host inspection: ' + eligible['state'], file=sys.stderr)
             if any('unknown' in value.values() for value in inspected_processes):
                 # An opaque unrelated same-UID process intentionally makes the
                 # full-host inventory conservative. Do not turn that result
                 # into permission to delete the managed socket.
                 self.assertEqual(eligible.get('state'), 'unknown', inspection)
+                self.assertNotIn('managed_socket_cleanup', eligible)
+                before = tool.recovery_socket_metadata(self.runtime)
+                self.probe.side_effect = lifecycle.ORIGINAL_PROBE
+                self.assert_rejected('local_probe_unknown', lambda: tool.recovery_run(
+                    self.directory, self.runtime, self.options()))
+                self.assertEqual(self.state()['attempts'], [])
+                self.assertEqual(tool.recovery_socket_metadata(self.runtime), before)
                 self.assertTrue((self.runtime / 'tailscaled.sock').exists())
                 self.popen.assert_not_called()
             else:
@@ -343,24 +371,6 @@ int main(int argc, char **argv) {
             # process_checks function is filtered; all yielded entries retain
             # their real stat/cmdline/exe, and the view ends before FD, socket,
             # namespace and kernel-table ownership inspections run.
-            full_pathlib = tool.pathlib
-            fixture_pids = {str(os.getpid()), str(daemon.pid)}
-            controlled_processes = []
-            class FixtureProcRoot:
-                def iterdir(self):
-                    return (entry for entry in full_pathlib.Path('/proc').iterdir() if entry.name in fixture_pids)
-            class FixtureInventoryPathlib:
-                def __getattr__(self, name):
-                    return getattr(full_pathlib, name)
-                def Path(self, *args, **kwargs):
-                    if args == ('/proc',) and not kwargs:
-                        return FixtureProcRoot()
-                    return full_pathlib.Path(*args, **kwargs)
-            def fixture_inventory(directory):
-                with mock.patch.object(tool, 'pathlib', FixtureInventoryPathlib()):
-                    value = REAL_PROCESS_CHECKS(directory)
-                controlled_processes.append(value)
-                return value
             def staged_start(*args, **kwargs):
                 self.assertFalse((self.runtime / 'tailscaled.sock').exists())
                 self.assertEqual(self.state()['attempts'][-1]['socket_cleanup'], 'removed')
