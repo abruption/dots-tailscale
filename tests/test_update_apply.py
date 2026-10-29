@@ -250,7 +250,7 @@ class ApplyTests(unittest.TestCase):
              mock.patch.object(tool, '__file__', str(self.directory / 'dots-ts')):
             with self.assertRaisesRegex(tool.ApplyError, 'baseline_migration_candidate_mismatch'):
                 tool.update_apply(self.directory, self.root / 'runtime', bundle=self.transaction / 'stage',
-                                  confirm=True, migrate_baseline=True)
+                                  confirm=True, allow_unsigned_legacy=True, migrate_baseline=True)
         self.stop.assert_not_called(); self.assert_protected()
 
     def test_baseline_migration_caller_freezes_intent_and_source_hashes(self):
@@ -272,7 +272,7 @@ class ApplyTests(unittest.TestCase):
              mock.patch.object(tool, 'apply_boot', return_value='boot'), \
              mock.patch.object(tool, 'runtime_verify_pair'):
             result = tool.update_apply(self.directory, self.root / 'runtime', bundle=self.transaction / 'stage',
-                                       confirm=True, migrate_baseline=True)
+                                       confirm=True, allow_unsigned_legacy=True, migrate_baseline=True)
         self.assertEqual(result['state'], 'rejected')
         self.assertEqual(seen[0]['operation'], 'migrate_baseline')
         self.assertEqual(seen[0]['baseline_package_hashes'], tool.apply_payload_hashes(self.old))
@@ -290,7 +290,7 @@ class ApplyTests(unittest.TestCase):
              mock.patch.object(tool, 'runtime_verify_pair') as pair:
             with self.assertRaisesRegex(tool.ApplyError, 'operation_busy_or_unsafe'):
                 tool.update_apply(self.directory, self.root / 'runtime', bundle=self.transaction / 'stage',
-                                  confirm=True, migrate_baseline=True)
+                                  confirm=True, allow_unsigned_legacy=True, migrate_baseline=True)
         pair.assert_not_called(); self.stop.assert_not_called()
 
     def test_baseline_migration_cli_exposes_only_explicit_bundle_workflow(self):
@@ -573,7 +573,7 @@ class ApplyTests(unittest.TestCase):
             with mock.patch.dict(sys.modules, {'dots_proxy': proxy}), \
                  mock.patch.object(tool, '_update_apply', side_effect=failed):
                 with self.assertRaises(tool.ApplyError) as caught:
-                    tool.update_apply(self.directory, self.root, confirm=True)
+                    tool.update_apply(self.directory, self.root, confirm=True, allow_unsigned_legacy=True)
                 self.assertEqual(tool.apply_error_report(caught.exception),
                                  {'error': expected, 'transaction_id': 'a' * 32})
 
@@ -610,7 +610,7 @@ class ApplyTests(unittest.TestCase):
              mock.patch.object(tool, 'apply_syntax'), \
              mock.patch.object(tool, 'apply_boot', return_value='boot'), \
              mock.patch.object(subprocess, 'Popen', side_effect=spawn):
-            result = tool.update_apply(self.directory, self.root, bundle=self.transaction / 'stage', confirm=True)
+            result = tool.update_apply(self.directory, self.root, bundle=self.transaction / 'stage', confirm=True, allow_unsigned_legacy=True)
         self.assertEqual(result['state'], 'rejected')
         self.assertEqual(result['external_ssh'], 'pending')
 
@@ -642,7 +642,7 @@ class ApplyTests(unittest.TestCase):
              mock.patch.object(tool, 'apply_bundle', return_value=self.old), \
              mock.patch.object(tool, 'fetch_release') as fetch:
             with self.assertRaisesRegex(tool.ApplyError, 'prior_transaction_requires_manual_review'):
-                tool.update_apply(self.directory, self.root, tag='v0.4.0', confirm=True)
+                tool.update_apply(self.directory, self.root, tag='v0.4.0', confirm=True, allow_unsigned_legacy=True)
             fetch.assert_not_called()
 
     def test_refuses_without_recovery_acknowledgement(self):

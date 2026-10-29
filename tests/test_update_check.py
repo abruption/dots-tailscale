@@ -29,7 +29,7 @@ def release_fixture(version="0.4.0"):
                 "url": tool.UPDATE_API + "/27", "html_url": tool.UPDATE_WEB + "/releases/tag/v" + version,
                 "assets": [{"name": name, "state": "uploaded", "size": len(raw) if name == tool.MANIFEST else len(name),
                             "browser_download_url": tool.UPDATE_WEB + "/releases/download/v" + version + "/" + name}
-                           for name in list(tool.CORE_FILES) + [tool.MANIFEST]]}
+                           for name in list(tool.CORE_FILES) + (list(tool.PROVENANCE_FILES) if tool.stable_version(version) >= (0, 8, 0) else []) + [tool.MANIFEST]]}
     return metadata, raw
 
 

@@ -19,6 +19,8 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
+import shutil
 
 sys.dont_write_bytecode = True
 MANAGEMENT_TIMEOUT = 5
@@ -268,6 +270,14 @@ UPDATE_REPOSITORY = "abruption/dots-tailscale"
 UPDATE_API = "https://api.github.com/repos/" + UPDATE_REPOSITORY + "/releases"
 UPDATE_WEB = "https://github.com/" + UPDATE_REPOSITORY
 UPDATE_TIMEOUT = 12
+PROVENANCE_METADATA = "release-provenance.json"
+PROVENANCE_BUNDLE = "source-manifest.sigstore.json"
+PROVENANCE_FILES = (PROVENANCE_METADATA, PROVENANCE_BUNDLE)
+PROVENANCE_WORKFLOW = ".github/workflows/release-provenance.yml"
+PROVENANCE_REPOSITORY_ID = "1418377192"
+PROVENANCE_OWNER_ID = "23277516"
+PROVENANCE_LIMIT = 2 * 1024 * 1024
+PROVENANCE_TIMEOUT = 30
 UPDATE_ERRORS = {"invalid_version", "invalid_proxy", "invalid_url", "redirect_host", "timeout", "offline",
                  "tls_error", "rate_limited", "not_found", "http_error", "response_too_large",
                  "invalid_response", "invalid_metadata", "unsupported_release", "no_stable_release"}
@@ -314,6 +324,227 @@ def retry_headers(headers, now=None):
     return result
 
 
+class ProvenanceError(Exception):
+    """Sanitized, fixed-policy verification failure; never an unsigned fallback."""
+
+
+def provenance_run(argv, cwd, env, limit=PROVENANCE_LIMIT, timeout=PROVENANCE_TIMEOUT):
+    """Bound trusted verifier execution time and output without buffering stderr."""
+    process = None
+    try:
+        process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + timeout
+        raw = bytearray()
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise ProvenanceError("provenance_verifier_timeout")
+                chunk = os.read(process.stdout.fileno(), min(65536, limit + 1 - len(raw)))
+                if not chunk:
+                    break
+                raw.extend(chunk)
+                if len(raw) > limit:
+                    raise ProvenanceError("provenance_verifier_output_limit")
+        try:
+            code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            raise ProvenanceError("provenance_verifier_timeout") from None
+        return code, bytes(raw)
+    except OSError:
+        raise ProvenanceError("provenance_verifier_unavailable") from None
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            process.stdout.close()
+
+
+def provenance_gh(forbidden_directories=()):
+    """Only use a preinstalled host verifier, never one supplied by a candidate."""
+    found = shutil.which("gh")
+    if not found:
+        raise ProvenanceError("provenance_verifier_unavailable")
+    path = pathlib.Path(found).resolve()
+    try:
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
+            raise ProvenanceError("provenance_verifier_unsafe")
+        for directory in forbidden_directories:
+            if pathlib.Path(directory).resolve() in (path,) + tuple(path.parents):
+                raise ProvenanceError("provenance_verifier_unsafe")
+    except OSError:
+        raise ProvenanceError("provenance_verifier_unavailable") from None
+    return str(path)
+
+
+def provenance_trusted_root(provenance_root, forbidden_directories=()):
+    """Read an independently supplied root; a candidate cannot choose its roots."""
+    if provenance_root is None:
+        raise ProvenanceError("provenance_trusted_root_required")
+    try:
+        path = pathlib.Path(provenance_root)
+        resolved = path.resolve()
+        if not path.is_absolute() or path.is_symlink() or any(
+                pathlib.Path(folder).resolve() in (resolved,) + tuple(resolved.parents)
+                for folder in forbidden_directories):
+            raise ProvenanceError("provenance_trusted_root_unsafe")
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
+            raise ProvenanceError("provenance_trusted_root_unsafe")
+        raw = bounded_code_read(path.parent, path.name, PROVENANCE_LIMIT)
+        if not raw:
+            raise ProvenanceError("provenance_trusted_root_unsafe")
+        return raw
+    except (OSError, ValueError, TypeError):
+        raise ProvenanceError("provenance_trusted_root_unsafe") from None
+
+
+def provenance_bundle_evidence(directory):
+    try:
+        return {name: bounded_code_read(pathlib.Path(directory), name,
+                16384 if name == PROVENANCE_METADATA else PROVENANCE_LIMIT) for name in PROVENANCE_FILES}
+    except FileNotFoundError:
+        raise ProvenanceError("provenance_evidence_required") from None
+    except (OSError, ValueError):
+        raise ProvenanceError("provenance_evidence_invalid") from None
+
+
+def provenance_certificate_result(raw, metadata, digest):
+    """Additional policy checks on trusted gh output, not unsigned DSSE contents."""
+    try:
+        results = parse_release_json(raw)
+        if not isinstance(results, list) or not 1 <= len(results) <= 10:
+            raise ValueError("invalid verification result")
+        ref = "refs/tags/" + metadata["tag"]
+        identity = UPDATE_WEB + "/" + PROVENANCE_WORKFLOW + "@" + ref
+        expected_certificate = {
+            "issuer": "https://token.actions.githubusercontent.com",
+            "subjectAlternativeName": identity,
+            "sourceRepositoryURI": UPDATE_WEB,
+            "sourceRepositoryIdentifier": PROVENANCE_REPOSITORY_ID,
+            "sourceRepositoryOwnerURI": "https://github.com/abruption",
+            "sourceRepositoryOwnerIdentifier": PROVENANCE_OWNER_ID,
+            "sourceRepositoryRef": ref,
+            "sourceRepositoryDigest": metadata["source_commit"],
+            "buildSignerDigest": metadata["source_commit"],
+            "runnerEnvironment": "github-hosted",
+        }
+        for result in results:
+            verified = result["verificationResult"]
+            certificate = verified["signature"]["certificate"]
+            if any(certificate.get(key) != value for key, value in expected_certificate.items()):
+                continue
+            statement = verified["statement"]
+            if (statement.get("_type") != "https://in-toto.io/Statement/v1"
+                    or statement.get("predicateType") != "https://slsa.dev/provenance/v1"
+                    or not isinstance(verified.get("verifiedTimestamps"), list)
+                    or not verified["verifiedTimestamps"]):
+                continue
+            subjects = statement.get("subject")
+            if not isinstance(subjects, list) or not 1 <= len(subjects) <= 10:
+                continue
+            if not any(isinstance(subject, dict) and subject.get("digest", {}).get("sha256") == digest
+                       for subject in subjects):
+                continue
+            definition = statement["predicate"]["buildDefinition"]
+            workflow = definition["externalParameters"]["workflow"]
+            if workflow != {"repository": UPDATE_WEB, "path": PROVENANCE_WORKFLOW, "ref": ref}:
+                continue
+            dependencies = definition["resolvedDependencies"]
+            expected = {"uri": "git+" + UPDATE_WEB + "@" + ref,
+                        "digest": {"gitCommit": metadata["source_commit"]}}
+            if not isinstance(dependencies, list) or expected not in dependencies:
+                continue
+            return {"status": "verified", "repository": UPDATE_REPOSITORY,
+                    "workflow": PROVENANCE_WORKFLOW, "tag": metadata["tag"],
+                    "source_commit": metadata["source_commit"], "manifest_sha256": digest,
+                    "evidence": "github_actions_sigstore", "verification_scope": "offline_bundle"}
+    except (UpdateError, KeyError, TypeError, ValueError, AttributeError, RecursionError):
+        pass
+    raise ProvenanceError("provenance_policy_mismatch")
+
+
+def provenance_verify_payload(payload, tag=None, evidence=None, provenance_root=None,
+                              allow_unsigned_legacy=False, forbidden_directories=()):
+    """Authenticate captured manifest bytes before candidate code can be used."""
+    try:
+        manifest = parse_release_json(payload[MANIFEST])
+        if (not isinstance(manifest, dict) or set(manifest) != {"schema_version", "package_version", "files"}
+                or type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1
+                or not isinstance(manifest["files"], dict)):
+            raise ProvenanceError("provenance_metadata_invalid")
+        version = manifest["package_version"]
+        if not isinstance(version, str) or not re.fullmatch(PACKAGE_VERSION_PATTERN, version):
+            raise ValueError("invalid version")
+        base_version = stable_version(version.split("-", 1)[0])
+        if set(manifest["files"]) != set(CORE_FILES) or any(
+                hashlib.sha256(payload[name]).hexdigest() != manifest["files"][name] for name in CORE_FILES):
+            raise ProvenanceError("provenance_source_digest_mismatch")
+        if tag is not None and tag != "v" + version:
+            raise ProvenanceError("provenance_tag_mismatch")
+        if base_version < (0, 8, 0):
+            if allow_unsigned_legacy is not True:
+                raise ProvenanceError("legacy_operator_review_required")
+            return {"status": "legacy_operator_review", "tag": "v" + version,
+                    "evidence": "unsigned_operator_review", "manifest_sha256": hashlib.sha256(payload[MANIFEST]).hexdigest()}
+        stable_version(version)
+        if allow_unsigned_legacy:
+            raise ProvenanceError("legacy_exception_not_applicable")
+        if not isinstance(evidence, dict) or set(evidence) != set(PROVENANCE_FILES):
+            raise ProvenanceError("provenance_evidence_required")
+        metadata_raw, bundle_raw = evidence[PROVENANCE_METADATA], evidence[PROVENANCE_BUNDLE]
+        if (not isinstance(metadata_raw, bytes) or not 0 < len(metadata_raw) <= 16384
+                or not isinstance(bundle_raw, bytes) or not 0 < len(bundle_raw) <= PROVENANCE_LIMIT):
+            raise ProvenanceError("provenance_evidence_invalid")
+        metadata = parse_release_json(metadata_raw)
+        digest = hashlib.sha256(payload[MANIFEST]).hexdigest()
+        if (not isinstance(metadata, dict) or set(metadata) != {"schema_version", "repository", "workflow", "tag", "source_commit", "manifest_sha256"}
+                or type(metadata["schema_version"]) is not int or metadata["schema_version"] != 1
+                or metadata["repository"] != UPDATE_REPOSITORY or metadata["workflow"] != PROVENANCE_WORKFLOW
+                or metadata["tag"] != "v" + version or metadata["manifest_sha256"] != digest
+                or not isinstance(metadata["source_commit"], str) or not re.fullmatch(r"[0-9a-f]{40}", metadata["source_commit"])):
+            raise ProvenanceError("provenance_metadata_invalid")
+        root_raw = provenance_trusted_root(provenance_root, forbidden_directories)
+        verifier = provenance_gh(forbidden_directories)
+        with tempfile.TemporaryDirectory(prefix="dots-ts-provenance-") as work:
+            work = pathlib.Path(work)
+            config = work / "gh-config"; config.mkdir(mode=0o700)
+            env = {key: value for key, value in os.environ.items()
+                   if key not in {"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST", "GH_REPO",
+                                  "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"}}
+            env.update(GH_CONFIG_DIR=str(config), GH_PROMPT_DISABLED="1", GH_NO_UPDATE_NOTIFIER="1",
+                       GH_NO_EXTENSION_UPDATE_NOTIFIER="1", NO_COLOR="1")
+            code, version_raw = provenance_run([verifier, "--version"], work, env, limit=4096, timeout=5)
+            match = re.match(rb"gh version ([0-9]+\.[0-9]+\.[0-9]+)\b", version_raw)
+            if code or not match or stable_version(match[1].decode("ascii")) < (2, 103, 3):
+                raise ProvenanceError("provenance_verifier_version_unsupported")
+            for name, raw in ((MANIFEST, payload[MANIFEST]), (PROVENANCE_BUNDLE, bundle_raw), ("trusted-root.jsonl", root_raw)):
+                path = work / name; path.write_bytes(raw); path.chmod(0o600)
+            ref = "refs/tags/" + metadata["tag"]
+            command = [verifier, "attestation", "verify", str(work / MANIFEST), "--hostname", "github.com",
+                       "--repo", UPDATE_REPOSITORY,
+                       "--signer-workflow", UPDATE_REPOSITORY + "/" + PROVENANCE_WORKFLOW + "@" + ref,
+                       "--cert-oidc-issuer", "https://token.actions.githubusercontent.com",
+                       "--source-ref", ref, "--source-digest", metadata["source_commit"],
+                       "--signer-digest", metadata["source_commit"], "--deny-self-hosted-runners",
+                       "--predicate-type", "https://slsa.dev/provenance/v1", "--bundle", str(work / PROVENANCE_BUNDLE),
+                       "--custom-trusted-root", str(work / "trusted-root.jsonl"), "--format", "json"]
+            code, result = provenance_run(command, work, env)
+            if code:
+                raise ProvenanceError("provenance_verification_failed")
+            receipt = provenance_certificate_result(result, metadata, digest)
+            receipt.update(verifier_version=match[1].decode("ascii"), trusted_root_sha256=hashlib.sha256(root_raw).hexdigest())
+            return receipt
+    except ProvenanceError:
+        raise
+    except (UpdateError, KeyError, TypeError, ValueError, OSError, UnicodeError, RecursionError):
+        raise ProvenanceError("provenance_evidence_invalid") from None
+
+
 def stable_version(text):
     if not isinstance(text, str) or not re.fullmatch(r"(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})", text):
         raise UpdateError("invalid_version")
@@ -352,7 +583,7 @@ def validate_update_url(url, redirect=False):
                 parsed.hostname == "api.github.com" and (parsed.path == api_path + "latest"
                     or re.fullmatch(re.escape(api_path) + r"tags/v[0-9]+\.[0-9]+\.[0-9]+", parsed.path))
                 or parsed.hostname == "github.com" and re.fullmatch(re.escape(asset_path)
-                    + r"v[0-9]+\.[0-9]+\.[0-9]+/(?:tailscale-setup\.sh|shim\.py|dots-ts|dots_proxy\.py|source-manifest\.json)", parsed.path)))
+                    + r"v[0-9]+\.[0-9]+\.[0-9]+/(?:tailscale-setup\.sh|shim\.py|dots-ts|dots_proxy\.py|source-manifest\.json|release-provenance\.json|source-manifest\.sigstore\.json)", parsed.path)))
         if not valid:
             raise ValueError("invalid_url")
     except (ValueError, TypeError):
@@ -469,23 +700,29 @@ def release_metadata(metadata, tag=None):
         if not isinstance(asset, dict):
             raise UpdateError("invalid_metadata")
         name = asset.get("name")
-        if name not in tuple(CORE_FILES) + (MANIFEST,):
+        if name not in tuple(CORE_FILES) + (MANIFEST,) + PROVENANCE_FILES:
             continue
         if name in selected:
             raise UpdateError("invalid_metadata")
-        size_limit = 16384 if name == MANIFEST else 8 * 1024 * 1024
+        size_limit = (16384 if name in (MANIFEST, PROVENANCE_METADATA) else
+                      PROVENANCE_LIMIT if name == PROVENANCE_BUNDLE else 8 * 1024 * 1024)
         expected = UPDATE_WEB + "/releases/download/" + version_tag + "/" + name
         if (asset.get("browser_download_url") != expected or asset.get("state") != "uploaded"
                 or type(asset.get("size")) is not int or not 0 < asset["size"] <= size_limit):
             raise UpdateError("invalid_metadata")
         selected[name] = {"url": expected, "size": asset["size"]}
-    if set(selected) != set(CORE_FILES) | {MANIFEST}:
+    required = set(CORE_FILES) | {MANIFEST}
+    if stable_version(version_tag[1:]) >= (0, 8, 0):
+        required.update(PROVENANCE_FILES)
+    else:
+        selected = {name: value for name, value in selected.items() if name not in PROVENANCE_FILES}
+    if set(selected) != required:
         raise UpdateError("unsupported_release")
     return {"tag": version_tag, "version": version_tag[1:], "assets": selected}
 
 
 def download_release_asset(release, name, proxy=None, deadline=None):
-    if name not in tuple(CORE_FILES) + (MANIFEST,):
+    if name not in tuple(CORE_FILES) + (MANIFEST,) + PROVENANCE_FILES:
         raise UpdateError("invalid_metadata")
     stable_version(release["version"])
     if release["tag"] != "v" + release["version"]:
@@ -494,7 +731,9 @@ def download_release_asset(release, name, proxy=None, deadline=None):
     expected = UPDATE_WEB + "/releases/download/" + release["tag"] + "/" + name
     if asset["url"] != expected:
         raise UpdateError("invalid_metadata")
-    raw = fetch_bytes(expected, proxy, 16384 if name == MANIFEST else 8 * 1024 * 1024, deadline)
+    limit = (16384 if name in (MANIFEST, PROVENANCE_METADATA) else
+             PROVENANCE_LIMIT if name == PROVENANCE_BUNDLE else 8 * 1024 * 1024)
+    raw = fetch_bytes(expected, proxy, limit, deadline)
     if len(raw) != asset["size"]:
         raise UpdateError("invalid_metadata")
     return raw
@@ -832,7 +1071,7 @@ class ApplyError(Exception):
 
 
 def apply_error_report(error):
-    if isinstance(error, ApplyError): code = str(error)
+    if isinstance(error, (ApplyError, ProvenanceError)): code = str(error)
     elif isinstance(error, UpdateError): code = error.code
     else:
         try:
@@ -1278,6 +1517,13 @@ def apply_replace(directory, payload, transaction, journal, phase):
 def apply_transaction(directory, runtime, transaction, journal, proxy):
     old = apply_bundle(directory, 'installed')
     candidate_payload = apply_bundle(transaction / 'stage')
+    candidate_version = parse_release_json(candidate_payload[MANIFEST])['package_version']
+    if stable_version(candidate_version.split('-', 1)[0]) >= (0, 8, 0):
+        receipt = journal.get('provenance')
+        if (not isinstance(receipt, dict) or receipt.get('status') != 'verified'
+                or receipt.get('tag') != 'v' + candidate_version
+                or receipt.get('manifest_sha256') != hashlib.sha256(candidate_payload[MANIFEST]).hexdigest()):
+            raise ApplyError('provenance_staged_manifest_mismatch')
     apply_syntax(candidate_payload)
     operation = journal.get('operation', 'update')
     if type(operation) is not str or operation not in ('update', 'migrate_baseline'):
@@ -1358,10 +1604,12 @@ def apply_worker(directory, runtime, transaction):
     return 0
 
 
-def update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None, migrate_baseline=False):
+def update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None, migrate_baseline=False,
+                 allow_unsigned_legacy=False, provenance_root=None):
     context = {}
     try:
-        return _update_apply(directory, runtime, tag, bundle, confirm, proxy_url, migrate_baseline, context)
+        return _update_apply(directory, runtime, tag, bundle, confirm, proxy_url, migrate_baseline,
+                             allow_unsigned_legacy, provenance_root, context)
     except Exception as error:
         report = apply_error_report(error)
         raise ApplyError(report['error'], context.get('transaction_id'),
@@ -1369,7 +1617,8 @@ def update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy
                          getattr(error, 'storage_warning', False)) from None
 
 
-def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None, migrate_baseline=False, context=None):
+def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None, migrate_baseline=False,
+                  allow_unsigned_legacy=False, provenance_root=None, context=None):
     import signal
     import uuid
     import dots_proxy as proxy
@@ -1394,11 +1643,19 @@ def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, prox
                 raise ApplyError('prior_transaction_requires_manual_review')
         if bundle:
             payload = apply_bundle(pathlib.Path(bundle), 'source')
+            version = parse_release_json(payload[MANIFEST])['package_version']
+            evidence = (provenance_bundle_evidence(bundle)
+                        if stable_version(version.split('-', 1)[0]) >= (0, 8, 0) else None)
         else:
             release = rate_limit_release(directory, tag, proxy_url)
             deadline = time.monotonic() + 60
             payload = {name: download_release_asset(release, name, proxy_url, deadline) for name in CORE_FILES}
             payload[MANIFEST] = release['manifest_bytes']
+            evidence = ({name: download_release_asset(release, name, proxy_url, deadline) for name in PROVENANCE_FILES}
+                        if stable_version(release['version']) >= (0, 8, 0) else None)
+        provenance = provenance_verify_payload(payload, tag=tag, evidence=evidence, provenance_root=provenance_root,
+            allow_unsigned_legacy=allow_unsigned_legacy,
+            forbidden_directories=tuple(path for path in (directory, bundle) if path is not None))
         apply_syntax(payload)
         if migrate_baseline and (caller_layout != 'source' or trusted != payload):
             raise ApplyError('baseline_migration_candidate_mismatch')
@@ -1407,7 +1664,8 @@ def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, prox
         transaction = apply_private(root / identifier, create=True)
         context['transaction_id'] = identifier
         journal = {'schema': 1, 'state': 'prepared', 'boot_id': apply_boot(), 'selection': 'local_bundle' if bundle else tag,
-                   'external_ssh': 'pending', 'checksum_trust': 'consistency_only_not_publisher_authentication'}
+                   'external_ssh': 'pending', 'checksum_trust': 'consistency_only_not_publisher_authentication',
+                   'provenance': provenance}
         if migrate_baseline:
             journal.update(operation='migrate_baseline', baseline_package_hashes=apply_payload_hashes(baseline),
                            target_package_hashes=apply_payload_hashes(payload))
@@ -2457,11 +2715,15 @@ def main(argv=None):
         selection.add_argument('--tag')
         selection.add_argument('--bundle', type=pathlib.Path)
         apply.add_argument('--confirm-recovery-terminal', action='store_true')
+        apply.add_argument('--provenance-root', type=pathlib.Path, help='independent trusted Sigstore root file; required for attested releases')
+        apply.add_argument('--allow-unsigned-legacy', action='store_true', help='manual operator-reviewed unsigned targets below 0.8.0 only')
         apply.add_argument('--proxy')
         apply.add_argument('--json', action='store_true')
         migrate = update_commands.add_parser('migrate-baseline', help='explicit source-only adoption after a separately verified runtime upgrade')
         migrate.add_argument('--bundle', type=pathlib.Path, required=True)
         migrate.add_argument('--confirm-recovery-terminal', action='store_true')
+        migrate.add_argument('--provenance-root', type=pathlib.Path)
+        migrate.add_argument('--allow-unsigned-legacy', action='store_true')
         migrate.add_argument('--json', action='store_true')
         status = update_commands.add_parser('status')
         status.add_argument('--id', required=True)
@@ -2507,13 +2769,19 @@ def main(argv=None):
                 print(json.dumps(failure,sort_keys=True),flush=True);return 1
         if options.command == 'update' and options.update_command in ('apply', 'migrate-baseline', 'status'):
             try:
+                proof_options = {}
+                if getattr(options, 'allow_unsigned_legacy', False):
+                    proof_options['allow_unsigned_legacy'] = True
+                if getattr(options, 'provenance_root', None) is not None:
+                    proof_options['provenance_root'] = options.provenance_root
                 if options.update_command == 'status':
                     report = apply_status(directory, options.id)
                 elif options.update_command == 'migrate-baseline':
                     report = update_apply(directory, runtime, bundle=options.bundle,
-                                          confirm=options.confirm_recovery_terminal, migrate_baseline=True)
+                                          confirm=options.confirm_recovery_terminal, migrate_baseline=True, **proof_options)
                 else:
-                    report = update_apply(directory, runtime, options.tag, options.bundle, options.confirm_recovery_terminal, options.proxy)
+                    report = update_apply(directory, runtime, options.tag, options.bundle, options.confirm_recovery_terminal, options.proxy,
+                                          **proof_options)
             except Exception as error:
                 report = apply_error_report(error)
             print(json.dumps(report, sort_keys=True))
