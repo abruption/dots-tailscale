@@ -1600,6 +1600,7 @@ def apply_worker(directory, runtime, transaction):
     try:
         with proxy._operation(directory):
             apply_journal(transaction, journal, state='running', worker=apply_identity(os.getpid()), phase='preflight')
+            automatic_worker_commit(directory, transaction, journal)
             apply_transaction(directory, runtime, transaction, journal, proxy)
     except Exception as error:
         apply_outcome(transaction, journal, 'rollback_failed_manual_required' if journal.get('destructive') else 'rejected', error=str(error) if isinstance(error, ApplyError) else 'worker_failed')
@@ -1608,11 +1609,11 @@ def apply_worker(directory, runtime, transaction):
 
 
 def update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None, migrate_baseline=False,
-                 allow_unsigned_legacy=False, provenance_root=None):
+                 allow_unsigned_legacy=False, provenance_root=None, automatic=None):
     context = {}
     try:
         return _update_apply(directory, runtime, tag, bundle, confirm, proxy_url, migrate_baseline,
-                             allow_unsigned_legacy, provenance_root, context)
+                             allow_unsigned_legacy, provenance_root, automatic, context)
     except Exception as error:
         report = apply_error_report(error)
         raise ApplyError(report['error'], context.get('transaction_id'),
@@ -1621,12 +1622,19 @@ def update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy
 
 
 def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None, migrate_baseline=False,
-                  allow_unsigned_legacy=False, provenance_root=None, context=None):
+                  allow_unsigned_legacy=False, provenance_root=None, automatic=None, context=None):
     import signal
     import uuid
     import dots_proxy as proxy
     if type(migrate_baseline) is not bool: raise ApplyError('invalid_baseline_migration')
     if migrate_baseline and (tag is not None or bundle is None): raise ApplyError('baseline_migration_bundle_required')
+    if automatic is not None:
+        if not callable(globals().get('provenance_verify_payload')):
+            raise ApplyError('provenance_unavailable')
+        if bundle is not None or migrate_baseline or allow_unsigned_legacy or provenance_root is None:
+            raise ApplyError('invalid_automatic_selection')
+        try: automatic_candidate_guard(directory, automatic_tag(tag))
+        except AutomaticError as error: raise ApplyError(str(error)) from None
     if not confirm: raise ApplyError('independent_recovery_terminal_confirmation_required')
     if sys.platform != 'linux' or not hasattr(os, 'pidfd_open') or not hasattr(signal, 'pidfd_send_signal'):
         raise ApplyError('linux_python_pidfd_required')
@@ -1669,6 +1677,11 @@ def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, prox
         journal = {'schema': 1, 'state': 'prepared', 'boot_id': apply_boot(), 'selection': 'local_bundle' if bundle else tag,
                    'external_ssh': 'pending', 'checksum_trust': 'consistency_only_not_publisher_authentication',
                    'provenance': provenance}
+        if automatic is not None:
+            if (not isinstance(automatic, dict) or set(automatic) != {'attempt_id', 'generation'}
+                    or any(not isinstance(value, str) or not re.fullmatch('[0-9a-f]{32}', value) for value in automatic.values())):
+                raise ApplyError('invalid_automatic_fence')
+            journal['automatic'] = automatic
         if migrate_baseline:
             journal.update(operation='migrate_baseline', baseline_package_hashes=apply_payload_hashes(baseline),
                            target_package_hashes=apply_payload_hashes(payload))
@@ -3376,6 +3389,611 @@ def recovery_main(argv, directory, runtime):
     print(json.dumps(report, sort_keys=True))
     return int(report.get('state') in ('rejected', 'unknown', 'failed', 'running') or bool(report.get('error')))
 
+# Automatic updates reuse the manual transaction. No scheduler is installed.
+AUTOMATIC_DIRECTORY = '.automatic-updates'
+AUTOMATIC_LIMIT = 3
+AUTOMATIC_WINDOW = 86400
+
+
+class AutomaticError(Exception):
+    pass
+
+
+@contextlib.contextmanager
+def automatic_store(directory, create=False, runner=False):
+    """Private fixed-name control/run locks; status does not create storage."""
+    root = folder = lock = None
+    try:
+        for parent in (pathlib.Path(directory),) + tuple(pathlib.Path(directory).parents):
+            if parent.is_symlink(): raise AutomaticError('storage_unavailable')
+        root = os.open(str(directory), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        info = os.fstat(root)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise AutomaticError('storage_unavailable')
+        if create:
+            try: os.mkdir(AUTOMATIC_DIRECTORY, 0o700, dir_fd=root)
+            except FileExistsError: pass
+        try:
+            folder = os.open(AUTOMATIC_DIRECTORY, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+        except FileNotFoundError:
+            yield None
+            return
+        info = os.fstat(folder)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise AutomaticError('storage_unavailable')
+        name = '.run.lock' if runner else '.control.lock'
+        flags = os.O_RDWR | os.O_CREAT if create else os.O_RDONLY
+        lock = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=folder)
+        info = os.fstat(lock)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+            raise AutomaticError('storage_unavailable')
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: raise AutomaticError('operation_busy') from None
+        yield folder
+    except (OSError, NoticeError):
+        raise AutomaticError('storage_unavailable') from None
+    finally:
+        for descriptor in (lock, folder, root):
+            if descriptor is not None: os.close(descriptor)
+
+
+def automatic_defaults():
+    return {'schema': 1, 'enabled': False, 'held': False, 'generation': None,
+            'interval_hours': 24, 'timezone': 'UTC', 'window_start': 120, 'window_end': 240,
+            'pin': None, 'proxy': None, 'provenance_root': None, 'recovery_confirmed_at': None}
+
+
+def automatic_zone_name(name):
+    if name == 'UTC': return
+    if (not isinstance(name, str) or len(name) > 128
+            or not re.fullmatch(r'[A-Za-z_]+(?:/[A-Za-z0-9_+.-]+){1,5}', name)
+            or any(part in ('.', '..') for part in name.split('/'))):
+        raise AutomaticError('invalid_timezone')
+
+
+def automatic_zone(name):
+    import datetime
+    automatic_zone_name(name)
+    if name == 'UTC': return datetime.timezone.utc
+    try:
+        try: from zoneinfo import ZoneInfo
+        except ImportError: from backports.zoneinfo import ZoneInfo
+    except ImportError: raise AutomaticError('timezone_unavailable') from None
+    try: return ZoneInfo(name)
+    except (KeyError, ValueError): raise AutomaticError('invalid_timezone') from None
+
+
+def automatic_settings(folder):
+    return automatic_validate_settings(notice_read(folder, 'settings.json'))
+
+
+def automatic_validate_settings(value):
+    if value is None: return automatic_defaults()
+    default = automatic_defaults()
+    if not isinstance(value, dict) or set(value) != set(default) or type(value['schema']) is not int or value['schema'] != 1:
+        raise AutomaticError('invalid_settings')
+    if any(type(value[name]) is not bool for name in ('enabled', 'held')):
+        raise AutomaticError('invalid_settings')
+    if type(value['interval_hours']) is not int or not 1 <= value['interval_hours'] <= 720:
+        raise AutomaticError('invalid_settings')
+    automatic_zone_name(value['timezone'])
+    if (any(type(value[name]) is not int or not 0 <= value[name] < 1440 for name in ('window_start', 'window_end'))
+            or value['window_start'] == value['window_end']):
+        raise AutomaticError('invalid_settings')
+    for name in ('generation',):
+        if value[name] is not None and (not isinstance(value[name], str) or not re.fullmatch('[0-9a-f]{32}', value[name])):
+            raise AutomaticError('invalid_settings')
+    if value['recovery_confirmed_at'] is not None and (type(value['recovery_confirmed_at']) is not int or value['recovery_confirmed_at'] < 0):
+        raise AutomaticError('invalid_settings')
+    if value['pin'] is not None:
+        automatic_tag(value['pin'])
+    try: validate_proxy(value['proxy'])
+    except UpdateError: raise AutomaticError('invalid_settings') from None
+    path = value['provenance_root']
+    if path is not None and (not isinstance(path, str) or len(path) > 4096 or not pathlib.Path(path).is_absolute()):
+        raise AutomaticError('invalid_settings')
+    if value['enabled'] and (not value['generation'] or path is None or value['recovery_confirmed_at'] is None):
+        raise AutomaticError('invalid_settings')
+    return value
+
+
+def automatic_tag(value):
+    try:
+        if not isinstance(value, str) or not value.startswith('v'): raise ValueError()
+        stable_version(value[1:])
+    except (UpdateError, ValueError): raise AutomaticError('invalid_pin') from None
+    return value
+
+
+def automatic_empty_state():
+    return {'schema': 1, 'last_check_at': None, 'next_check_at': None, 'attempts': [], 'failures': [],
+            'last_failed_tag': None, 'inflight': None, 'last_result': None, 'last_notified': None}
+
+
+def automatic_state(folder, settings):
+    value = notice_read(folder, 'state.json')
+    if value is None:
+        if settings['generation'] is not None: raise AutomaticError('invalid_state')
+        return automatic_empty_state()
+    if (not isinstance(value, dict) or set(value) != set(automatic_empty_state())
+            or type(value['schema']) is not int or value['schema'] != 1):
+        raise AutomaticError('invalid_state')
+    for name in ('last_check_at', 'next_check_at'):
+        if value[name] is not None and (type(value[name]) is not int or value[name] < 0):
+            raise AutomaticError('invalid_state')
+    for name in ('attempts', 'failures'):
+        items = value[name]
+        if (not isinstance(items, list) or len(items) > 32
+                or any(type(item) is not int or item < 0 for item in items) or items != sorted(items)):
+            raise AutomaticError('invalid_state')
+    if value['last_failed_tag'] is not None: automatic_tag(value['last_failed_tag'])
+    result = value['last_result']
+    if result is not None:
+        if (not isinstance(result, dict) or set(result) != {'id', 'at', 'status', 'error', 'tag', 'transaction_id', 'external_ssh'}
+                or not isinstance(result['id'], str) or not re.fullmatch('[0-9a-f]{32}', result['id'])
+                or type(result['at']) is not int or result['at'] < 0
+                or not isinstance(result['status'], str) or not re.fullmatch('[a-z_]{1,80}', result['status'])
+                or result['external_ssh'] != 'not_verified'):
+            raise AutomaticError('invalid_state')
+        if result['error'] is not None and (not isinstance(result['error'], str) or not re.fullmatch('[a-z_]{1,100}', result['error'])):
+            raise AutomaticError('invalid_state')
+        if result['tag'] is not None: automatic_tag(result['tag'])
+        if result['transaction_id'] is not None and (not isinstance(result['transaction_id'], str) or not re.fullmatch('[0-9a-f]{32}', result['transaction_id'])):
+            raise AutomaticError('invalid_state')
+    if value['last_notified'] is not None and (not isinstance(value['last_notified'], str) or not re.fullmatch('[0-9a-f]{32}', value['last_notified'])):
+        raise AutomaticError('invalid_state')
+    pending = value['inflight']
+    if pending is not None:
+        if (not isinstance(pending, dict) or set(pending) != {'attempt_id', 'generation', 'phase', 'transaction_id', 'tag', 'at', 'owner'}
+                or pending['phase'] not in ('preparing', 'execution_committed', 'submitted', 'manual_review_required')
+                or any(not isinstance(pending[name], str) or not re.fullmatch('[0-9a-f]{32}', pending[name]) for name in ('attempt_id', 'generation'))
+                or type(pending['at']) is not int or pending['at'] < 0):
+            raise AutomaticError('invalid_state')
+        automatic_tag(pending['tag'])
+        if pending['transaction_id'] is not None and (not isinstance(pending['transaction_id'], str) or not re.fullmatch('[0-9a-f]{32}', pending['transaction_id'])):
+            raise AutomaticError('invalid_state')
+        owner = pending['owner']
+        if (not isinstance(owner, dict) or set(owner) != {'boot_id', 'identity'} or not isinstance(owner['boot_id'], str)
+                or not 1 <= len(owner['boot_id']) <= 128 or not isinstance(owner['identity'], dict)
+                or set(owner['identity']) != {'pid', 'ticks', 'uid', 'exe'}
+                or type(owner['identity']['pid']) is not int or owner['identity']['pid'] <= 0
+                or type(owner['identity']['uid']) is not int or owner['identity']['uid'] != os.getuid()
+                or not isinstance(owner['identity']['ticks'], str) or not re.fullmatch('[0-9]{1,30}', owner['identity']['ticks'])
+                or not isinstance(owner['identity']['exe'], str) or not owner['identity']['exe'].startswith('/') or len(owner['identity']['exe']) > 4096):
+            raise AutomaticError('invalid_state')
+    return value
+
+
+def automatic_result(state, now, status, error=None, tag=None, transaction_id=None):
+    if error is not None and (not isinstance(error, str) or not re.fullmatch('[a-z_]{1,100}', error)):
+        error = 'operation_uncertain'
+    state['last_result'] = {'id': os.urandom(16).hex(), 'at': now, 'status': status, 'error': error,
+                            'tag': tag, 'transaction_id': transaction_id, 'external_ssh': 'not_verified'}
+    return state['last_result']
+
+
+def automatic_window(settings, now):
+    import datetime
+    local = datetime.datetime.fromtimestamp(now, automatic_zone(settings['timezone']))
+    minute = local.hour * 60 + local.minute
+    start, end = settings['window_start'], settings['window_end']
+    return start <= minute < end if start < end else minute >= start or minute < end
+
+
+def automatic_provenance(directory, settings):
+    root_check, gh_check = globals().get('provenance_trusted_root'), globals().get('provenance_gh')
+    if not callable(root_check) or not callable(gh_check): raise AutomaticError('provenance_unavailable')
+    try:
+        root_check(settings['provenance_root'], forbidden_directories=(directory,))
+        gh_check(forbidden_directories=(directory,))
+    except Exception: raise AutomaticError('provenance_unavailable') from None
+
+
+def automatic_recovery_guard(directory):
+    helper = globals().get('recovery_update_guard')
+    if not callable(helper): raise AutomaticError('recovery_coordination_unavailable')
+    return helper(directory)
+
+
+def automatic_preflight(directory, runtime, settings):
+    import signal
+    import dots_proxy as proxy
+    if sys.platform != 'linux' or not hasattr(os, 'pidfd_open') or not hasattr(signal, 'pidfd_send_signal'):
+        raise AutomaticError('unsupported_environment')
+    for path in (directory, runtime):
+        context = directory_context(path)
+        if (context['visibility'] != 'present' or context['readable'] != 'allowed'
+                or context['writable'] != 'allowed' or context['filesystem'] != 'read_write'):
+            raise AutomaticError('execution_context_unavailable')
+    package = package_report(directory)
+    try:
+        if package['integrity'] != 'match' or stable_version(package['declared_version']) < (0, 8, 0):
+            raise AutomaticError('package_not_supported')
+    except UpdateError: raise AutomaticError('package_not_supported') from None
+    if any(value != 'running' for value in process_checks(directory).values()):
+        raise AutomaticError('local_components_unavailable')
+    if socket_status(runtime / 'tailscaled.sock') != 'present' or socket_connection(runtime) != 'connectable':
+        raise AutomaticError('local_socket_unavailable')
+    try:
+        reply = run_cli(directory, runtime, ['status', '--json'])
+        if reply.returncode or parse_release_json(reply.stdout).get('BackendState') != 'Running':
+            raise AutomaticError('local_backend_unavailable')
+        config = proxy.inspect_config(directory, runtime)
+        if not config.get('daemon_running') or config.get('restart_required'):
+            raise AutomaticError('local_components_unavailable')
+        with proxy._operation(directory): pass
+    except AutomaticError: raise
+    except Exception: raise AutomaticError('local_preflight_failed') from None
+    for folder_name, status, terminal in ((APPLY_DIRECTORY, apply_status, ('applied', 'failed_rolled_back', 'rejected')),
+                                          (RUNTIME_DIRECTORY, runtime_status, ('applied', 'failed_rolled_back', 'rejected'))):
+        folder = directory / folder_name
+        if not folder.exists(): continue
+        try:
+            entries = list(apply_private(folder).iterdir())
+            if len(entries) > 256: raise ValueError()
+            for entry in entries:
+                if not re.fullmatch('[0-9a-f]{32}', entry.name): raise ValueError()
+                previous = status(directory, entry.name)
+                if previous.get('state') not in terminal or previous.get('cleanup_warning'):
+                    raise ValueError()
+        except Exception: raise AutomaticError('prior_transaction_requires_manual_review') from None
+    automatic_provenance(directory, settings)
+
+
+def automatic_find_transaction(directory, pending):
+    root = directory / APPLY_DIRECTORY
+    if not root.exists(): return None
+    try:
+        entries = list(apply_private(root).iterdir())
+        if len(entries) > 256: raise ValueError()
+        matches = []
+        for entry in entries:
+            if not re.fullmatch('[0-9a-f]{32}', entry.name): raise ValueError()
+            journal = apply_read_journal(apply_private(entry))
+            if journal.get('automatic') == {'attempt_id': pending['attempt_id'], 'generation': pending['generation']}:
+                matches.append(entry.name)
+        if len(matches) > 1: raise ValueError()
+        return matches[0] if matches else None
+    except Exception: raise AutomaticError('prior_transaction_requires_manual_review') from None
+
+
+def automatic_observe_pending(directory, pending):
+    identifier = pending['transaction_id'] or automatic_find_transaction(directory, pending)
+    if identifier:
+        try:
+            report = apply_status(directory, identifier)
+            if (report.get('automatic') != {'attempt_id': pending['attempt_id'], 'generation': pending['generation']}
+                    or report.get('selection') != pending['tag']):
+                raise ValueError()
+            outcome = report['state']
+            if outcome not in ('prepared', 'running', 'applied', 'failed_rolled_back', 'rejected'):
+                outcome = 'manual_review_required'
+            return outcome, identifier
+        except Exception: return 'manual_review_required', identifier
+    if pending['phase'] != 'preparing': return 'manual_review_required', None
+    try:
+        owner = pending['owner']
+        if owner['boot_id'] == apply_boot() and apply_identity(owner['identity']['pid']) == owner['identity']:
+            return 'preparing', None
+    except Exception: pass
+    return 'manual_review_required', None
+
+
+def automatic_reconcile(directory, state, now):
+    pending = state['inflight']
+    if pending is None: return
+    outcome, identifier = automatic_observe_pending(directory, pending)
+    if identifier: pending['transaction_id'] = identifier
+    if outcome in ('applied', 'failed_rolled_back', 'rejected'):
+        automatic_result(state, now, outcome, tag=pending['tag'], transaction_id=identifier)
+        if outcome != 'applied':
+            state['last_failed_tag'] = pending['tag']
+            state['failures'] = (state['failures'] + [now])[-32:]
+        state['inflight'] = None
+    elif outcome not in ('prepared', 'running', 'preparing'):
+        pending['phase'] = 'manual_review_required'
+        automatic_result(state, now, 'manual_review_required', tag=pending['tag'], transaction_id=identifier)
+
+
+def automatic_recovery_fence(directory):
+    """Read-only reciprocal fence; a lost acknowledgement never permits recovery."""
+    try:
+        with automatic_store(directory) as folder:
+            if folder is None: return {'state': 'not_configured', 'recovery_allowed': True}
+            state = automatic_state(folder, automatic_settings(folder))
+            if state['inflight'] is None: return {'state': 'idle', 'recovery_allowed': True}
+            outcome, _ = automatic_observe_pending(directory, state['inflight'])
+            if outcome in ('applied', 'failed_rolled_back', 'rejected'):
+                return {'state': 'idle', 'recovery_allowed': True}
+            return {'state': 'manual_review_required' if outcome == 'manual_review_required' else 'in_progress', 'recovery_allowed': False}
+    except Exception: return {'state': 'unknown', 'recovery_allowed': False}
+
+
+def automatic_candidate_guard(directory, tag):
+    """Recheck under the updater's operation lock; discovery can become stale."""
+    package = package_report(directory)
+    try:
+        if (package['integrity'] != 'match' or stable_version(tag[1:]) < (0, 8, 0)
+                or stable_version(tag[1:]) <= stable_version(package['declared_version'])):
+            raise AutomaticError('candidate_not_newer')
+    except UpdateError: raise AutomaticError('candidate_not_newer') from None
+
+
+def automatic_worker_commit(directory, transaction, journal):
+    """The same short control lock orders disable/hold against execution commit."""
+    fence = journal.get('automatic')
+    if fence is None: return
+    if (not isinstance(fence, dict) or set(fence) != {'attempt_id', 'generation'}
+            or any(not isinstance(value, str) or not re.fullmatch('[0-9a-f]{32}', value) for value in fence.values())):
+        raise ApplyError('invalid_automatic_fence')
+    try:
+        with automatic_recovery_guard(directory):
+            with automatic_store(directory, create=True) as folder:
+                settings = automatic_settings(folder)
+                state = automatic_state(folder, settings)
+                pending = state['inflight']
+                if (not settings['enabled'] or settings['held'] or settings['generation'] != fence['generation']
+                        or pending is None or pending['phase'] != 'preparing'
+                        or any(pending[name] != fence[name] for name in fence)
+                        or pending['transaction_id'] not in (None, transaction.name)
+                        or journal.get('selection') != pending['tag']
+                        or not automatic_window(settings, int(time.time()))
+                        or not 0 <= int(time.time()) - pending['at'] <= 300):
+                    raise AutomaticError('automatic_cancelled_before_commit')
+                automatic_candidate_guard(directory, pending['tag'])
+                pending.update(phase='execution_committed', transaction_id=transaction.name)
+                notice_write(folder, 'state.json', state)
+    except AutomaticError as error: raise ApplyError(str(error)) from None
+    except Exception: raise ApplyError('automatic_commit_blocked') from None
+
+
+def automatic_configure(directory, runtime, command, options):
+    with automatic_store(directory, create=True) as folder:
+        settings = automatic_settings(folder)
+        generation = settings['generation']
+        if command in ('disable', 'hold', 'unhold'):
+            # Stopping or holding must work during an outage, without preflight.
+            if command == 'disable': settings['enabled'] = False
+            else: settings['held'] = command == 'hold'
+            if settings['generation'] is None:
+                notice_write(folder, 'state.json', automatic_empty_state())
+            settings['generation'] = os.urandom(16).hex()
+            notice_write(folder, 'settings.json', settings)
+            return dict(settings, state='disabled' if not settings['enabled'] else 'held' if settings['held'] else 'enabled',
+                        committed_transaction_may_finish=True)
+        state = automatic_state(folder, settings)
+        if command == 'reset-failures':
+            if not options.confirm_recovery_terminal: raise AutomaticError('confirmation_required')
+            automatic_reconcile(directory, state, int(time.time()))
+            if state['inflight'] is not None: raise AutomaticError('manual_review_required')
+            state.update(failures=[], last_failed_tag=None, next_check_at=None)
+            notice_write(folder, 'state.json', state)
+            return {'state': 'failure_hold_cleared', 'attempt_budget_preserved': True}
+        for name in ('interval_hours', 'timezone', 'pin', 'proxy', 'provenance_root'):
+            value = getattr(options, name, None)
+            if value is not None: settings[name] = str(value) if name == 'provenance_root' else value
+        if getattr(options, 'unpin', False): settings['pin'] = None
+        if getattr(options, 'direct', False): settings['proxy'] = None
+        window = getattr(options, 'window', None)
+        if window is not None:
+            match = re.fullmatch(r'([01][0-9]|2[0-3]):([0-5][0-9])-([01][0-9]|2[0-3]):([0-5][0-9])', window)
+            if match is None: raise AutomaticError('invalid_window')
+            parts = [int(part) for part in match.groups()]
+            settings.update(window_start=parts[0] * 60 + parts[1], window_end=parts[2] * 60 + parts[3])
+        if command == 'enable':
+            if not options.confirm_recovery_terminal: raise AutomaticError('confirmation_required')
+            settings.update(enabled=True, recovery_confirmed_at=int(time.time()))
+        settings['generation'] = os.urandom(16).hex()
+        automatic_validate_settings(settings)
+    automatic_zone(settings['timezone'])
+    # Never acquire recovery/run.lock while holding automatic/control.lock.
+    if command == 'enable':
+        with automatic_recovery_guard(directory): automatic_preflight(directory, runtime, settings)
+    with automatic_store(directory, create=True) as folder:
+        current = automatic_settings(folder)
+        if current['generation'] != generation: raise AutomaticError('configuration_changed')
+        state = automatic_state(folder, current)
+        notice_write(folder, 'state.json', state)
+        notice_write(folder, 'settings.json', settings)
+    return dict(settings, state='held' if settings['held'] else 'enabled' if settings['enabled'] else 'disabled')
+
+
+def automatic_show(directory):
+    with automatic_store(directory) as folder:
+        settings = automatic_settings(folder)
+        state = automatic_state(folder, settings)
+        pending = state['inflight']
+        observed = automatic_observe_pending(directory, pending)[0] if pending else None
+        result_state = ('manual_review_required' if observed == 'manual_review_required' else
+                        'in_progress' if observed in ('prepared', 'running', 'preparing') else
+                        'disabled' if not settings['enabled'] else 'held' if settings['held'] else 'enabled')
+        return dict(settings, **{key: value for key, value in state.items() if key != 'schema'}, state=result_state,
+                    observed_transaction_state=observed, execution_environment='not_rechecked',
+                    scheduler='external_caller_required', external_ssh='not_verified')
+
+
+def automatic_tick(directory, runtime):
+    now = int(time.time())
+    with automatic_store(directory) as folder:
+        settings = automatic_settings(folder)
+        if not settings['enabled']: return {'state': 'disabled'}
+    with automatic_store(directory, create=True, runner=True):
+        with automatic_store(directory, create=True) as folder:
+            settings = automatic_settings(folder)
+            state = automatic_state(folder, settings)
+            had_pending = state['inflight'] is not None
+            automatic_reconcile(directory, state, now)
+            if had_pending: notice_write(folder, 'state.json', state)
+            if state['inflight'] is not None:
+                return {'state': 'manual_review_required' if state['inflight']['phase'] == 'manual_review_required' else 'in_progress',
+                        'transaction_id': state['inflight']['transaction_id']}
+            if not settings['enabled']: return {'state': 'disabled'}
+            if settings['held']: return {'state': 'held'}
+            if not automatic_window(settings, now): return {'state': 'outside_window'}
+            times = state['failures'] + state['attempts']
+            if (any(value > now for value in times) or settings['recovery_confirmed_at'] > now
+                    or state['last_check_at'] is not None and state['last_check_at'] > now):
+                raise AutomaticError('clock_moved_backwards')
+            attempts = [value for value in state['attempts'] if value > now - AUTOMATIC_WINDOW]
+            failures = [value for value in state['failures'] if value > now - AUTOMATIC_WINDOW]
+            if len(attempts) >= AUTOMATIC_LIMIT or len(failures) >= AUTOMATIC_LIMIT:
+                return {'state': 'budget_exhausted', 'retry_at': min((attempts if len(attempts) >= AUTOMATIC_LIMIT else failures)) + AUTOMATIC_WINDOW}
+            if state['next_check_at'] is not None and now < state['next_check_at']:
+                return {'state': 'waiting', 'retry_at': state['next_check_at']}
+            generation = settings['generation']
+        failure_retry_at = 0
+        try:
+            with automatic_recovery_guard(directory): automatic_preflight(directory, runtime, settings)
+            check = update_check(directory, settings['pin'], settings['proxy'])
+            if check['status'] == 'check_failed':
+                failure_retry_at = validated_retry(check.get('retry', {}), int(time.time())).get('retry_at', 0)
+                raise AutomaticError(check['error'] or 'check_failed')
+            if check['status'] not in ('current', 'local_newer', 'update_available'):
+                raise AutomaticError('package_not_comparable')
+            tag = check['release']['tag']
+            automatic_tag(tag)
+            if stable_version(tag[1:]) < (0, 8, 0): raise AutomaticError('unsigned_legacy_not_automatic')
+            with automatic_recovery_guard(directory):
+                automatic_preflight(directory, runtime, settings)
+                with automatic_store(directory, create=True) as folder:
+                    current = automatic_settings(folder)
+                    state = automatic_state(folder, current)
+                    if not current['enabled'] or current['held'] or current['generation'] != generation:
+                        return {'state': 'configuration_changed'}
+                    now = int(time.time())
+                    state.update(last_check_at=now, next_check_at=now + settings['interval_hours'] * 3600)
+                    if check['status'] != 'update_available':
+                        result = automatic_result(state, now, check['status'], tag=tag)
+                        notice_write(folder, 'state.json', state)
+                        return dict(result)
+                    if state['last_failed_tag'] == tag:
+                        notice_write(folder, 'state.json', state)
+                        return {'state': 'failed_version_held', 'tag': tag}
+                    identity = apply_identity(os.getpid())
+                    if identity is None: raise AutomaticError('process_identity_unknown')
+                    fence = {'attempt_id': os.urandom(16).hex(), 'generation': generation}
+                    state['inflight'] = dict(fence, phase='preparing', transaction_id=None, tag=tag, at=now,
+                                            owner={'boot_id': apply_boot(), 'identity': identity})
+                    state['attempts'] = (state['attempts'] + [now])[-32:]
+                    notice_write(folder, 'state.json', state)
+            # The durable marker fences recovery in the detached gap. Configuration
+            # commands can now win against worker commit under the control lock.
+            try:
+                applied = update_apply(directory, runtime, tag=tag, confirm=True, proxy_url=settings['proxy'],
+                                       allow_unsigned_legacy=False, provenance_root=settings['provenance_root'], automatic=fence)
+            except ApplyError as error:
+                identifier = getattr(error, 'transaction_id', None)
+                with automatic_store(directory, create=True) as folder:
+                    current = automatic_settings(folder)
+                    state = automatic_state(folder, current)
+                    if state['inflight'] is None or state['inflight']['attempt_id'] != fence['attempt_id']:
+                        raise AutomaticError('manual_review_required')
+                    if identifier:
+                        state['inflight']['transaction_id'] = identifier
+                        automatic_reconcile(directory, state, int(time.time()))
+                    else:
+                        state['inflight'] = None
+                        state['last_failed_tag'] = tag
+                        state['failures'] = (state['failures'] + [int(time.time())])[-32:]
+                        automatic_result(state, int(time.time()), 'rejected', str(error), tag)
+                    notice_write(folder, 'state.json', state)
+                    return (dict(state['last_result']) if state['inflight'] is None else
+                            {'state': 'manual_review_required' if state['inflight']['phase'] == 'manual_review_required' else 'in_progress',
+                             'transaction_id': state['inflight']['transaction_id']})
+            with automatic_store(directory, create=True) as folder:
+                current = automatic_settings(folder)
+                state = automatic_state(folder, current)
+                if state['inflight'] is None or state['inflight']['attempt_id'] != fence['attempt_id']:
+                    raise AutomaticError('manual_review_required')
+                identifier = applied.get('transaction_id')
+                if not isinstance(identifier, str) or not re.fullmatch('[0-9a-f]{32}', identifier):
+                    raise AutomaticError('manual_review_required')
+                state['inflight']['transaction_id'] = identifier
+                if state['inflight']['phase'] != 'execution_committed': state['inflight']['phase'] = 'submitted'
+                automatic_reconcile(directory, state, int(time.time()))
+                notice_write(folder, 'state.json', state)
+                return (dict(state['last_result']) if state['inflight'] is None else
+                        {'state': 'manual_review_required' if state['inflight']['phase'] == 'manual_review_required' else 'in_progress',
+                         'transaction_id': state['inflight']['transaction_id']})
+        except Exception as error:
+            with automatic_store(directory, create=True) as folder:
+                current = automatic_settings(folder)
+                state = automatic_state(folder, current)
+                if state['inflight'] is not None:
+                    state['inflight']['phase'] = 'manual_review_required'
+                    automatic_result(state, int(time.time()), 'manual_review_required', 'operation_uncertain',
+                                     state['inflight']['tag'], state['inflight']['transaction_id'])
+                else:
+                    code = str(error) if isinstance(error, (AutomaticError, ApplyError)) else 'preflight_failed'
+                    if isinstance(error, UpdateError): code = error.code
+                    count = len([value for value in state['failures'] if value > int(time.time()) - AUTOMATIC_WINDOW])
+                    state['failures'] = (state['failures'] + [int(time.time())])[-32:]
+                    state['next_check_at'] = max(failure_retry_at, int(time.time()) + min(3600, 300 * (2 ** min(count, 3))))
+                    automatic_result(state, int(time.time()), 'check_failed', code)
+                notice_write(folder, 'state.json', state)
+                return dict(state['last_result'])
+
+
+def automatic_main(argv, directory, runtime):
+    parser = SafeParser(description='Explicit opt-in package update runner; no scheduler is installed.')
+    commands = parser.add_subparsers(dest='command', required=True)
+    for name in ('enable', 'configure', 'disable', 'hold', 'unhold', 'status', 'tick', 'reset-failures', 'notify', 'watch'):
+        command = commands.add_parser(name)
+        command.add_argument('--json', action='store_true')
+        if name in ('enable', 'configure'):
+            command.add_argument('--interval-hours', type=int)
+            command.add_argument('--timezone')
+            command.add_argument('--window')
+            pin = command.add_mutually_exclusive_group()
+            pin.add_argument('--pin')
+            pin.add_argument('--unpin', action='store_true')
+            proxy = command.add_mutually_exclusive_group()
+            proxy.add_argument('--proxy')
+            proxy.add_argument('--direct', action='store_true')
+            command.add_argument('--provenance-root', type=pathlib.Path)
+        if name in ('enable', 'reset-failures'):
+            command.add_argument('--confirm-recovery-terminal', action='store_true')
+        if name == 'watch':
+            command.add_argument('--seconds', type=int, default=3600)
+            command.add_argument('--poll-seconds', type=int, default=60)
+    try:
+        options = parser.parse_args(argv)
+        if options.command == 'status': result = automatic_show(directory)
+        elif options.command == 'tick': result = automatic_tick(directory, runtime)
+        elif options.command == 'watch':
+            if not 1 <= options.seconds <= 86400 or not 30 <= options.poll_seconds <= 3600:
+                raise AutomaticError('invalid_watch_interval')
+            deadline = time.monotonic() + options.seconds
+            while True:
+                result = automatic_tick(directory, runtime)
+                print(json.dumps(result, sort_keys=True), flush=True)
+                if result.get('state', result.get('status')) in ('disabled', 'held', 'manual_review_required'): break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0: break
+                time.sleep(min(options.poll_seconds, remaining))
+            return 0
+        elif options.command == 'notify':
+            result = {'notified': False}
+            if sys.stderr.isatty():
+                with automatic_store(directory) as folder:
+                    settings = automatic_settings(folder)
+                    state = automatic_state(folder, settings)
+                    last = state['last_result']
+                    if folder is not None and last is not None and state['last_notified'] != last['id']:
+                        print('dots-ts automatic update: ' + last['status'] + (' (' + last['error'] + ')' if last['error'] else ''), file=sys.stderr)
+                        state['last_notified'] = last['id']
+                        notice_write(folder, 'state.json', state)
+                        result['notified'] = True
+        else: result = automatic_configure(directory, runtime, options.command, options)
+        print(json.dumps(result, sort_keys=True) if options.json else 'automatic updates: ' + json.dumps(result, sort_keys=True))
+        return int(result.get('state') == 'manual_review_required' or result.get('status') in ('check_failed', 'rejected', 'failed_rolled_back', 'manual_review_required'))
+    except (AutomaticError, NoticeError, OSError, ValueError) as error:
+        code = str(error) if isinstance(error, AutomaticError) else 'storage_or_arguments_unavailable'
+        if not re.fullmatch('[a-z_]{1,100}', code): code = 'automatic_unavailable'
+        print(json.dumps({'error': code}, sort_keys=True))
+        return 1
+
 
 class SafeParser(argparse.ArgumentParser):
     def error(self, message):
@@ -3423,6 +4041,9 @@ def main(argv=None):
         directory, runtime = directories()
         if argv and argv[0] == 'recovery':
             return recovery_main(argv[1:], directory, runtime)
+
+        if argv[:2] == ["update", "automatic"]:
+            return automatic_main(argv[2:], directory, runtime)
         if argv and argv[0] == "cli":
             os.execv(str(directory / "tailscale"), [str(directory / "tailscale"), "--socket=" + str(runtime / "tailscaled.sock")] + argv[1:])
         if argv and argv[0] == "proxy":
@@ -3453,6 +4074,7 @@ def main(argv=None):
         runtime_status_parser.add_argument('--json',action='store_true')
         update = commands.add_parser("update", help="check stable releases without changing code or services")
         update_commands = update.add_subparsers(dest="update_command", required=True)
+        update_commands.add_parser("automatic", help="explicit opt-in package runner; see update automatic --help")
         check = update_commands.add_parser("check")
         check_selection = check.add_mutually_exclusive_group()
         check_selection.add_argument("--tag")
