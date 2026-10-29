@@ -59,6 +59,89 @@ def evidence_fixture(payload):
     return metadata, evidence, [verified]
 
 
+class GhOutputContractTests(unittest.TestCase):
+    """Real public stdout shape; adapted positives are not signed evidence."""
+    FIXTURE = ROOT / "tests/fixtures/gh-attestation-2.103.3-actions-attest-demo.json"
+    SHA256 = "f46563c3a1ffb835dec870a01e6605960350ae9fdef073489fe5a9b33f03a324"
+
+    def test_unmodified_public_stdout_has_the_real_nested_contract(self):
+        raw = self.FIXTURE.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), self.SHA256)
+        result = json.loads(raw)
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(set(result[0]), {"attestation", "verificationResult"})
+        verified = result[0]["verificationResult"]
+        # This is one signature-summary OBJECT containing a certificate,
+        # not a list of signatures and not a flattened certificate wrapper.
+        self.assertIsInstance(verified["signature"], dict)
+        certificate = verified["signature"]["certificate"]
+        self.assertIsInstance(certificate, dict)
+        self.assertNotIn("certificate", result[0])
+        for field in ("sourceRepositoryIdentifier", "sourceRepositoryOwnerIdentifier",
+                      "sourceRepositoryRef", "sourceRepositoryDigest", "buildSignerDigest"):
+            self.assertIsInstance(certificate[field], str)
+        self.assertEqual(certificate["sourceRepositoryURI"], "https://github.com/actions/attest-demo")
+        self.assertIsInstance(verified["verifiedTimestamps"], list)
+        self.assertTrue(verified["verifiedTimestamps"])
+        statement = verified["statement"]
+        self.assertIsInstance(statement, dict)
+        self.assertEqual(statement["predicateType"], "https://slsa.dev/provenance/v1")
+        definition = statement["predicate"]["buildDefinition"]
+        self.assertEqual(set(definition["externalParameters"]["workflow"]), {"path", "ref", "repository"})
+        self.assertIsInstance(definition["resolvedDependencies"], list)
+        self.assertEqual(definition["resolvedDependencies"][0]["digest"]["gitCommit"],
+                         certificate["sourceRepositoryDigest"])
+
+    def test_unmodified_upstream_publisher_is_not_this_packages_evidence(self):
+        payload = payload_fixture()
+        metadata, _, _ = evidence_fixture(payload)
+        # The real sample has an unauthorized publisher/workflow/ref for this
+        # package. Do not relabel its valid upstream signature as our proof.
+        with self.assertRaisesRegex(tool.ProvenanceError, "provenance_policy_mismatch"):
+            tool.provenance_certificate_result(self.FIXTURE.read_bytes(), metadata,
+                                               hashlib.sha256(payload[tool.MANIFEST]).hexdigest())
+
+    def test_policy_values_can_be_adapted_without_changing_the_real_wrapper(self):
+        original = json.loads(self.FIXTURE.read_bytes())
+        synthetic = copy.deepcopy(original)
+        payload = payload_fixture()
+        metadata, _, _ = evidence_fixture(payload)
+        digest = hashlib.sha256(payload[tool.MANIFEST]).hexdigest()
+        ref = "refs/tags/" + metadata["tag"]
+        verified = synthetic[0]["verificationResult"]
+        certificate = verified["signature"]["certificate"]
+        # Change only values consumed by the post-gh policy. The signature,
+        # certificate bytes and DSSE statement inside attestation.bundle stay
+        # unmodified and NO LONGER match these adapted summaries. This is a
+        # parser unit case after mocked verifier success, NOT crypto-valid
+        # mutated evidence and never input to the real gh verifier.
+        certificate.update({
+            "subjectAlternativeName": tool.UPDATE_WEB + "/" + tool.PROVENANCE_WORKFLOW + "@" + ref,
+            "sourceRepositoryURI": tool.UPDATE_WEB,
+            "sourceRepositoryIdentifier": tool.PROVENANCE_REPOSITORY_ID,
+            "sourceRepositoryOwnerURI": "https://github.com/abruption",
+            "sourceRepositoryOwnerIdentifier": tool.PROVENANCE_OWNER_ID,
+            "sourceRepositoryRef": ref, "sourceRepositoryDigest": metadata["source_commit"],
+            "buildSignerDigest": metadata["source_commit"],
+        })
+        verified["statement"]["subject"][0]["digest"]["sha256"] = digest
+        definition = verified["statement"]["predicate"]["buildDefinition"]
+        definition["externalParameters"]["workflow"].update({
+            "repository": tool.UPDATE_WEB, "path": tool.PROVENANCE_WORKFLOW, "ref": ref})
+        definition["resolvedDependencies"][0].update({
+            "uri": "git+" + tool.UPDATE_WEB + "@" + ref,
+            "digest": {"gitCommit": metadata["source_commit"]}})
+        self.assertEqual(synthetic[0]["attestation"], original[0]["attestation"])
+        self.assertEqual(set(synthetic[0]), set(original[0]))
+        self.assertEqual(set(verified), set(original[0]["verificationResult"]))
+        report = tool.provenance_certificate_result(json.dumps(synthetic).encode(), metadata, digest)
+        self.assertEqual(report["status"], "verified")
+        self.assertEqual(report["manifest_sha256"], digest)
+        # The immutable captured fixture remains byte-for-byte original.
+        self.assertEqual(hashlib.sha256(self.FIXTURE.read_bytes()).hexdigest(), self.SHA256)
+
+
 class ProvenanceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="provenance-tests-")
