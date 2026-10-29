@@ -1,6 +1,9 @@
 """Managed socket guards: mocked /proc cases plus one real Linux FD fixture.
 
 These tests never operate a Tailscale node or use real authentication state.
+The Linux positive probe uses the real inspector with only fixture-owned PID
+entries enumerated. It is not evidence of full-host /proc visibility or an
+actual isolated PID namespace. Identity/FD/namespace/Unix tables remain real.
 """
 import contextlib
 import io
@@ -323,17 +326,56 @@ int main(int argc, char **argv) {
                 eligible = lifecycle.ORIGINAL_PROBE(self.directory, self.runtime, self.state())
             inspection = {'probe': eligible, 'process_checks': inspected_processes,
                           'socket_status': inspected_sockets}
-            self.assertEqual(eligible.get('state'), 'components_missing', inspection)
-            self.assertEqual(eligible.get('managed_socket_cleanup'), 'eligible', inspection)
-            self.probe.side_effect = [eligible, {'state': 'healthy'}]
+            self.assertEqual(inspected_sockets, ['present'], inspection)
+            if any('unknown' in value.values() for value in inspected_processes):
+                # An opaque unrelated same-UID process intentionally makes the
+                # full-host inventory conservative. Do not turn that result
+                # into permission to delete the managed socket.
+                self.assertEqual(eligible.get('state'), 'unknown', inspection)
+                self.assertTrue((self.runtime / 'tailscaled.sock').exists())
+                self.popen.assert_not_called()
+            else:
+                self.assertEqual(eligible.get('state'), 'components_missing', inspection)
+                self.assertEqual(eligible.get('managed_socket_cleanup'), 'eligible', inspection)
+
+            # Separately test the positive cleanup path in a controlled
+            # inventory view. Only enumeration of /proc by the ORIGINAL
+            # process_checks function is filtered; all yielded entries retain
+            # their real stat/cmdline/exe, and the view ends before FD, socket,
+            # namespace and kernel-table ownership inspections run.
+            full_pathlib = tool.pathlib
+            fixture_pids = {str(os.getpid()), str(daemon.pid)}
+            controlled_processes = []
+            class FixtureProcRoot:
+                def iterdir(self):
+                    return (entry for entry in full_pathlib.Path('/proc').iterdir() if entry.name in fixture_pids)
+            class FixtureInventoryPathlib:
+                def __getattr__(self, name):
+                    return getattr(full_pathlib, name)
+                def Path(self, *args, **kwargs):
+                    if args == ('/proc',) and not kwargs:
+                        return FixtureProcRoot()
+                    return full_pathlib.Path(*args, **kwargs)
+            def fixture_inventory(directory):
+                with mock.patch.object(tool, 'pathlib', FixtureInventoryPathlib()):
+                    value = REAL_PROCESS_CHECKS(directory)
+                controlled_processes.append(value)
+                return value
             def staged_start(*args, **kwargs):
                 self.assertFalse((self.runtime / 'tailscaled.sock').exists())
                 self.assertEqual(self.state()['attempts'][-1]['socket_cleanup'], 'removed')
                 with tool.recovery_lock(self.directory, '.operation.lock'):
                     pass
                 return lifecycle.FakeProcess()
-            self.popen.side_effect = staged_start
-            result = tool.recovery_run(self.directory, self.runtime, self.options())
+            with mock.patch.object(tool, 'process_checks', side_effect=fixture_inventory):
+                eligible = lifecycle.ORIGINAL_PROBE(self.directory, self.runtime, self.state())
+                controlled = {'probe': eligible, 'process_checks': controlled_processes,
+                              'global_inspection': inspection}
+                self.assertEqual(eligible.get('state'), 'components_missing', controlled)
+                self.assertEqual(eligible.get('managed_socket_cleanup'), 'eligible', controlled)
+                self.probe.side_effect = [eligible, {'state': 'healthy'}]
+                self.popen.side_effect = staged_start
+                result = tool.recovery_run(self.directory, self.runtime, self.options())
             self.assertEqual(result['state'], 'local_ready')
             self.assertEqual(result['socket_cleanup'], 'removed')
             self.assertEqual(result['external_confirmation'], 'pending')
