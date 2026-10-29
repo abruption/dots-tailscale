@@ -1,5 +1,9 @@
 """Automatic source updates: explicit scheduling and durable cancellation fences."""
 import contextlib
+import hashlib
+import multiprocessing
+import select
+import time
 import importlib.machinery
 import importlib.util
 import io
@@ -42,6 +46,7 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.real_preflight = tool.automatic_preflight
         self.stack.enter_context(mock.patch.object(tool, 'package_report', return_value={'integrity': 'match', 'declared_version': '0.8.0'}))
         self.preflight = self.stack.enter_context(mock.patch.object(tool, 'automatic_preflight'))
+        self.real_guard = tool.automatic_recovery_guard
         self.guard = self.stack.enter_context(mock.patch.object(tool, 'automatic_recovery_guard', side_effect=lambda d: contextlib.nullcontext()))
         self.check = self.stack.enter_context(mock.patch.object(tool, 'update_check', return_value={
             'status': 'update_available', 'release': {'tag': 'v0.8.1', 'version': '0.8.1'}, 'error': None}))
@@ -114,8 +119,8 @@ class AutomaticUpdateTests(unittest.TestCase):
         settings = tool.automatic_defaults()
         settings.update(timezone='America/New_York', window_start=60, window_end=120)
         def epoch(text): return int(datetime.datetime.fromisoformat(text).timestamp())
-        # The repeated 01:30 belongs to the window both times, but the persistent
-        # epoch interval/attempt budget still permits only one installation.
+        # This case checks window membership only. A separate test invokes
+        # both repeated-hour ticks and verifies persistent interval behavior.
         self.assertTrue(tool.automatic_window(settings, epoch('2026-11-01T05:30:00+00:00')))
         self.assertTrue(tool.automatic_window(settings, epoch('2026-11-01T06:30:00+00:00')))
         self.assertFalse(tool.automatic_window(settings, epoch('2026-11-01T07:30:00+00:00')))
@@ -391,6 +396,206 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertEqual(len(self.state()['failures']), 3)
         self.apply.assert_not_called()
 
+    def create_operation_lock(self):
+        path = self.directory / '.operation.lock'
+        path.write_bytes(b''); path.chmod(0o600)
+
+    def uncertain_preparation(self):
+        self.configure()
+        self.apply.side_effect = RuntimeError('PRIVATE uncertain launch')
+        tool.automatic_tick(self.directory, self.runtime)
+        self.create_operation_lock()
+        return self.state()
+
+    def test_clock_rollback_before_terminal_reconcile_preserves_all_state_bytes(self):
+        self.configure(); tool.automatic_tick(self.directory, self.runtime)
+        state = self.state()
+        state['failures'] = [self.NOW + 20]
+        tool.automatic_result(state, self.NOW + 20, 'check_failed', 'offline')
+        self.write_state(state)
+        self.journals[self.TRANSACTION].update(state='rejected', error='candidate_failed')
+        folder = self.directory / tool.AUTOMATIC_DIRECTORY
+        before = {name: (folder / name).read_bytes() for name in ('state.json', 'settings.json')}
+        with mock.patch.object(tool.time, 'time', return_value=self.NOW + 10):
+            with self.assertRaisesRegex(tool.AutomaticError, 'clock_moved_backwards'):
+                tool.automatic_tick(self.directory, self.runtime)
+            with self.assertRaisesRegex(tool.AutomaticError, 'clock_moved_backwards'):
+                self.configure('reset-failures')
+        self.assertEqual(before, {name: (folder / name).read_bytes() for name in before})
+        self.assertEqual(self.state()['failures'], [self.NOW + 20])
+
+    def test_first_enable_cannot_persist_future_confirmation_after_clock_rollback(self):
+        def backwards(*args): tool.time.time.return_value = self.NOW - 1
+        self.preflight.side_effect = backwards
+        with self.assertRaisesRegex(tool.AutomaticError, 'clock_moved_backwards'):
+            self.configure()
+        folder = self.directory / tool.AUTOMATIC_DIRECTORY
+        self.assertFalse((folder / 'settings.json').exists())
+        self.assertFalse((folder / 'state.json').exists())
+
+    def test_pending_and_result_times_are_checked_even_without_failure_times(self):
+        self.configure(); tool.automatic_tick(self.directory, self.runtime)
+        path = self.directory / tool.AUTOMATIC_DIRECTORY / 'state.json'
+        original = self.state()
+        for field in ('pending', 'result'):
+            state = json.loads(json.dumps(original))
+            if field == 'pending': state['inflight']['at'] = self.NOW + 30
+            else: tool.automatic_result(state, self.NOW + 30, 'check_failed', 'offline')
+            self.write_state(state); before = path.read_bytes()
+            with mock.patch.object(tool.time, 'time', return_value=self.NOW + 10):
+                with self.assertRaisesRegex(tool.AutomaticError, 'clock_moved_backwards'):
+                    tool.automatic_tick(self.directory, self.runtime)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_clock_rollback_during_discovery_does_not_record_an_error_write(self):
+        self.configure()
+        path = self.directory / tool.AUTOMATIC_DIRECTORY / 'state.json'
+        before = path.read_bytes()
+        def backwards(*args):
+            tool.time.time.return_value = self.NOW - 1
+            return {'status': 'current', 'release': {'tag': 'v0.8.0'}, 'error': None}
+        self.check.side_effect = backwards
+        with self.assertRaisesRegex(tool.AutomaticError, 'clock_moved_backwards'):
+            tool.automatic_tick(self.directory, self.runtime)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_proven_dead_preparation_can_be_abandoned_without_resetting_budget(self):
+        state = self.uncertain_preparation()
+        self.assertIsNotNone(state['inflight'])
+        path = self.directory / tool.AUTOMATIC_DIRECTORY / 'state.json'
+        before = path.read_bytes()
+        with mock.patch.object(tool, 'apply_identity', return_value=None):
+            fence = tool.automatic_recovery_fence(self.directory)
+            self.assertTrue(fence['recovery_allowed'])
+            self.assertEqual(path.read_bytes(), before)  # Observation never rewrites state.
+            result = self.configure('abandon-preparation')
+        self.assertEqual(result['status'], 'abandoned_before_staging')
+        self.assertTrue(result['attempt_budget_preserved'])
+        state = self.state()
+        self.assertEqual(state['attempts'], [self.NOW])
+        self.assertIsNone(state['last_failed_tag']); self.assertIsNone(state['inflight'])
+        self.assertEqual(self.apply.call_count, 1)
+
+    def test_tick_reconciles_proven_pre_staging_exit_without_resubmission(self):
+        self.uncertain_preparation()
+        with mock.patch.object(tool, 'apply_identity', return_value=None):
+            self.assertEqual(tool.automatic_tick(self.directory, self.runtime)['state'], 'waiting')
+        self.assertEqual(self.state()['last_result']['status'], 'abandoned_before_staging')
+        self.assertEqual(self.apply.call_count, 1)
+
+    def test_new_boot_unknown_owner_empty_or_matching_journal_never_abandons(self):
+        state = self.uncertain_preparation()
+        pending = state['inflight']
+        with mock.patch.object(tool, 'apply_identity', return_value=None), mock.patch.object(tool, 'apply_boot', return_value='new-boot'):
+            self.assertFalse(tool.automatic_can_abandon_preparation(self.directory, pending))
+        with mock.patch.object(tool, 'apply_identity', side_effect=tool.ApplyError('PRIVATE')):
+            self.assertFalse(tool.automatic_can_abandon_preparation(self.directory, pending))
+        transaction = self.directory / tool.APPLY_DIRECTORY / self.TRANSACTION
+        transaction.parent.mkdir(mode=0o700); transaction.mkdir(mode=0o700)
+        with mock.patch.object(tool, 'apply_identity', return_value=None):
+            self.assertFalse(tool.automatic_can_abandon_preparation(self.directory, pending))
+            self.assertEqual(tool.automatic_show(self.directory)['state'], 'manual_review_required')
+            with self.assertRaisesRegex(tool.AutomaticError, 'manual_review_required'):
+                self.configure('abandon-preparation')
+        journal = {'schema': 1, 'state': 'prepared', 'boot_id': 'boot-fixture', 'selection': pending['tag'],
+                   'automatic': {name: pending[name] for name in ('attempt_id', 'generation')}}
+        tool.apply_write(transaction / 'journal.json', json.dumps(journal).encode())
+        with mock.patch.object(tool, 'apply_identity', return_value=None):
+            self.assertFalse(tool.automatic_can_abandon_preparation(self.directory, pending))
+        with mock.patch.object(tool, 'apply_identity', return_value=None), mock.patch.object(tool, 'apply_read_journal', side_effect=PermissionError('PRIVATE')):
+            self.assertFalse(tool.automatic_can_abandon_preparation(self.directory, pending))
+
+    def test_real_recovery_guard_enable_errors_are_sanitized_json(self):
+        recovery = self.directory / tool.RECOVERY_DIRECTORY
+        recovery.mkdir(mode=0o700)
+        tool.apply_write(recovery / 'state.json', json.dumps(tool.recovery_default()).encode())
+        output = io.StringIO()
+        with mock.patch.object(tool, 'automatic_recovery_guard', self.real_guard), contextlib.redirect_stdout(output):
+            code = tool.automatic_main(['enable', '--confirm-recovery-terminal', '--provenance-root', str(self.root / 'root.json'), '--json'], self.directory, self.runtime)
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(output.getvalue()), {'error': 'recovery_blocks_update'})
+        output = io.StringIO()
+        with mock.patch.object(tool, 'automatic_recovery_guard', self.real_guard), \
+                mock.patch.object(tool, 'recovery_update_guard', side_effect=tool.ApplyError('PRIVATE')), contextlib.redirect_stdout(output):
+            code = tool.automatic_main(['enable', '--confirm-recovery-terminal', '--provenance-root', str(self.root / 'root.json'), '--json'], self.directory, self.runtime)
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(output.getvalue()), {'error': 'recovery_coordination_unavailable'})
+
+    def test_reset_failures_cannot_race_an_active_tick_after_terminal_worker(self):
+        self.configure()
+        def terminal_before_return(directory, runtime, **kwargs):
+            result = self.submit(directory, runtime, **kwargs)
+            self.journals[self.TRANSACTION]['state'] = 'applied'
+            with self.assertRaisesRegex(tool.AutomaticError, 'operation_busy'):
+                self.configure('reset-failures')
+            return result
+        self.apply.side_effect = terminal_before_return
+        self.assertEqual(tool.automatic_tick(self.directory, self.runtime)['status'], 'applied')
+        self.assertEqual(self.state()['failures'], [])
+
+    def test_transient_apply_failures_backoff_without_permanent_candidate_hold(self):
+        self.configure()
+        for error in (tool.ApplyError('offline'), tool.ApplyError('operation_busy_or_unsafe'),
+                      tool.ApplyError('provenance_verifier_timeout'), tool.ApplyError('automatic_cancelled_before_commit'),
+                      tool.ApplyError('rate_limited', retry={'retry_at': self.NOW + 3600})):
+            self.write_state(tool.automatic_empty_state())
+            self.apply.side_effect = error
+            self.assertEqual(tool.automatic_tick(self.directory, self.runtime)['status'], 'rejected')
+            state = self.state()
+            self.assertIsNone(state['last_failed_tag'])
+            self.assertGreaterEqual(state['next_check_at'], self.NOW + 300)
+            if str(error) == 'rate_limited': self.assertEqual(state['next_check_at'], self.NOW + 3600)
+        self.write_state(tool.automatic_empty_state())
+        self.apply.side_effect = tool.ApplyError('provenance_policy_mismatch')
+        tool.automatic_tick(self.directory, self.runtime)
+        self.assertEqual(self.state()['last_failed_tag'], 'v0.8.1')
+
+    def test_code_snapshot_tracks_the_exact_executing_file(self):
+        script = self.root / 'renamed-fixture-tool'
+        script.write_text('# first policy')
+        with mock.patch.object(tool, '__file__', str(script)):
+            before = tool.automatic_code_snapshot(self.directory)
+            script.write_text('# changed policy')
+            self.assertNotEqual(tool.automatic_code_snapshot(self.directory), before)
+
+    def test_watch_stops_after_applied_code_change_or_failure(self):
+        for result, expected in (({'status': 'applied'}, 0), ({'status': 'check_failed', 'error': 'offline'}, 1),
+                                 ({'status': 'rejected'}, 1), ({'status': 'failed_rolled_back'}, 1),
+                                 ({'state': 'manual_review_required'}, 1)):
+            output = io.StringIO()
+            with mock.patch.object(tool, 'automatic_tick', return_value=result) as tick, \
+                    mock.patch.object(tool.time, 'sleep', side_effect=AssertionError('watch must stop')), contextlib.redirect_stdout(output):
+                self.assertEqual(tool.automatic_main(['watch', '--seconds', '60', '--json'], self.directory, self.runtime), expected)
+            self.assertEqual(tick.call_count, 1)
+            self.assertEqual(json.loads(output.getvalue()), result)
+        output = io.StringIO()
+        def changed(*args):
+            (self.directory / 'dots-ts').write_text('# changed policy')
+            return {'state': 'in_progress', 'transaction_id': self.TRANSACTION}
+        with mock.patch.object(tool, 'automatic_tick', side_effect=changed) as tick, \
+                mock.patch.object(tool.time, 'sleep', side_effect=AssertionError('old policy must stop')), contextlib.redirect_stdout(output):
+            self.assertEqual(tool.automatic_main(['watch', '--seconds', '60', '--json'], self.directory, self.runtime), 0)
+        self.assertEqual(tick.call_count, 1)
+        lines = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(lines[-1]['state'], 'runner_restart_required')
+        self.assertEqual(lines[-1]['reason'], 'code_changed')
+
+    def test_repeated_dst_hour_calls_two_ticks_without_duplicate_install(self):
+        import datetime
+        first = int(datetime.datetime.fromisoformat('2026-11-01T05:30:00+00:00').timestamp())
+        second = int(datetime.datetime.fromisoformat('2026-11-01T06:30:00+00:00').timestamp())
+        def complete(directory, runtime, **kwargs):
+            result = self.submit(directory, runtime, **kwargs)
+            self.journals[self.TRANSACTION]['state'] = 'applied'
+            return result
+        self.apply.side_effect = complete
+        with mock.patch.object(tool.time, 'time', return_value=first):
+            self.configure(timezone='America/New_York', window='01:00-02:00', interval_hours=24)
+            self.assertEqual(tool.automatic_tick(self.directory, self.runtime)['status'], 'applied')
+        with mock.patch.object(tool.time, 'time', return_value=second):
+            self.assertEqual(tool.automatic_tick(self.directory, self.runtime)['state'], 'waiting')
+        self.assertEqual(self.check.call_count, 1); self.assertEqual(self.apply.call_count, 1)
+
     def test_preflight_refuses_unavailable_namespace_and_provenance(self):
         import signal
         with mock.patch.object(tool.sys, 'platform', 'linux'), \
@@ -412,6 +617,130 @@ class AutomaticUpdateTests(unittest.TestCase):
                 mock.patch.object(tool, 'socket_status', return_value='missing'):
             with self.assertRaisesRegex(tool.AutomaticError, 'local_socket_unavailable'):
                 self.real_preflight(self.directory, self.runtime, tool.automatic_defaults())
+
+
+@unittest.skipUnless(hasattr(os, 'fork'), 'requires an isolated POSIX fork fixture')
+class AutomaticForkedWorkerTests(unittest.TestCase):
+    """Real worker/journals/locks, no cryptography, install or network operation.
+
+    Linux uses actual /proc process identities and boot ID. On macOS only that
+    Linux-specific identity adapter is replaced; the child worker, files,
+    operation/control locks and cancellation handshake are still real.
+    """
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='automatic-worker-pipeline-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.directory = self.root / 'installation'; self.directory.mkdir(mode=0o700)
+        self.runtime = self.root / 'runtime'; self.runtime.mkdir(mode=0o700)
+        self.stack = contextlib.ExitStack(); self.addCleanup(self.stack.close)
+        if sys.platform != 'linux':
+            def identity(pid):
+                try: os.kill(pid, 0)
+                except ProcessLookupError: return None
+                return {'pid': pid, 'ticks': '1', 'uid': os.getuid(), 'exe': sys.executable}
+            self.stack.enter_context(mock.patch.object(tool, 'apply_identity', side_effect=identity))
+            self.stack.enter_context(mock.patch.object(tool, 'apply_boot', return_value='isolated-fork-boot'))
+        metadata = {'schema_version': 1, 'package_version': '0.8.0', 'files': {}}
+        for source, installed in tool.CORE_FILES.items():
+            path = self.directory / installed; path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            payload = b'TS_VERSION=1.104.4\n' if source == 'tailscale-setup.sh' else b'# isolated fixture only\n'
+            path.write_bytes(payload); path.chmod(0o700)
+            metadata['files'][source] = hashlib.sha256(payload).hexdigest()
+        (self.directory / tool.MANIFEST).write_text(json.dumps(metadata))
+        now = int(time.time())
+        import datetime
+        minute = datetime.datetime.fromtimestamp(now, datetime.timezone.utc).hour * 60 + datetime.datetime.fromtimestamp(now, datetime.timezone.utc).minute
+        settings = tool.automatic_defaults()
+        settings.update(enabled=True, generation='a' * 32, recovery_confirmed_at=now,
+                        provenance_root=str(self.root / 'independent-root.json'),
+                        window_start=(minute - 5) % 1440, window_end=(minute + 5) % 1440)
+        self.fence = {'attempt_id': 'c' * 32, 'generation': settings['generation']}
+        state = tool.automatic_empty_state()
+        state['attempts'] = [now]
+        state['inflight'] = dict(self.fence, phase='preparing', transaction_id=None, tag='v0.8.1', at=now,
+                                owner={'boot_id': tool.apply_boot(), 'identity': tool.apply_identity(os.getpid())})
+        with tool.automatic_store(self.directory, create=True) as folder:
+            tool.notice_write(folder, 'state.json', state)
+            tool.notice_write(folder, 'settings.json', settings)
+        self.identifier = 'd' * 32
+        root = self.directory / tool.APPLY_DIRECTORY; root.mkdir(mode=0o700)
+        self.transaction = root / self.identifier; self.transaction.mkdir(mode=0o700)
+        tool.apply_journal(self.transaction, {'schema': 1, 'state': 'prepared', 'boot_id': tool.apply_boot(),
+                                            'selection': 'v0.8.1', 'automatic': self.fence}, phase='fixture_prepared')
+
+    def pipeline(self, cancellation):
+        ack_read, ack_write = os.pipe()
+        gate_read, gate_write = os.pipe()
+        original_commit = tool.automatic_worker_commit
+        executed = self.directory / 'fixture-executed'
+        def child():
+            os.close(ack_read); os.close(gate_write)
+            def gated_commit(directory, transaction, journal):
+                # apply_worker has already persisted running + its real identity.
+                os.write(ack_write, b'R')
+                if os.read(gate_read, 1) != b'G': raise RuntimeError('fixture_gate_closed')
+                original_commit(directory, transaction, journal)
+            def nonmutating_transaction(directory, runtime, transaction, journal, proxy):
+                with tool.automatic_store(directory) as folder:
+                    settings = tool.automatic_settings(folder)
+                    state = tool.automatic_state(folder, settings)
+                    if state['inflight']['phase'] != 'execution_committed':
+                        raise RuntimeError('fixture_commit_not_visible')
+                executed.write_bytes(b'fixture only; no installed source was changed')
+                tool.apply_journal(transaction, journal, state='applied', phase='fixture_complete')
+            try:
+                with mock.patch.object(tool, 'automatic_worker_commit', side_effect=gated_commit), \
+                        mock.patch.object(tool, 'apply_transaction', side_effect=nonmutating_transaction):
+                    code = tool.apply_worker(self.directory, self.runtime, self.transaction)
+                if code: raise RuntimeError('fixture_worker_nonzero')
+            finally:
+                os.close(ack_write); os.close(gate_read)
+        process = multiprocessing.get_context('fork').Process(target=child)
+        process.start(); os.close(ack_write); os.close(gate_read)
+        try:
+            ready, _, _ = select.select([ack_read], [], [], 10)
+            self.assertTrue(ready, 'child did not persist its running acknowledgement')
+            self.assertEqual(os.read(ack_read, 1), b'R')
+            acknowledged = tool.apply_status(self.directory, self.identifier)
+            self.assertEqual(acknowledged['state'], 'running')
+            self.assertEqual(acknowledged['worker']['pid'], process.pid)
+            with tool.automatic_store(self.directory, create=True) as folder:
+                settings = tool.automatic_settings(folder)
+                state = tool.automatic_state(folder, settings)
+                self.assertEqual(state['inflight']['phase'], 'preparing')
+                state['inflight'].update(phase='submitted', transaction_id=self.identifier)
+                tool.automatic_write_state(folder, state)
+            if cancellation == 'disable':
+                tool.automatic_configure(self.directory, self.runtime, 'disable', types.SimpleNamespace())
+            elif cancellation == 'recovery-stop':
+                folder = self.directory / tool.RECOVERY_DIRECTORY; folder.mkdir(mode=0o700)
+                tool.apply_write(folder / 'state.json', json.dumps(tool.recovery_default()).encode())
+            os.write(gate_write, b'G')
+            process.join(10)
+            self.assertFalse(process.is_alive(), 'owned fixture worker did not finish')
+            self.assertEqual(process.exitcode, 0)
+        finally:
+            os.close(ack_read); os.close(gate_write)
+            if process.is_alive(): process.kill(); process.join(5)
+        final = tool.apply_status(self.directory, self.identifier)
+        self.assertEqual(final['state'], 'applied' if cancellation is None else 'rejected')
+        self.assertEqual(executed.exists(), cancellation is None)
+        if cancellation == 'disable': self.assertEqual(final['error'], 'automatic_cancelled_before_commit')
+        if cancellation == 'recovery-stop': self.assertEqual(final['error'], 'recovery_blocks_update')
+        with tool.automatic_store(self.directory, create=True) as folder:
+            settings = tool.automatic_settings(folder)
+            state = tool.automatic_state(folder, settings)
+            tool.automatic_reconcile(self.directory, state, int(time.time()))
+            tool.automatic_write_state(folder, state)
+            self.assertIsNone(state['inflight'])
+            self.assertEqual(state['last_result']['status'], final['state'])
+            self.assertEqual(len(state['attempts']), 1)
+            self.assertIsNone(state['last_failed_tag'])
+
+    def test_forked_worker_ack_then_caller_submission_then_real_commit(self): self.pipeline(None)
+    def test_forked_worker_disable_after_ack_rejects_before_transaction(self): self.pipeline('disable')
+    def test_forked_worker_new_recovery_stop_after_ack_rejects_before_transaction(self): self.pipeline('recovery-stop')
 
 
 if __name__ == '__main__': unittest.main()

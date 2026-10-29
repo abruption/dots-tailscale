@@ -3711,6 +3711,7 @@ def automatic_state(folder, settings):
 
 
 def automatic_result(state, now, status, error=None, tag=None, transaction_id=None):
+    automatic_clock(state, now)
     if error is not None and (not isinstance(error, str) or not re.fullmatch('[a-z_]{1,100}', error)):
         error = 'operation_uncertain'
     state['last_result'] = {'id': os.urandom(16).hex(), 'at': now, 'status': status, 'error': error,
@@ -3735,10 +3736,17 @@ def automatic_provenance(directory, settings):
     except Exception: raise AutomaticError('provenance_unavailable') from None
 
 
+@contextlib.contextmanager
 def automatic_recovery_guard(directory):
     helper = globals().get('recovery_update_guard')
     if not callable(helper): raise AutomaticError('recovery_coordination_unavailable')
-    return helper(directory)
+    try:
+        with helper(directory): yield
+    except AutomaticError: raise
+    except RecoveryError as error:
+        code = str(error)
+        raise AutomaticError(code if code in ('recovery_busy', 'recovery_blocks_update') else 'recovery_coordination_unavailable') from None
+    except (ApplyError, OSError): raise AutomaticError('recovery_coordination_unavailable') from None
 
 
 def automatic_preflight(directory, runtime, settings):
@@ -3788,8 +3796,9 @@ def automatic_preflight(directory, runtime, settings):
 
 def automatic_find_transaction(directory, pending):
     root = directory / APPLY_DIRECTORY
-    if not root.exists(): return None
     try:
+        try: root.lstat()
+        except FileNotFoundError: return None
         entries = list(apply_private(root).iterdir())
         if len(entries) > 256: raise ValueError()
         matches = []
@@ -3803,10 +3812,32 @@ def automatic_find_transaction(directory, pending):
     except Exception: raise AutomaticError('prior_transaction_requires_manual_review') from None
 
 
+def automatic_can_abandon_preparation(directory, pending):
+    """Prove no staging/worker exists; unknown evidence never clears a fence."""
+    if pending['transaction_id'] is not None or pending['phase'] not in ('preparing', 'manual_review_required'):
+        return False
+    try:
+        import dots_proxy as proxy
+        info = (directory / '.operation.lock').lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+            return False
+        with proxy._operation(directory):
+            owner = pending['owner']
+            if owner['boot_id'] != apply_boot() or apply_identity(owner['identity']['pid']) is not None:
+                return False
+            # This inspects every entry. An empty/inaccessible journal, unexpected
+            # entry or matching fence prevents proof, even when this owner died.
+            return automatic_find_transaction(directory, pending) is None
+    except Exception:
+        return False
+
+
 def automatic_observe_pending(directory, pending):
-    identifier = pending['transaction_id'] or automatic_find_transaction(directory, pending)
-    if identifier:
-        try:
+    identifier = pending['transaction_id']
+    try:
+        identifier = identifier or automatic_find_transaction(directory, pending)
+        if identifier:
             report = apply_status(directory, identifier)
             if (report.get('automatic') != {'attempt_id': pending['attempt_id'], 'generation': pending['generation']}
                     or report.get('selection') != pending['tag']):
@@ -3815,7 +3846,10 @@ def automatic_observe_pending(directory, pending):
             if outcome not in ('prepared', 'running', 'applied', 'failed_rolled_back', 'rejected'):
                 outcome = 'manual_review_required'
             return outcome, identifier
-        except Exception: return 'manual_review_required', identifier
+    except Exception:
+        return 'manual_review_required', identifier
+    if automatic_can_abandon_preparation(directory, pending):
+        return 'abandoned_before_staging', None
     if pending['phase'] != 'preparing': return 'manual_review_required', None
     try:
         owner = pending['owner']
@@ -3825,16 +3859,60 @@ def automatic_observe_pending(directory, pending):
     return 'manual_review_required', None
 
 
+def automatic_clock(state, now, settings=None):
+    """Validate observed times before mutation; next_check_at is a future plan."""
+    times = list(state['failures']) + list(state['attempts'])
+    if state['last_check_at'] is not None: times.append(state['last_check_at'])
+    if state['inflight'] is not None: times.append(state['inflight']['at'])
+    if state['last_result'] is not None: times.append(state['last_result']['at'])
+    if settings is not None and settings['recovery_confirmed_at'] is not None:
+        times.append(settings['recovery_confirmed_at'])
+    if type(now) is not int or now < 0 or any(value > now for value in times):
+        raise AutomaticError('clock_moved_backwards')
+    return now
+
+
+def automatic_write_state(folder, state):
+    # Re-sample directly before persistence too: wall time can change while an
+    # external helper is running. Refusal preserves the previous on-disk bytes.
+    automatic_clock(state, int(time.time()), automatic_settings(folder))
+    notice_write(folder, 'state.json', state)
+
+
+def automatic_transient_error(code):
+    return code in {
+        'timeout', 'offline', 'tls_error', 'rate_limited', 'http_error', 'not_found',
+        'network_failed', 'network_timeout', 'provenance_verifier_timeout', 'provenance_verifier_unavailable',
+        'operation_busy_or_unsafe', 'operation_busy', 'recovery_busy', 'recovery_blocks_update',
+        'recovery_coordination_unavailable', 'automatic_commit_blocked', 'automatic_cancelled_before_commit',
+        'configuration_changed', 'candidate_not_newer', 'shell_syntax_timeout', 'local_preflight_failed',
+        'execution_context_unavailable', 'local_components_unavailable', 'local_socket_unavailable',
+        'local_backend_unavailable', 'backend_unavailable', 'backend_not_running', 'proxy_state_pending',
+    }
+
+
+def automatic_failure(state, now, code, tag=None, retry_at=0, transaction_id=None, status='rejected'):
+    automatic_clock(state, now)
+    count = len([value for value in state['failures'] if value > now - AUTOMATIC_WINDOW])
+    state['failures'] = (state['failures'] + [now])[-32:]
+    state['next_check_at'] = max(retry_at, now + min(3600, 300 * (2 ** min(count, 3))))
+    if tag is not None and not automatic_transient_error(code): state['last_failed_tag'] = tag
+    automatic_result(state, now, status, code, tag, transaction_id)
+
+
 def automatic_reconcile(directory, state, now):
+    automatic_clock(state, now)
     pending = state['inflight']
     if pending is None: return
     outcome, identifier = automatic_observe_pending(directory, pending)
     if identifier: pending['transaction_id'] = identifier
-    if outcome in ('applied', 'failed_rolled_back', 'rejected'):
-        automatic_result(state, now, outcome, tag=pending['tag'], transaction_id=identifier)
-        if outcome != 'applied':
-            state['last_failed_tag'] = pending['tag']
-            state['failures'] = (state['failures'] + [now])[-32:]
+    if outcome in ('applied', 'failed_rolled_back', 'rejected', 'abandoned_before_staging'):
+        if outcome in ('applied', 'abandoned_before_staging'):
+            automatic_result(state, now, outcome, tag=pending['tag'], transaction_id=identifier)
+        else:
+            try: code = apply_status(directory, identifier).get('error', 'candidate_failed')
+            except Exception: code = 'candidate_failed'
+            automatic_failure(state, now, code, pending['tag'], transaction_id=identifier, status=outcome)
         state['inflight'] = None
     elif outcome not in ('prepared', 'running', 'preparing'):
         pending['phase'] = 'manual_review_required'
@@ -3842,13 +3920,17 @@ def automatic_reconcile(directory, state, now):
 
 
 def automatic_recovery_fence(directory):
-    """Read-only reciprocal fence; a lost acknowledgement never permits recovery."""
+    """Release only known terminal or proved unstarted attempts, without writes."""
     try:
         with automatic_store(directory) as folder:
             if folder is None: return {'state': 'not_configured', 'recovery_allowed': True}
-            state = automatic_state(folder, automatic_settings(folder))
+            settings = automatic_settings(folder)
+            state = automatic_state(folder, settings)
+            automatic_clock(state, int(time.time()), settings)
             if state['inflight'] is None: return {'state': 'idle', 'recovery_allowed': True}
             outcome, _ = automatic_observe_pending(directory, state['inflight'])
+            if outcome == 'abandoned_before_staging':
+                return {'state': 'idle', 'recovery_allowed': True, 'basis': 'proved_unstarted_same_boot'}
             if outcome in ('applied', 'failed_rolled_back', 'rejected'):
                 return {'state': 'idle', 'recovery_allowed': True}
             return {'state': 'manual_review_required' if outcome == 'manual_review_required' else 'in_progress', 'recovery_allowed': False}
@@ -3856,7 +3938,7 @@ def automatic_recovery_fence(directory):
 
 
 def automatic_candidate_guard(directory, tag):
-    """Recheck under the updater's operation lock; discovery can become stale."""
+    """Compare current sources; the worker repeats this under the operation lock."""
     package = package_report(directory)
     try:
         if (package['integrity'] != 'match' or stable_version(tag[1:]) < (0, 8, 0)
@@ -3877,6 +3959,7 @@ def automatic_worker_commit(directory, transaction, journal):
             with automatic_store(directory, create=True) as folder:
                 settings = automatic_settings(folder)
                 state = automatic_state(folder, settings)
+                automatic_clock(state, int(time.time()), settings)
                 pending = state['inflight']
                 if (not settings['enabled'] or settings['held'] or settings['generation'] != fence['generation']
                         or pending is None or pending['phase'] not in ('preparing', 'submitted')
@@ -3888,12 +3971,19 @@ def automatic_worker_commit(directory, transaction, journal):
                     raise AutomaticError('automatic_cancelled_before_commit')
                 automatic_candidate_guard(directory, pending['tag'])
                 pending.update(phase='execution_committed', transaction_id=transaction.name)
-                notice_write(folder, 'state.json', state)
+                automatic_write_state(folder, state)
     except AutomaticError as error: raise ApplyError(str(error)) from None
     except Exception: raise ApplyError('automatic_commit_blocked') from None
 
 
 def automatic_configure(directory, runtime, command, options):
+    if command in ('reset-failures', 'abandon-preparation'):
+        with automatic_store(directory, create=True, runner=True):
+            return automatic_configure_locked(directory, runtime, command, options)
+    return automatic_configure_locked(directory, runtime, command, options)
+
+
+def automatic_configure_locked(directory, runtime, command, options):
     with automatic_store(directory, create=True) as folder:
         settings = automatic_settings(folder)
         generation = settings['generation']
@@ -3908,12 +3998,23 @@ def automatic_configure(directory, runtime, command, options):
             return dict(settings, state='disabled' if not settings['enabled'] else 'held' if settings['held'] else 'enabled',
                         committed_transaction_may_finish=True)
         state = automatic_state(folder, settings)
+        automatic_clock(state, int(time.time()), settings)
+        if command == 'abandon-preparation':
+            if not options.confirm_recovery_terminal: raise AutomaticError('confirmation_required')
+            pending = state['inflight']
+            if pending is None: return {'state': 'no_pending_preparation'}
+            if not automatic_can_abandon_preparation(directory, pending): raise AutomaticError('manual_review_required')
+            automatic_reconcile(directory, state, int(time.time()))
+            if state['inflight'] is not None or state['last_result']['status'] != 'abandoned_before_staging':
+                raise AutomaticError('manual_review_required')
+            automatic_write_state(folder, state)
+            return dict(state['last_result'], attempt_budget_preserved=True)
         if command == 'reset-failures':
             if not options.confirm_recovery_terminal: raise AutomaticError('confirmation_required')
             automatic_reconcile(directory, state, int(time.time()))
             if state['inflight'] is not None: raise AutomaticError('manual_review_required')
             state.update(failures=[], last_failed_tag=None, next_check_at=None)
-            notice_write(folder, 'state.json', state)
+            automatic_write_state(folder, state)
             return {'state': 'failure_hold_cleared', 'attempt_budget_preserved': True}
         for name in ('interval_hours', 'timezone', 'pin', 'proxy', 'provenance_root'):
             value = getattr(options, name, None)
@@ -3939,7 +4040,9 @@ def automatic_configure(directory, runtime, command, options):
         current = automatic_settings(folder)
         if current['generation'] != generation: raise AutomaticError('configuration_changed')
         state = automatic_state(folder, current)
-        notice_write(folder, 'state.json', state)
+        automatic_clock(state, int(time.time()), settings)
+        automatic_write_state(folder, state)
+        automatic_clock(state, int(time.time()), settings)
         notice_write(folder, 'settings.json', settings)
     return dict(settings, state='held' if settings['held'] else 'enabled' if settings['enabled'] else 'disabled')
 
@@ -3967,19 +4070,16 @@ def automatic_tick(directory, runtime):
         with automatic_store(directory, create=True) as folder:
             settings = automatic_settings(folder)
             state = automatic_state(folder, settings)
+            automatic_clock(state, now, settings)
             had_pending = state['inflight'] is not None
             automatic_reconcile(directory, state, now)
-            if had_pending: notice_write(folder, 'state.json', state)
+            if had_pending: automatic_write_state(folder, state)
             if state['inflight'] is not None:
                 return {'state': 'manual_review_required' if state['inflight']['phase'] == 'manual_review_required' else 'in_progress',
                         'transaction_id': state['inflight']['transaction_id']}
             if not settings['enabled']: return {'state': 'disabled'}
             if settings['held']: return {'state': 'held'}
             if not automatic_window(settings, now): return {'state': 'outside_window'}
-            times = state['failures'] + state['attempts']
-            if (any(value > now for value in times) or settings['recovery_confirmed_at'] > now
-                    or state['last_check_at'] is not None and state['last_check_at'] > now):
-                raise AutomaticError('clock_moved_backwards')
             attempts = [value for value in state['attempts'] if value > now - AUTOMATIC_WINDOW]
             failures = [value for value in state['failures'] if value > now - AUTOMATIC_WINDOW]
             if len(attempts) >= AUTOMATIC_LIMIT or len(failures) >= AUTOMATIC_LIMIT:
@@ -4006,14 +4106,14 @@ def automatic_tick(directory, runtime):
                     state = automatic_state(folder, current)
                     if not current['enabled'] or current['held'] or current['generation'] != generation:
                         return {'state': 'configuration_changed'}
-                    now = int(time.time())
+                    now = automatic_clock(state, int(time.time()), current)
                     state.update(last_check_at=now, next_check_at=now + settings['interval_hours'] * 3600)
                     if check['status'] != 'update_available':
                         result = automatic_result(state, now, check['status'], tag=tag)
-                        notice_write(folder, 'state.json', state)
+                        automatic_write_state(folder, state)
                         return dict(result)
                     if state['last_failed_tag'] == tag:
-                        notice_write(folder, 'state.json', state)
+                        automatic_write_state(folder, state)
                         return {'state': 'failed_version_held', 'tag': tag}
                     identity = apply_identity(os.getpid())
                     if identity is None: raise AutomaticError('process_identity_unknown')
@@ -4021,7 +4121,7 @@ def automatic_tick(directory, runtime):
                     state['inflight'] = dict(fence, phase='preparing', transaction_id=None, tag=tag, at=now,
                                             owner={'boot_id': apply_boot(), 'identity': identity})
                     state['attempts'] = (state['attempts'] + [now])[-32:]
-                    notice_write(folder, 'state.json', state)
+                    automatic_write_state(folder, state)
             # The durable marker fences recovery in the detached gap. Configuration
             # commands can now win against worker commit under the control lock.
             try:
@@ -4038,11 +4138,11 @@ def automatic_tick(directory, runtime):
                         state['inflight']['transaction_id'] = identifier
                         automatic_reconcile(directory, state, int(time.time()))
                     else:
+                        automatic_clock(state, int(time.time()), current)
                         state['inflight'] = None
-                        state['last_failed_tag'] = tag
-                        state['failures'] = (state['failures'] + [int(time.time())])[-32:]
-                        automatic_result(state, int(time.time()), 'rejected', str(error), tag)
-                    notice_write(folder, 'state.json', state)
+                        retry = validated_retry(getattr(error, 'retry', {}), int(time.time())).get('retry_at', 0)
+                        automatic_failure(state, int(time.time()), str(error), tag, retry_at=retry)
+                    automatic_write_state(folder, state)
                     return (dict(state['last_result']) if state['inflight'] is None else
                             {'state': 'manual_review_required' if state['inflight']['phase'] == 'manual_review_required' else 'in_progress',
                              'transaction_id': state['inflight']['transaction_id']})
@@ -4057,14 +4157,16 @@ def automatic_tick(directory, runtime):
                 state['inflight']['transaction_id'] = identifier
                 if state['inflight']['phase'] != 'execution_committed': state['inflight']['phase'] = 'submitted'
                 automatic_reconcile(directory, state, int(time.time()))
-                notice_write(folder, 'state.json', state)
+                automatic_write_state(folder, state)
                 return (dict(state['last_result']) if state['inflight'] is None else
                         {'state': 'manual_review_required' if state['inflight']['phase'] == 'manual_review_required' else 'in_progress',
                          'transaction_id': state['inflight']['transaction_id']})
         except Exception as error:
+            if isinstance(error, AutomaticError) and str(error) == 'clock_moved_backwards': raise
             with automatic_store(directory, create=True) as folder:
                 current = automatic_settings(folder)
                 state = automatic_state(folder, current)
+                automatic_clock(state, int(time.time()), current)
                 if state['inflight'] is not None:
                     state['inflight']['phase'] = 'manual_review_required'
                     automatic_result(state, int(time.time()), 'manual_review_required', 'operation_uncertain',
@@ -4072,18 +4174,36 @@ def automatic_tick(directory, runtime):
                 else:
                     code = str(error) if isinstance(error, (AutomaticError, ApplyError)) else 'preflight_failed'
                     if isinstance(error, UpdateError): code = error.code
-                    count = len([value for value in state['failures'] if value > int(time.time()) - AUTOMATIC_WINDOW])
-                    state['failures'] = (state['failures'] + [int(time.time())])[-32:]
-                    state['next_check_at'] = max(failure_retry_at, int(time.time()) + min(3600, 300 * (2 ** min(count, 3))))
-                    automatic_result(state, int(time.time()), 'check_failed', code)
-                notice_write(folder, 'state.json', state)
+                    automatic_failure(state, int(time.time()), code, retry_at=failure_retry_at, status='check_failed')
+                automatic_write_state(folder, state)
                 return dict(state['last_result'])
+
+
+def automatic_code_snapshot(directory):
+    """Track executing/installed source bundles so cached companion policy retires."""
+    path = pathlib.Path(__file__).resolve()
+    def digest(folder, name):
+        try: return hashlib.sha256(bounded_code_read(folder, name, 8 * 1024 * 1024)).hexdigest()
+        except FileNotFoundError: return None
+    try:
+        executing = digest(path.parent, path.name)
+        if executing is None: raise AutomaticError('runner_code_unavailable')
+        runner = (executing,) + tuple(digest(path.parent, name) for name in tuple(CORE_FILES) + (MANIFEST,))
+        installed = tuple(digest(directory, name) for name in tuple(CORE_FILES.values()) + (MANIFEST,))
+    except (OSError, ValueError): raise AutomaticError('runner_code_unavailable') from None
+    return runner, installed
+
+
+def automatic_result_failed(result):
+    return (result.get('state', result.get('status')) in (
+        'check_failed', 'rejected', 'failed_rolled_back', 'manual_review_required',
+        'rollback_failed_manual_required', 'interrupted_manual_required') or result.get('error') is not None)
 
 
 def automatic_main(argv, directory, runtime):
     parser = SafeParser(description='Explicit opt-in package update runner; no scheduler is installed.')
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('enable', 'configure', 'disable', 'hold', 'unhold', 'status', 'tick', 'reset-failures', 'notify', 'watch'):
+    for name in ('enable', 'configure', 'disable', 'hold', 'unhold', 'status', 'tick', 'reset-failures', 'abandon-preparation', 'notify', 'watch'):
         command = commands.add_parser(name)
         command.add_argument('--json', action='store_true')
         if name in ('enable', 'configure'):
@@ -4097,7 +4217,7 @@ def automatic_main(argv, directory, runtime):
             proxy.add_argument('--proxy')
             proxy.add_argument('--direct', action='store_true')
             command.add_argument('--provenance-root', type=pathlib.Path)
-        if name in ('enable', 'reset-failures'):
+        if name in ('enable', 'reset-failures', 'abandon-preparation'):
             command.add_argument('--confirm-recovery-terminal', action='store_true')
         if name == 'watch':
             command.add_argument('--seconds', type=int, default=3600)
@@ -4110,10 +4230,20 @@ def automatic_main(argv, directory, runtime):
             if not 1 <= options.seconds <= 86400 or not 30 <= options.poll_seconds <= 3600:
                 raise AutomaticError('invalid_watch_interval')
             deadline = time.monotonic() + options.seconds
+            code_snapshot = automatic_code_snapshot(directory)
             while True:
+                if automatic_code_snapshot(directory) != code_snapshot:
+                    print(json.dumps({'state': 'runner_restart_required', 'reason': 'code_changed'}, sort_keys=True), flush=True)
+                    return 0
                 result = automatic_tick(directory, runtime)
                 print(json.dumps(result, sort_keys=True), flush=True)
-                if result.get('state', result.get('status')) in ('disabled', 'held', 'manual_review_required'): break
+                if automatic_result_failed(result): return 1
+                if result.get('status', result.get('state')) == 'applied': return 0
+                if automatic_code_snapshot(directory) != code_snapshot:
+                    print(json.dumps({'state': 'runner_restart_required', 'reason': 'code_changed',
+                                      'transaction_id': result.get('transaction_id')}, sort_keys=True), flush=True)
+                    return 0
+                if result.get('state', result.get('status')) in ('disabled', 'held'): break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0: break
                 time.sleep(min(options.poll_seconds, remaining))
@@ -4128,11 +4258,11 @@ def automatic_main(argv, directory, runtime):
                     if folder is not None and last is not None and state['last_notified'] != last['id']:
                         print('dots-ts automatic update: ' + last['status'] + (' (' + last['error'] + ')' if last['error'] else ''), file=sys.stderr)
                         state['last_notified'] = last['id']
-                        notice_write(folder, 'state.json', state)
+                        automatic_write_state(folder, state)
                         result['notified'] = True
         else: result = automatic_configure(directory, runtime, options.command, options)
         print(json.dumps(result, sort_keys=True) if options.json else 'automatic updates: ' + json.dumps(result, sort_keys=True))
-        return int(result.get('state') == 'manual_review_required' or result.get('status') in ('check_failed', 'rejected', 'failed_rolled_back', 'manual_review_required'))
+        return int(automatic_result_failed(result))
     except (AutomaticError, NoticeError, OSError, ValueError) as error:
         code = str(error) if isinstance(error, AutomaticError) else 'storage_or_arguments_unavailable'
         if not re.fullmatch('[a-z_]{1,100}', code): code = 'automatic_unavailable'

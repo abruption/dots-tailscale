@@ -55,7 +55,7 @@ A foreground observation period can call ticks repeatedly:
   --seconds 3600 --poll-seconds 60 --json
 ```
 
-`watch` is explicitly bounded to 1–86400 seconds, polling every 30–3600 seconds. It finishes any already-started bounded tick before exiting, so its wall time can exceed the watch duration by that tick. It creates no daemon or background service. Closing its terminal can stop the watcher while a separately committed transaction continues; reconnect and inspect status instead of resubmitting.
+`watch` is explicitly bounded to 1–86400 seconds, polling every 30–3600 seconds. It finishes any already-started bounded tick before exiting, so its wall time can exceed the watch duration by that tick. It creates no daemon or background service. Closing its terminal can stop the watcher while a separately committed transaction continues; reconnect and inspect status instead of resubmitting. The watcher exits after an applied update or a change to its executing/installed source-bundle or manifest bytes, so the next caller starts the current policy in a fresh process. It also stops with exit code 1 on a failed tick or manual-review result; the JSON records that result. A policy change produces `runner_restart_required` without claiming that a pending transaction succeeded.
 
 The runner uses a nonblocking run lock and a durable attempt before invoking `update_apply` with proof verification enabled, unsigned-legacy override disabled and the stored independent trusted root. It does not contain a second updater. The source updater's common operation lock continues to serialize code/process changes with manual updates, runtime changes and proxy operations.
 
@@ -79,9 +79,9 @@ To remove periodic execution, disable automatic updates first, stop the foregrou
 
 `automatic status --json` reports settings and the last durable result, plus an independently observed transaction state when an attempt is pending. It labels the execution environment as not rechecked by a status read and external SSH as not verified. A cached result is not current network health.
 
-A prepared/started transaction is not success. Reconcile the same transaction with `dots-ts update status --id ID --json`; source transaction terminal results include `applied`, `failed_rolled_back`, `rejected`, and manual-recovery states. A lost acknowledgement is reconciled against the same attempt and transaction rather than resubmitted. A missing worker, uncertain launch or failed rollback blocks new automatic execution and leaves a manual-review result.
+A prepared/started transaction is not success. Reconcile the same transaction with `dots-ts update status --id ID --json`; source transaction terminal results include `applied`, `failed_rolled_back`, `rejected`, and manual-recovery states. A lost acknowledgement is reconciled against the same attempt and transaction rather than resubmitted. A missing worker, uncertain launch or failed rollback blocks new automatic execution and leaves a manual-review result, except for the narrowly proven pre-staging exit below. Clock rollback is checked against existing observed times, including pending/result/confirmation times, before reconciliation and again before persistence. It refuses the operation without rewriting the existing state bytes; a future `next_check_at` is a planned schedule, not evidence of clock rollback.
 
-There are at most three automatic installation preparations and three recorded failures in a rolling 24-hour window. Intermittent check errors back off for 5, 10 and then 20 minutes, capped at one hour, and respect a later validated GitHub retry/reset time. The daily failure budget can delay further checks until an old failure leaves the window. A failed candidate tag is held instead of being installed repeatedly.
+There are at most three automatic installation preparations and three recorded failures in a rolling 24-hour window. Intermittent check errors back off for 5, 10 and then 20 minutes, capped at one hour, and respect a later validated GitHub retry/reset time. The daily failure budget can delay further checks until an old failure leaves the window. Proof/policy failures and candidate execution failures hold that candidate tag instead of installing it repeatedly. Temporary network errors, a verifier timeout, operation/recovery contention or a pre-commit cancellation use backoff without permanently labelling the release faulty. These attempts still consume the configured budgets.
 
 After inspecting the known terminal result, verifying the intended external connection with a fresh strict-host-key SSH connection and Tailscale ping, and confirming the independent terminal again, an operator can clear a known failure hold:
 
@@ -90,8 +90,26 @@ After inspecting the known terminal result, verifying the intended external conn
   --confirm-recovery-terminal --json
 ```
 
-This does not erase the installation-attempt budget and refuses an unresolved/unknown attempt. It is explicit permission for a future eligible check, not a blind retry of an uncertain transaction.
+This takes the same nonblocking runner lock as a tick, does not erase the installation-attempt budget and refuses an unresolved/unknown attempt. If a tick is still active, wait for its result rather than racing it with a reset. It is explicit permission for a future eligible check, not a blind retry of an uncertain transaction.
+
+### A preparer exits before staging
+
+An interrupted download/verifier process can leave an automatic preparation marker before a transaction directory exists. The marker is not cleared just because a PID disappeared. Under the existing package operation lock, the tool requires the **same boot**, a definitely exited original owner, a null transaction ID, a `preparing`/uncommitted manual-review phase, and a bounded inspection in which every transaction entry and journal is valid/readable and none carries that automatic fence. The existing operation-lock file must itself be safe. Only then is the result `abandoned_before_staging`: no candidate was staged/executed by that attempt, the installation-attempt budget is retained, and the tag is not held as a failed candidate.
+
+A tick can reconcile this proof automatically. The read-only recovery fence can recognize the same proof without rewriting state or calling the result applied. An operator can also request only this proof-based reconciliation explicitly:
+
+```bash
+/workspace/.dots-tailscale/dots-ts update automatic abandon-preparation \
+  --confirm-recovery-terminal --json
+```
+
+This is not a force-clear command. A new boot, non-null transaction ID, a matching fence, unknown owner identity, missing/unsafe operation lock, empty or unreadable journal, or any other ambiguity remains manual review. Neither `reset-failures` nor `abandon-preparation` bypasses those conditions.
 
 `automatic notify` is a cache-only, deduplicated interactive stderr notification of the last result. Redirected/noninteractive stderr stays silent; a scheduler must inspect the JSON or arrange its own approved notification delivery. No email, Telegram message or external callback is sent by this command.
 
 Automatic success means the existing source transaction completed its local checks. It does not prove a new external SSH connection works, that the installed Tailscale version fixes every advisory, or that a future VM can start the runner. Keep the code-only backup and follow the manual updater's independent-terminal recovery instructions if rollback or execution is uncertain.
+
+
+## Isolated validation boundary
+
+The automatic-update tests exercise clock rollback without changing persisted bytes, cancellation and contention, safe/ambiguous pre-staging exits, and two ticks during a repeated DST hour without a duplicate install. The forked worker fixture uses the real `apply_worker`, running acknowledgement, caller submission, execution-commit guard, journals and file locks. It stubs only the transaction body; it does not install code, verify cryptographic provenance, restart a daemon or contact a network. Linux runs use native `/proc` identities/boot data; non-Linux POSIX runs adapt that Linux-specific identity observation. This fixture is not live Dots deployment evidence.
