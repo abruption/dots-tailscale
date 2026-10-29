@@ -26,9 +26,10 @@ A pending incident uses that shorter interval only if all conditions hold:
 - It is distinct from the uniquely latest claimed incident and was created
   after that incident's qualified external recovery.
 - The prior claimed incident is closed and its first accepted explicit report is success.
-- At least three distinct consecutive accepted `verified_running` observations
+- At least three distinct consecutive accepted externally healthy observations
   after the claim show both SSH and ping healthy, with no local-error markers.
-  They must span at least 60s, with gaps no longer than 150s.
+  They must span at least 60s, with gaps no longer than 150s. The observation
+  contract below determines which samples qualify.
 - The evidence is bound to the exact prior incident in the persistent
   `recovery_confirmations` table. Historical closed rows and report text alone
   are not evidence. Ambiguous ledger rows fall back to the global interval.
@@ -52,6 +53,31 @@ the full global interval applies. The daily limit always applies, and its later
 expiry wins when calculating `retry_at`. Same-incident claims, expired grants,
 stale observations, authorization checks and unknown execution results retain
 their existing restrictions.
+
+## External health observation contract (#75)
+
+A successful external connection can coexist with `prior_boot`, a watchdog
+finding about the recorded run. Requiring only `verified_running` prevented
+these healthy connections from confirming recovery and left later outages on
+the global interval.
+
+The relay preserves the original diagnostic `state` and adds
+`external_health`, either `healthy` or `unconfirmed`. It derives `healthy` only
+when `state` is `verified_running` or `prior_boot`, SSH `command_succeeded` and
+`probe_valid` are exactly `true`, ping `responded` is exactly `true`, both exit
+codes are integers equal to zero, and both error classes are absent or `ok`.
+Other diagnostic states remain `unconfirmed` in this conservative change.
+The field describes evidence for recovery confirmation; it does not certify
+that the watchdog or application is running correctly.
+
+The broker independently validates the field and evidence. Invalid enum values
+or a `healthy` declaration contradicting the state, flags, exit codes or error
+classes are rejected without changing proof. Explicit `unconfirmed` samples
+cannot earn confirmation and reset an unconfirmed streak. If the field is
+absent, the legacy `verified_running` confirmation rule remains in effect.
+Duplicate timestamps never upgrade or advance proof. All sample timing,
+first-report, daily-budget and incident-boundary requirements above still apply;
+existing claims without proof slots and historical observations are not backfilled.
 
 ## What status means
 
@@ -83,6 +109,16 @@ Use a reviewed operator deployment after isolated tests. Preserve the global
 interval, daily budget, claim/event history, subscriptions and credentials.
 KR's existing mail connector changes must be retained: add the new argument to
 `load_recovery` without replacing the whole local server module.
+
+For the #75 observation extension, deploy the reviewed broker first: it accepts
+both legacy relay payloads and the optional field. Then deploy the updated
+relay. An updated relay sending the new field to an old broker is rejected
+(HTTP 400); there is no automatic field-stripping fallback. Roll back the relay
+first, then the broker, retaining any existing integrated mail connector code.
+This protocol change does not require changing live cooldown configuration,
+issuing claims, or rewinding history. Verify natural fresh samples and the
+queried incident's `effective_cooldown_seconds` and `cooldown_basis`; a configured
+600s value alone does not demonstrate qualified evidence.
 
 The helper `new_incident_policy_deployment.py` performs pinned, operator-selected
 code/configuration changes only during a fresh healthy and quiescent window.
