@@ -71,7 +71,9 @@ class RecoveryCore(EventCore):
 
     def ingest(self, observation):
         """Trusted monitor only; HTTP layer must authenticate independently of Dots."""
-        if not isinstance(observation, dict) or set(observation) != {'observed_at', 'state', 'ssh', 'peer_ping'}:
+        fields = {'observed_at', 'state', 'ssh', 'peer_ping'}
+        if (not isinstance(observation, dict)
+                or set(observation) not in (fields, fields | {'external_health'})):
             raise ValueError('invalid observation fields')
         try:
             dt = datetime.fromisoformat(observation['observed_at'].replace('Z','+00:00'))
@@ -97,10 +99,21 @@ class RecoveryCore(EventCore):
             ssh = 'local_error'
         # Contradictory positive/error fields cannot establish confirmation even
         # when the existing observation normalizer accepts the positive result.
-        healthy_confirmation = (observation['state'] == 'verified_running'
-                                and ssh == 'ok' and ping == 'ok'
-                                and a.get('error_class') in (None, 'ok')
-                                and b.get('error_class') in (None, 'ok'))
+        strict_positive = (ssh == 'ok' and ping == 'ok'
+                           and a.get('error_class') in (None, 'ok')
+                           and b.get('error_class') in (None, 'ok'))
+        if 'external_health' in observation:
+            health = observation['external_health']
+            if health not in ('healthy', 'unconfirmed'):
+                raise ValueError('invalid external health')
+            if health == 'healthy' and (not strict_positive
+                    or observation['state'] not in ('verified_running', 'prior_boot')):
+                raise ValueError('contradictory external health')
+            healthy_confirmation = health == 'healthy'
+        else:
+            # Missing fields preserve old-relay semantics, not implicit trust in
+            # every watchdog state with superficially positive flags.
+            healthy_confirmation = observation['state'] == 'verified_running' and strict_positive
         observation = {'observed_at':stamp,'ssh':ssh,'ping':ping}
         new_event = None
         with self._db() as db:

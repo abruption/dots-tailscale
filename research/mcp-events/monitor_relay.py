@@ -41,6 +41,7 @@ _RUNTIME_PATHS = capture_runtime_paths(sys.prefix, sys.executable)
 
 STATES = frozenset('verified_running external_unreachable peer_reachable_ssh_failed probe_failed service_degraded ssh_ready_ping_unverified run_missing identity_missing prior_boot process_dead process_suspended heartbeat_missing heartbeat_identity_mismatch recovery_in_progress heartbeat_stale not_running metadata_invalid'.split())
 ERRORS = frozenset('ok host_key_rejected authentication_failed connection_refused timeout network_unreachable remote_command_failed transport_failed invalid_probe_json local_execution_failed timeout_or_local_failure'.split())
+EXTERNAL_HEALTH_STATES = frozenset(('verified_running', 'prior_boot'))
 
 
 def timestamp(value):
@@ -79,6 +80,15 @@ def sanitize(row, now):
                 raise ValueError('invalid_error_class')
             result['error_class'] = error
         clean[name] = result
+    # Keep watchdog diagnostics separate from strict external connection proof.
+    a, b = clean['ssh'], clean['peer_ping']
+    healthy = (clean['state'] in EXTERNAL_HEALTH_STATES
+               and a['command_succeeded'] and a['probe_valid']
+               and type(a.get('exit_code')) is int and a['exit_code'] == 0
+               and b['responded'] and type(b.get('exit_code')) is int and b['exit_code'] == 0
+               and a.get('error_class') in (None, 'ok')
+               and b.get('error_class') in (None, 'ok'))
+    clean['external_health'] = 'healthy' if healthy else 'unconfirmed'
     return clean
 
 
