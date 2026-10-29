@@ -6,9 +6,9 @@
 
 ## 공개 릴리스
 
-공개 저장소 주소는 `https://github.com/abruption/dots-tailscale`입니다. 저장소 최초 공개 시 실제 clone과 raw 다운로드를 확인했습니다. 이는 당시의 검증 기록이며 v0.7.0 릴리스 파일 검증을 뜻하지 않습니다. [v0.7.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)는 ZIP·tar.gz와 `tailscale-setup.sh`·`shim.py`·`dots-ts`·`dots_proxy.py` 개별 파일과 `source-manifest.json`을 제공합니다. 릴리스 파일의 체크섬은 `SHA256SUMS`에 있습니다. `main`은 이후 변경될 수 있으므로 같은 소스로 다시 설치하려면 검토한 tag나 commit을 지정하세요.
+공개 저장소 주소는 `https://github.com/abruption/dots-tailscale`입니다. 저장소 최초 공개 시 실제 clone과 raw 다운로드를 확인했습니다. 이는 당시의 검증 기록이며 v0.7.1 릴리스 파일 검증을 뜻하지 않습니다. [v0.7.1 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.1)는 ZIP·tar.gz와 `tailscale-setup.sh`·`shim.py`·`dots-ts`·`dots_proxy.py` 개별 파일과 `source-manifest.json`을 제공합니다. 릴리스 파일의 체크섬은 `SHA256SUMS`에 있습니다. `main`은 이후 변경될 수 있으므로 같은 소스로 다시 설치하려면 검토한 tag나 commit을 지정하세요.
 
-**v0.6.0 등 기본값이 1.102.4인 기존 패키지:** v0.7.0으로 이동하려면 [실행 파일 우선 전환 절차](security-baseline.ko.md)를 따르세요. 아래 일반 apply 예시는 이미 1.104.4를 선언하는 패키지에만 적용됩니다. `TS_VERSION` 변경은 거부되며 선언이나 manifest를 고쳐 우회하면 안 됩니다.
+**v0.6.0 등 기본값이 1.102.4인 기존 패키지:** v0.7.1으로 이동하려면 [실행 파일 우선 전환 절차](security-baseline.ko.md)를 따르세요. 아래 일반 apply 예시는 이미 1.104.4를 선언하는 패키지에만 적용됩니다. `TS_VERSION` 변경은 거부되며 선언이나 manifest를 고쳐 우회하면 안 됩니다.
 
 <a id="download-proxy"></a>
 
@@ -45,16 +45,16 @@ done
 
 ## 최초 설치
 
-Linux x86_64, Python 3, OpenSSH, `timeout`, `flock`, `openssl`, `ssh-keygen`, `curl`, `tar`, `sha256sum`, 일반 사용자 포트 22 바인딩을 전제로 합니다. v0.7.0 예시의 다운로드 기본 프록시는 `http://browser-proxy:8889`이며 Tailscale 버전은 `1.104.4`로 고정하고 공식 SHA-256과 대조합니다.
+Linux x86_64, Python 3, OpenSSH, `timeout`, `flock`, `openssl`, `ssh-keygen`, `curl`, `tar`, `sha256sum`, 일반 사용자 포트 22 바인딩을 전제로 합니다. v0.7.1 예시의 다운로드 기본 프록시는 `http://browser-proxy:8889`이며 Tailscale 버전은 `1.104.4`로 고정하고 공식 SHA-256과 대조합니다.
 
 Git이 설치된 VM 터미널에서 HTTPS로 저장소를 clone한 뒤 설치 스크립트를 실행합니다. Git 네트워크 요청에만 프록시 환경변수를 적용합니다. 인증서 검증은 유지합니다.
 
-v0.7.0은 `tailscale-setup.sh`, `shim.py`, `dots-ts`, `dots_proxy.py` 네 파일과 `source-manifest.json`을 함께 준비해야 합니다. 이전 v0.2.0은 기존 두 파일로 설치하며 새 도구가 포함되지 않습니다.
+v0.7.1은 `tailscale-setup.sh`, `shim.py`, `dots-ts`, `dots_proxy.py` 네 파일과 `source-manifest.json`을 함께 준비해야 합니다. 이전 v0.2.0은 기존 두 파일로 설치하며 새 도구가 포함되지 않습니다.
 
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.7.0 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
+  git clone --branch v0.7.1 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -118,7 +118,7 @@ v0.4.0에 포함된 기능으로 해당 버전의 도구가 설치되어 있어�
 
 ```bash
 /workspace/.dots-tailscale/dots-ts update check --json
-/workspace/.dots-tailscale/dots-ts update check --tag v0.7.0 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.7.1 --proxy http://browser-proxy:8889 --json
 ```
 
 두 번째 예시는 특정 정식 버전을 선택합니다. 실제로 해당 릴리스가 발행된 뒤에 사용할 수 있습니다. `--proxy`가 없으면 직접 HTTPS로 연결하며 셸의 프록시 자격정보를 가져오지 않습니다. 필요한 경우 플랫폼 다운로드 프록시를 직접 지정하세요. shim이나 애플리케이션 SOCKS·HTTP 프록시와는 별개입니다. HTTPS 인증서 검증은 유지하며 GitHub 토큰은 필요하지 않습니다.
@@ -146,7 +146,7 @@ v0.4.0에 포함된 기능으로 해당 버전의 도구가 설치되어 있어�
 이 일반 apply 예시는 설치된 패키지가 이미 Tailscale 1.104.4를 선언하는 경우에만 사용하세요. 1.102.4 선언이라면 [기본 버전 전환](security-baseline.ko.md)을 따르세요.
 
 ```bash
-/workspace/.dots-tailscale/dots-ts update apply --tag v0.7.0 --proxy http://browser-proxy:8889 --confirm-recovery-terminal --json
+/workspace/.dots-tailscale/dots-ts update apply --tag v0.7.1 --proxy http://browser-proxy:8889 --confirm-recovery-terminal --json
 /workspace/.dots-tailscale/dots-ts update status --id TRANSACTION_ID --json
 ```
 
@@ -180,7 +180,7 @@ setup과 proxy apply가 사용하는 작업 잠금을 유지한 채 소스 파�
 
 ## Tailscale 바이너리 갱신
 
-v0.7.0에는 별도의 `dots-ts runtime check/apply/status` 기능이 포함됩니다. 먼저 해당 버전의 소스 묶음을 설치하고 독립 복구 터미널을 확보하세요. v0.7.0의 신규 설치 기본값은 1.104.4입니다. 기존 1.102.4 기본 버전 패키지는 [명시적 전환 절차](security-baseline.ko.md)가 필요합니다. 바이너리 업데이트는 별도로 실행해야 하며 자동 업데이트는 켜지지 않습니다. 적용 후 외부 SSH·ping도 따로 확인해야 합니다. 새 daemon 실행을 시도한 뒤에는 시작에 실패했더라도 자동 다운그레이드를 하지 않습니다. 이유와 복구 절차는 [바이너리 업데이트 가이드](runtime-updates.ko.md)를 참고하세요.
+v0.7.1에는 별도의 `dots-ts runtime check/apply/status` 기능이 포함됩니다. 먼저 해당 버전의 소스 묶음을 설치하고 독립 복구 터미널을 확보하세요. v0.7.1의 신규 설치 기본값은 1.104.4입니다. 기존 1.102.4 기본 버전 패키지는 [명시적 전환 절차](security-baseline.ko.md)가 필요합니다. 바이너리 업데이트는 별도로 실행해야 하며 자동 업데이트는 켜지지 않습니다. 적용 후 외부 SSH·ping도 따로 확인해야 합니다. 새 daemon 실행을 시도한 뒤에는 시작에 실패했더라도 자동 다운그레이드를 하지 않습니다. 이유와 복구 절차는 [바이너리 업데이트 가이드](runtime-updates.ko.md)를 참고하세요.
 
 <a id="development-helpers"></a>
 
@@ -226,16 +226,16 @@ v0.7.0에는 별도의 `dots-ts runtime check/apply/status` 기능이 포함됩�
 
 앱용 프록시는 명시적으로 설정한 로컬 클라이언트를 위해 loopback에서 수신합니다. 데몬용 TLS/WebSocket shim의 `127.0.0.1:18089`와 다르며, 이 shim을 앱 HTTP 프록시로 쓰면 안 됩니다. 개별 curl 요청이나 자식 프로세스에만 프록시를 지정하세요. 시스템 전체 환경·브라우저·MCP·ChatGPT 커넥터에 자동 적용되지 않습니다. loopback에 접근할 수 있는 로컬 프로세스도 프록시를 사용할 수 있으므로 네트워크 정책과 API 인증은 별도로 필요합니다.
 
-### Git 없이 v0.7.0 설치
+### Git 없이 v0.7.1 설치
 
 별도 소스 디렉터리에 소스 파일 네 개와 `source-manifest.json`을 받습니다. 하나라도 다운로드에 실패하면 중단하고 설치 전에 파일과 해시를 검토하세요.
 
 ```bash
 (
   set -euo pipefail
-  mkdir -p /workspace/dots-tailscale-v0.7.0
-  cd /workspace/dots-tailscale-v0.7.0
-  DOTS_TS_REF=v0.7.0
+  mkdir -p /workspace/dots-tailscale-v0.7.1
+  cd /workspace/dots-tailscale-v0.7.1
+  DOTS_TS_REF=v0.7.1
   for file in tailscale-setup.sh shim.py dots-ts dots_proxy.py source-manifest.json; do
     curl -fsSL --proxy http://browser-proxy:8889 --connect-timeout 5 --max-time 60 \
       "https://github.com/abruption/dots-tailscale/releases/download/${DOTS_TS_REF}/${file}" \
@@ -248,13 +248,13 @@ v0.7.0에는 별도의 `dots-ts runtime check/apply/status` 기능이 포함됩�
 모든 다운로드가 성공했고 파일 검토를 마쳤다면 새 설치에 다음 명령을 사용합니다.
 
 ```bash
-cd /workspace/dots-tailscale-v0.7.0
+cd /workspace/dots-tailscale-v0.7.1
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
 bash /workspace/.dots-tailscale/start.sh login
 ```
 
-설치 전에 소스 파일 네 개와 `source-manifest.json`을 같은 디렉터리에 두세요. 릴리스 파일 호스트에 연결할 수 없다면 같은 tag와 파일명으로 `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.7.0/`에서 받거나 신뢰하는 다른 장비에서 검토한 파일을 전송하세요. 기존 v0.4.0 이상 설치는 [업데이트 안내](#update-management)를 따르고, 이전 설치는 아래 [기존 버전 수동 절차](#restart-update)를 검토하세요. `install`은 내용이 다른 설치 파일을 덮어쓰지 않습니다. HOME 관찰 도구도 사용할 경우에는 전체 clone 방식이 편리합니다.
+설치 전에 소스 파일 네 개와 `source-manifest.json`을 같은 디렉터리에 두세요. 릴리스 파일 호스트에 연결할 수 없다면 같은 tag와 파일명으로 `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.7.1/`에서 받거나 신뢰하는 다른 장비에서 검토한 파일을 전송하세요. 기존 v0.4.0 이상 설치는 [업데이트 안내](#update-management)를 따르고, 이전 설치는 아래 [기존 버전 수동 절차](#restart-update)를 검토하세요. `install`은 내용이 다른 설치 파일을 덮어쓰지 않습니다. HOME 관찰 도구도 사용할 경우에는 전체 clone 방식이 편리합니다.
 
 <a id="restart-update"></a>
 

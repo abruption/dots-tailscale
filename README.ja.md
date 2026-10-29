@@ -6,7 +6,7 @@
 
 Tailscale と SSH を使って、自分の端末から Dots のクラウドコンピューターに接続できます。dots-tailscale は root 権限や systemd を使わずに必要なツールをインストールし、インストールファイル、Tailscale のノード状態、SSH の識別情報を `/workspace` に保存します。環境が変わってもこのディレクトリが残っていれば、そのまま再利用できます。
 
-**現在のリリース: [v0.7.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)。** 新規インストールの Tailscale を 1.104.4 に更新し、バイナリ検証と既存パッケージの明示的な移行手順を追加しました。復旧リレーは削除された Python 環境も検出します。OpenAI や Tailscale の公式ツールではない独立プロジェクトです。
+**現在のリリース: [v0.7.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.1)。** shim が証明書を生成する前に CONNECT 先ホストを検証するセキュリティリリースです（[GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)）。v0.7.0 以前が影響を受けます。新規インストールの Tailscale は 1.104.4 で、バイナリ検証と既存パッケージの明示的な移行手順を備えています。OpenAI や Tailscale の公式ツールではない独立プロジェクトです。
 
 **v0.6.0 など旧基準からの更新:** Tailscale の既定値が 1.102.4 のパッケージでは、先にランタイムを更新してから[明示的な基準バージョン移行（英語）](docs/security-baseline.md)を行ってください。通常の `update apply` の変更ガードは維持されます。
 
@@ -29,7 +29,7 @@ Tailscale と SSH を使って、自分の端末から Dots のクラウドコ�
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.7.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.7.1 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -59,10 +59,10 @@ bash /workspace/.dots-tailscale/start.sh
 
 ```bash
 /workspace/.dots-tailscale/dots-ts version
-/workspace/.dots-tailscale/dots-ts update check --tag v0.7.0 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.7.1 --proxy http://browser-proxy:8889 --json
 ```
 
-Tailscale の基準を 1.102.4 と宣言する v0.6.0 などの既存パッケージは、[基準バージョンの移行手順（英語）](docs/security-baseline.md)で v0.7.0 に更新してください。v0.6.0 より古いツールを使っている場合は、先に[パッケージ更新手順](docs/usage.ja.md#update-management)で同じ基準の v0.6.0 を導入します。信頼できるメタデータがない旧版は手動確認が必要です。
+v0.7.0 のパッケージは同じ Tailscale 基準を宣言しているため、通常の[パッケージ更新](docs/usage.ja.md#update-management)で v0.7.1 に更新できます。適用すると修正済みの shim が再起動します。Tailscale の基準を 1.102.4 と宣言する v0.6.0 などの既存パッケージは、[基準バージョンの移行手順（英語）](docs/security-baseline.md)で v0.7.1 に更新してください。v0.6.0 より古いツールを使っている場合は、先に[パッケージ更新手順](docs/usage.ja.md#update-management)で同じ基準の v0.6.0 を導入します。信頼できるメタデータがない旧版は手動確認が必要です。
 
 v0.6.0 以降のツールを導入したら、Tailscale の公式安定版を確認できます。
 
@@ -70,7 +70,7 @@ v0.6.0 以降のツールを導入したら、Tailscale の公式安定版を確
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-**v0.7.0 の新規インストールでは Tailscale 1.104.4 を使います。** パッケージ更新や `install` が既存バイナリを暗黙に置き換えることはありません。バイナリを更新する場合は、表示されたバージョンと公式アドバイザリを確認し、[手動更新ガイド（英語）](docs/runtime-updates.md)に従ってください。基準移行では、インストール済みの両バイナリと実行中のバックエンドがすべて正確に 1.104.4 であることを確認してからソースを変更します。
+**v0.7.1 の新規インストールでは Tailscale 1.104.4 を使います。** パッケージ更新や `install` が既存バイナリを暗黙に置き換えることはありません。バイナリを更新する場合は、表示されたバージョンと公式アドバイザリを確認し、[手動更新ガイド（英語）](docs/runtime-updates.md)に従ってください。基準移行では、インストール済みの両バイナリと実行中のバックエンドがすべて正確に 1.104.4 であることを確認してからソースを変更します。
 
 更新を適用する前に、Tailscale 接続とは独立した復旧用クラウドターミナルを操作できることを確認してください。Tailscale バイナリの更新時は外部の復旧タスクを一時停止し、新しい SSH 接続と ping を確認してから再開します。更新候補のデーモンの実行を一度でも試みた後は、起動に失敗しても自動ダウングレードは行いません。失敗時の状態が不明なら、ガイドの手動復旧手順が必要です。パッケージのコードを戻せることと、Tailscale の状態データに互換性があることは別です。
 
@@ -105,13 +105,13 @@ v0.6.0 以降のツールを導入したら、Tailscale の公式安定版を確
 
 外部サービスを運用できる方は、[Dots を使った外部からの復旧実験（英語）](docs/experimental-recovery.md)を確認できます。外部監視、認証付き MCP Events サーバー、許可済みの Dots タスクを使い、接続障害の後に起動コマンドの実行を依頼します。通常のインストーラーは、この基盤を配備したり復旧タスクを有効にしたりしません。
 
-現在の実験には外部サーバーと SSO 設定が必要です。イベント処理は遅延することがあり、別アカウントでの再現や任意の VM 交換後の復旧は未検証です。watchdog との連携とオプトイン自動更新は v0.8.0 の後続課題であり、v0.7.0 で有効になる機能ではありません。
+現在の実験には外部サーバーと SSO 設定が必要です。イベント処理は遅延することがあり、別アカウントでの再現や任意の VM 交換後の復旧は未検証です。watchdog との連携とオプトイン自動更新は v0.8.0 の後続課題であり、v0.7.1 で有効になる機能ではありません。
 
 ## ドキュメントと構成ファイル
 
 - [使い方とトラブルシューティング](docs/usage.ja.md) · [Tailscale の手動更新（英語）](docs/runtime-updates.md)
 - [プライベート HTTPS API の利用例](docs/private-http-api.ja.md) · [復旧実験（英語）](docs/experimental-recovery.md)
-- [リリースノート](docs/releases/v0.7.0.md) · [変更履歴](CHANGELOG.md) · [MIT ライセンス](LICENSE)
+- [リリースノート](docs/releases/v0.7.1.md) · [変更履歴](CHANGELOG.md) · [MIT ライセンス](LICENSE)
 
 | パス | 用途 |
 |---|---|

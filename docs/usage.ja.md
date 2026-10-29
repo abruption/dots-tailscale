@@ -6,9 +6,9 @@
 
 ## 公開リリース
 
-リポジトリの初回公開時に、clone と raw ファイルのダウンロードを準備済みのソースと照合しました。これは当時の検証記録であり、v0.7.0 のアセットを検証したという意味ではありません。[Release v0.7.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0) には ZIP と tar.gz のアーカイブに加えて、`tailscale-setup.sh`、`shim.py`、`dots-ts`、`dots_proxy.py` の個別ファイルと `source-manifest.json` が含まれています。インストール例ではソースを `v0.7.0` に固定しています。`SHA256SUMS` にリリースファイルのチェックサムを収録しています。新規インストールでは Tailscale `1.104.4` を使います。
+リポジトリの初回公開時に、clone と raw ファイルのダウンロードを準備済みのソースと照合しました。これは当時の検証記録であり、v0.7.1 のアセットを検証したという意味ではありません。[Release v0.7.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.1) には ZIP と tar.gz のアーカイブに加えて、`tailscale-setup.sh`、`shim.py`、`dots-ts`、`dots_proxy.py` の個別ファイルと `source-manifest.json` が含まれています。インストール例ではソースを `v0.7.1` に固定しています。`SHA256SUMS` にリリースファイルのチェックサムを収録しています。新規インストールでは Tailscale `1.104.4` を使います。
 
-**v0.6.0 など基準が 1.102.4 の既存パッケージ:** v0.7.0 へは[ランタイム更新後の移行手順（英語）](security-baseline.md)を使ってください。以下の通常 apply 例は、すでに 1.104.4 を宣言するパッケージ向けです。`TS_VERSION` の変更は拒否されるため、宣言やマニフェストを編集して回避しないでください。
+**v0.6.0 など基準が 1.102.4 の既存パッケージ:** v0.7.1 へは[ランタイム更新後の移行手順（英語）](security-baseline.md)を使ってください。以下の通常 apply 例は、すでに 1.104.4 を宣言するパッケージ向けです。`TS_VERSION` の変更は拒否されるため、宣言やマニフェストを編集して回避しないでください。
 
 <a id="download-proxy"></a>
 
@@ -48,12 +48,12 @@ done
 
 セットアップスクリプトと `shim.py` を一緒に使えるよう、リポジトリを `https://github.com/abruption/dots-tailscale` から `/workspace` に clone します。clone には Git と、クラウドコンピューターのプロキシ経由で GitHub HTTPS にアクセスできることが必要です。セットアップには Linux x86_64、Python 3、`timeout`、`flock`、OpenSSL、`ssh-keygen`、`/usr/sbin/sshd` が必要です。インストール時にはさらに curl、tar、sha256sum が必要です。現在のユーザーがポート 22 をバインドできる必要があります。root や systemd は必要ありません。
 
-v0.7.0 では、ソースファイル 4 つと `source-manifest.json` を同じ場所に置いてください: `tailscale-setup.sh`、`shim.py`、`dots-ts`、`dots_proxy.py`。旧版 v0.2.0 のインストールでは元の 2 ファイルだけを使い、これらのヘルパーは含まれません。
+v0.7.1 では、ソースファイル 4 つと `source-manifest.json` を同じ場所に置いてください: `tailscale-setup.sh`、`shim.py`、`dots-ts`、`dots_proxy.py`。旧版 v0.2.0 のインストールでは元の 2 ファイルだけを使い、これらのヘルパーは含まれません。
 
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.7.0 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
+  git clone --branch v0.7.1 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -169,7 +169,7 @@ JSON では `package.declared_version`、`package.source_revision`、`package.in
 
 ```bash
 /workspace/.dots-tailscale/dots-ts update check --json
-/workspace/.dots-tailscale/dots-ts update check --tag v0.7.0 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.7.1 --proxy http://browser-proxy:8889 --json
 ```
 
 2つ目の例は特定の安定版を選択します。そのリリースが公開された後にのみ使用できます。`--proxy` を指定しない場合、確認では直接 HTTPS を使い、シェルのプロキシ認証情報を引き継ぎません。必要な場合は、プラットフォームのダウンロード用プロキシを明示的に指定してください。shim 用およびアプリケーション用の SOCKS/HTTP プロキシとは別の設定です。HTTPS 証明書の検証は有効のままです。GitHub トークンは不要です。
@@ -197,7 +197,7 @@ JSON では `package.declared_version`、`package.source_revision`、`package.in
 この通常 apply の例は、インストール済みパッケージがすでに Tailscale 1.104.4 を宣言する場合だけ使用します。1.102.4 の場合は[基準移行（英語）](security-baseline.md)を行ってください。
 
 ```bash
-/workspace/.dots-tailscale/dots-ts update apply --tag v0.7.0 --proxy http://browser-proxy:8889 --confirm-recovery-terminal --json
+/workspace/.dots-tailscale/dots-ts update apply --tag v0.7.1 --proxy http://browser-proxy:8889 --confirm-recovery-terminal --json
 /workspace/.dots-tailscale/dots-ts update status --id TRANSACTION_ID --json
 ```
 
@@ -231,7 +231,7 @@ JSON では `package.declared_version`、`package.source_revision`、`package.in
 
 ## Tailscale バイナリの更新
 
-v0.7.0 には、パッケージ更新とは別に `dots-ts runtime check/apply/status` が含まれます。対応するソース一式を先に導入し、独立した復旧用ターミナルを用意してください。v0.7.0 の新規インストールは 1.104.4 です。1.102.4 を宣言する既存パッケージには[明示的な移行（英語）](security-baseline.md)が必要です。バイナリ更新は別途実行する必要があり、自動更新は有効になりません。更新後は外部 SSH・ping も確認してください。更新候補の daemon の実行を試みた後は、起動に失敗しても自動ダウングレードを行いません。復旧手順と制限は[更新ガイド（英語）](runtime-updates.md)をご覧ください。
+v0.7.1 には、パッケージ更新とは別に `dots-ts runtime check/apply/status` が含まれます。対応するソース一式を先に導入し、独立した復旧用ターミナルを用意してください。v0.7.1 の新規インストールは 1.104.4 です。1.102.4 を宣言する既存パッケージには[明示的な移行（英語）](security-baseline.md)が必要です。バイナリ更新は別途実行する必要があり、自動更新は有効になりません。更新後は外部 SSH・ping も確認してください。更新候補の daemon の実行を試みた後は、起動に失敗しても自動ダウングレードを行いません。復旧手順と制限は[更新ガイド（英語）](runtime-updates.md)をご覧ください。
 
 <a id="development-helpers"></a>
 
@@ -277,16 +277,16 @@ v0.7.0 には、パッケージ更新とは別に `dots-ts runtime check/apply/s
 
 アプリケーション用プロキシは、明示的に設定されたローカルクライアント向けに loopback で待ち受けます。これはデーモン用 TLS/WebSocket shim の `127.0.0.1:18089` とは別のものです。その shim をアプリケーション用 HTTP プロキシとして使わないでください。個々の curl リクエストまたは子プロセスにプロキシを設定してください。グローバルな環境設定、ブラウザー、MCP、ChatGPT コネクターには伝播しません。loopback プロキシに接続できるローカルプロセスは利用を試みられるため、ネットワーク方針と API 認証は引き続き必要です。
 
-### Git を使わずに v0.7.0 をインストール
+### Git を使わずに v0.7.1 をインストール
 
 ソースファイル 4 つと `source-manifest.json` を別のソースディレクトリにダウンロードします。1つでもリクエストに失敗したら中止し、インストール前にファイルとハッシュを確認してください。
 
 ```bash
 (
   set -euo pipefail
-  mkdir -p /workspace/dots-tailscale-v0.7.0
-  cd /workspace/dots-tailscale-v0.7.0
-  DOTS_TS_REF=v0.7.0
+  mkdir -p /workspace/dots-tailscale-v0.7.1
+  cd /workspace/dots-tailscale-v0.7.1
+  DOTS_TS_REF=v0.7.1
   for file in tailscale-setup.sh shim.py dots-ts dots_proxy.py source-manifest.json; do
     curl -fsSL --proxy http://browser-proxy:8889 --connect-timeout 5 --max-time 60 \
       "https://github.com/abruption/dots-tailscale/releases/download/${DOTS_TS_REF}/${file}" \
@@ -299,13 +299,13 @@ v0.7.0 には、パッケージ更新とは別に `dots-ts runtime check/apply/s
 すべてのダウンロードに成功し、ファイルの確認を終えたら、新規インストールには次のコマンドを実行します。
 
 ```bash
-cd /workspace/dots-tailscale-v0.7.0
+cd /workspace/dots-tailscale-v0.7.1
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
 bash /workspace/.dots-tailscale/start.sh login
 ```
 
-セットアップを実行する前に、ソースファイル 4 つと `source-manifest.json` を同じディレクトリに置いてください。リリースアセットのホストを利用できない場合は、同じタグとファイル名で `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.7.0/` から取得するか、信頼できる別の端末から確認済みのファイルを転送します。既存の v0.4.0 以降の環境では[更新管理](#update-management)を使い、旧版環境では[従来の手動手順](#restart-update)を確認してください。`install` は内容が異なるインストール済みソースファイルを上書きしません。
+セットアップを実行する前に、ソースファイル 4 つと `source-manifest.json` を同じディレクトリに置いてください。リリースアセットのホストを利用できない場合は、同じタグとファイル名で `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.7.1/` から取得するか、信頼できる別の端末から確認済みのファイルを転送します。既存の v0.4.0 以降の環境では[更新管理](#update-management)を使い、旧版環境では[従来の手動手順](#restart-update)を確認してください。`install` は内容が異なるインストール済みソースファイルを上書きしません。
 
 ### 任意の非対話認証
 

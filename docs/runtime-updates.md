@@ -8,7 +8,7 @@ Available in dots-tailscale v0.6.0 (#50); v0.5.0 and earlier do not include this
 
 Use a reviewed dots-tailscale package containing this feature, including all four source files and its matching `source-manifest.json`. The installed bundle must match the tool invoking the update. Running a new checkout's CLI against an older installed package is refused: the older startup script would not know how to block an interrupted binary update.
 
-The v0.7.0 installer uses 1.104.4 for new installations. The earlier v0.6.0 package declared 1.102.4, allowing its runtime tool to be installed through older source-only updaters. Ordinary package `update apply` still refuses a changed binary-version declaration. Existing 1.102.4-baseline installations must first obtain the v0.6.0 tools if needed, use that installed runtime updater, verify external connectivity, then follow the release's explicit [security-baseline migration](security-baseline.md). This source-only migration is separate from `runtime apply` and does not silently update binaries.
+The v0.7.0 and later installers use 1.104.4 for new installations. The earlier v0.6.0 package declared 1.102.4, allowing its runtime tool to be installed through older source-only updaters. Ordinary package `update apply` still refuses a changed binary-version declaration. Existing 1.102.4-baseline installations must first obtain the v0.6.0 tools if needed, use that installed runtime updater, verify external connectivity, then follow the release's explicit [security-baseline migration](security-baseline.md). This source-only migration is separate from `runtime apply` and does not silently update binaries.
 
 ## Check without changing the installation
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.1 — 2026-10-29
+
+- Security: the transport shim now validates the CONNECT host and port before contacting the upstream proxy, and names cached leaf certificates by a hash of the host. Previously, if the upstream proxy accepted a crafted CONNECT host, the shim could create files with certificate suffixes outside its certificate directory, or overwrite such files with random key material ([GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m), Low). v0.1.0 through v0.7.0 are affected.
+- Document that under userspace networking, tailnet peers whose ACL permits port 18089 can reach the loopback-only shim. Until you update, restrict your tailnet policy for this node to the ports you use.
+
+v0.7.0 installations declare the same Tailscale baseline and can use the ordinary `update apply --tag v0.7.1`, which restarts the shim. Cached shim certificates are regenerated once under the new names; the local CA is not changed. Of the four executable sources, only `shim.py` changes. Existing 1.102.4-baseline packages use the [explicit baseline migration](docs/security-baseline.md). See the [release notes](docs/releases/v0.7.1.md).
+
 ## v0.7.0 — 2026-10-28
 
 - Raise the new-install Tailscale baseline to 1.104.4 and validate archive contents plus both version outputs before placing binaries (#57).

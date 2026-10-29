@@ -6,7 +6,7 @@
 
 Use Tailscale and SSH to reach your Dots cloud computer from your own devices. dots-tailscale installs the tools without root or systemd and keeps the installation, Tailscale node state and SSH identity under `/workspace` so you can reuse them when that directory survives an environment change.
 
-**Current release: [v0.7.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0).** New installations use Tailscale 1.104.4, with stricter binary checks and an explicit migration path for existing packages. Recovery relay diagnostics now detect a removed Python runtime. This is an independent project, not an official OpenAI or Tailscale tool.
+**Current release: [v0.7.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.1).** This security release makes the shim validate the CONNECT host before generating a certificate ([GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)); v0.7.0 and earlier are affected. New installations use Tailscale 1.104.4, with stricter binary checks and an explicit migration path for existing packages. This is an independent project, not an official OpenAI or Tailscale tool.
 
 **Upgrading from v0.6.0 or an older baseline:** packages declaring Tailscale 1.102.4 need the [explicit security-baseline migration](docs/security-baseline.md), after a separate runtime upgrade. Ordinary `update apply` keeps its cross-baseline guard.
 
@@ -29,7 +29,7 @@ For a **new installation**, use the Dots cloud terminal. You need Linux x86_64, 
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.7.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.7.1 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -59,10 +59,10 @@ First check the installed package and available package release:
 
 ```bash
 /workspace/.dots-tailscale/dots-ts version
-/workspace/.dots-tailscale/dots-ts update check --tag v0.7.0 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.7.1 --proxy http://browser-proxy:8889 --json
 ```
 
-Existing packages declaring Tailscale 1.102.4, including v0.6.0, must follow the [security-baseline migration](docs/security-baseline.md) to reach v0.7.0. If your installed tools predate v0.6.0, first use the [package update instructions](docs/usage.md#update-management) to obtain v0.6.0 on the same baseline. Older installations without trusted metadata need the manual review procedure.
+v0.7.0 packages declare the same Tailscale baseline and reach v0.7.1 through the ordinary [package update](docs/usage.md#update-management); applying it restarts the shim with the fix. Existing packages declaring Tailscale 1.102.4, including v0.6.0, must follow the [security-baseline migration](docs/security-baseline.md) to reach v0.7.1. If your installed tools predate v0.6.0, first use the [package update instructions](docs/usage.md#update-management) to obtain v0.6.0 on the same baseline. Older installations without trusted metadata need the manual review procedure.
 
 Once v0.6.0 or later tools are installed, check the official stable Tailscale version:
 
@@ -70,7 +70,7 @@ Once v0.6.0 or later tools are installed, check the official stable Tailscale ve
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-**New v0.7.0 installations start with Tailscale 1.104.4.** Existing binaries are not silently replaced by a package update or `install`. To change them, review the reported version and upstream advisories, then follow the [manual runtime update guide](docs/runtime-updates.md). The baseline migration requires both installed binaries and the running backend to be exactly 1.104.4 before the source package changes.
+**New v0.7.1 installations start with Tailscale 1.104.4.** Existing binaries are not silently replaced by a package update or `install`. To change them, review the reported version and upstream advisories, then follow the [manual runtime update guide](docs/runtime-updates.md). The baseline migration requires both installed binaries and the running backend to be exactly 1.104.4 before the source package changes.
 
 Before applying an update, verify an independent cloud recovery terminal is usable. For runtime updates, pause external recovery jobs and resume them after fresh SSH/ping checks. Once execution of a candidate daemon has been attempted, even a failed startup does not permit automatic downgrade: uncertain failures require the guide's manual recovery procedure. Package code rollback and Tailscale state compatibility are different things.
 
@@ -105,13 +105,13 @@ This maintainer-provided screenshot is a historical installation/status check, n
 
 Advanced users can explore [Dots-assisted external recovery](docs/experimental-recovery.md). It uses an external monitor, an authenticated MCP Events server and an authorized Dots task to request a start command after a connection failure. The normal installer does not deploy this infrastructure or enable a recovery task.
 
-The current experiment requires external server/SSO setup. Event processing can be delayed; setup on another account and recovery after arbitrary VM replacement remain unverified. Watchdog coordination and opt-in automatic updates are deferred to v0.8.0; v0.7.0 does not enable them.
+The current experiment requires external server/SSO setup. Event processing can be delayed; setup on another account and recovery after arbitrary VM replacement remain unverified. Watchdog coordination and opt-in automatic updates are deferred to v0.8.0; v0.7.1 does not enable them.
 
 ## Documentation and project files
 
 - [Usage and troubleshooting](docs/usage.md) · [Manual Tailscale updates](docs/runtime-updates.md)
 - [Private HTTPS API example](docs/private-http-api.md) · [Experimental recovery](docs/experimental-recovery.md)
-- [Release notes](docs/releases/v0.7.0.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
+- [Release notes](docs/releases/v0.7.1.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
 
 | Path | Purpose |
 |---|---|
