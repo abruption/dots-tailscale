@@ -129,11 +129,27 @@ terminal. Historical unsigned releases are not retroactively described as signed
 ## Producing a release candidate
 
 The **Release provenance candidate** workflow runs only in the canonical
-repository at stable version tags. It checks the original manifest and offline
-tests, requires the checked-out commit, tag and `VERSION` to agree, then builds
-the source archives and individual sources from that exact commit. It attests
-the original manifest and both source archives using a pinned GitHub action.
-The portable bundle is retained as `source-manifest.sigstore.json`.
+repository at stable version tags. Its validation job has only `contents: read`;
+it installs test tools and checks the original manifest, Bash syntax and offline
+suite without `id-token: write` or `attestations: write`.
+
+A separate signing job waits for that validation, starts with a fresh checkout
+of the exact same `github.sha`, and builds the candidate again. It does not
+download or trust unsigned validation artifacts. The signer uses the runner's
+preinstalled `/usr/bin/python3` (3.11 or newer), an isolated initial invocation,
+and a restricted system tool path with safe Python import settings for its
+stdlib build helpers. It does not run package installation, setup-python or the
+test suite with signing permission. The builder still requires the checked-out
+commit, tag and `VERSION` to agree. The original manifest and both source
+archives are attested using a pinned GitHub action; the portable bundle is kept
+as `source-manifest.sigstore.json`. The accepted workflow identity, source ref
+and commit policy do not change when jobs are split.
+
+The signing job still trusts the GitHub-hosted runner and preinstalled
+interpreter, the reviewed repository build/manifest helpers, and the pinned
+checkout, attestation and upload Actions. These jobs reduce unnecessary code
+running with publisher privilege; they do not guarantee protection from all
+runner, interpreter, repository or third-party compromise.
 
 The resulting artifact has ten files: the existing eight release assets plus
 the descriptor and Sigstore bundle. After copying the portable bundle, the workflow

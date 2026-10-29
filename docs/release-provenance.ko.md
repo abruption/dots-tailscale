@@ -63,7 +63,11 @@
 
 ## 릴리스 후보 만들기
 
-**Release provenance candidate** 워크플로는 정해진 저장소의 안정 버전 태그에서만 동작합니다. 원본 명세와 오프라인 시험을 확인하고, 체크아웃 커밋·태그·`VERSION`이 맞는지 검사한 뒤 정확한 커밋으로 소스 압축 파일과 개별 소스를 만듭니다. SHA로 고정한 GitHub action으로 원본 명세와 두 소스 압축 파일에 attestation을 발행하고, 이동 가능한 증거를 `source-manifest.sigstore.json`으로 보관합니다.
+**Release provenance candidate** 워크플로는 정해진 저장소의 안정 버전 태그에서만 동작합니다. 검증 job은 `contents: read`만 갖고 시험 도구를 설치한 뒤 원본 명세·Bash 문법·오프라인 시험을 확인합니다. 이 job에는 `id-token: write`나 `attestations: write`를 부여하지 않습니다.
+
+별도의 서명 job은 검증 성공을 기다린 다음, 같은 `github.sha`를 새로 체크아웃해 후보를 다시 만듭니다. 검증 job의 서명 없는 artifact를 내려받아 신뢰하지 않습니다. 서명 job은 runner에 미리 설치된 `/usr/bin/python3` 3.11 이상을 사용합니다. 첫 Python 실행을 격리하고, 표준 라이브러리 빌드 도구의 하위 실행에도 시스템 도구 경로와 안전한 Python import 설정을 적용합니다. 서명 권한을 가진 채로 패키지 설치·setup-python·전체 시험을 실행하지 않습니다. 빌드 도구는 계속 체크아웃 커밋·태그·`VERSION`의 일치를 요구합니다. SHA로 고정한 GitHub action으로 원본 명세와 두 소스 압축 파일에 attestation을 발행하고, 이동 가능한 증거를 `source-manifest.sigstore.json`으로 보관합니다. job을 나눠도 허용된 워크플로 신원·소스 ref·커밋 정책은 바뀌지 않습니다.
+
+서명 job은 여전히 GitHub가 호스팅하는 runner와 사전 설치된 인터프리터, 검토한 저장소의 빌드·명세 도구, SHA로 고정한 checkout·attestation·upload Actions를 신뢰합니다. 배포자 권한으로 실행되는 불필요한 코드를 줄이는 설계이지, runner·인터프리터·저장소·모든 제삼자 침해를 막는다는 보장은 아닙니다.
 
 결과 artifact에는 기존 릴리스 파일 여덟 개와 선택 정보·Sigstore 묶음이 더해져 파일 열 개가 들어 있습니다. 워크플로는 이동 가능한 묶음을 복사한 뒤 그 체크섬을 `SHA256SUMS`에 추가하므로, 자기 자신을 제외한 배포 파일 아홉 개가 모두 포함됩니다. 체크섬은 배포 파일의 일관성을 확인하며, Sigstore 묶음의 인증은 attestation 검증으로 수행합니다. 워크플로는 관리자가 검토할 임시 Actions artifact만 올립니다. GitHub Release를 만들거나 기존 릴리스를 덮어쓰거나 운영 환경에 배포하지 않습니다. 관리자는 정확한 실행·소스·태그를 확인하고 증거를 독립적으로 검증한 뒤 다시 빌드하지 않은 원본 후보 바이트를 발행해야 합니다.
 

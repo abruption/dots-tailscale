@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import signal
 import stat
 from pathlib import Path
@@ -140,6 +141,74 @@ class GhOutputContractTests(unittest.TestCase):
         self.assertEqual(report["manifest_sha256"], digest)
         # The immutable captured fixture remains byte-for-byte original.
         self.assertEqual(hashlib.sha256(self.FIXTURE.read_bytes()).hexdigest(), self.SHA256)
+
+
+class ReleaseWorkflowIsolationTests(unittest.TestCase):
+    """Reviewable fixed-layout workflow invariants, without a YAML dependency."""
+    @staticmethod
+    def workflow_jobs():
+        source = (ROOT / ".github/workflows/release-provenance.yml").read_text()
+        prefix, body = source.split("\njobs:\n", 1)
+        headers = list(re.finditer(r"^  ([a-z][a-z0-9_-]*):\n", body, re.M))
+        names = [match[1] for match in headers]
+        if names != ["validate", "provenance"]:
+            raise AssertionError("Review changed release workflow job structure")
+        jobs = {match[1]: body[match.end():headers[index + 1].start() if index + 1 < len(headers) else len(body)]
+                for index, match in enumerate(headers)}
+        return prefix, jobs
+
+    @staticmethod
+    def permissions(source, indent):
+        key = " " * indent + "permissions:"
+        if len(re.findall(r"^" + re.escape(key) + r"$", source, re.M)) != 1:
+            raise AssertionError("Use one explicit permissions mapping")
+        match = re.search(r"^" + re.escape(key) + r"\n((?:^" + " " * (indent + 2) + r"[^\n]*\n)+)", source, re.M)
+        if match is None:
+            raise AssertionError("Review changed release permissions layout")
+        result = {}
+        for line in match[1].splitlines():
+            entry = re.fullmatch(r"([a-z-]+): (read|write|none)", line.strip())
+            if entry is None or entry[1] in result:
+                raise AssertionError("Use explicit, unique permission keys")
+            result[entry[1]] = entry[2]
+        return result
+
+    def test_validation_has_read_only_permissions_and_signer_waits_for_it(self):
+        prefix, jobs = self.workflow_jobs()
+        self.assertEqual(self.permissions(prefix, 0), {"contents": "read"})
+        self.assertEqual(self.permissions(jobs["validate"], 4), {"contents": "read"})
+        self.assertEqual(self.permissions(jobs["provenance"], 4),
+                         {"contents": "read", "id-token": "write", "attestations": "write"})
+        self.assertIn("python -m unittest discover -s tests -v", jobs["validate"])
+        self.assertIn("python scripts/source_manifest.py --check", jobs["validate"])
+        self.assertIn("bash -n tailscale-setup.sh", jobs["validate"])
+        self.assertIn("sudo apt-get install", jobs["validate"])
+        self.assertRegex(jobs["provenance"], r"(?m)^    needs: validate$")
+
+    def test_signer_rebuilds_exact_source_without_test_install_or_artifact_reuse(self):
+        _, jobs = self.workflow_jobs()
+        condition = "github.repository == 'abruption/dots-tailscale' && startsWith(github.ref, 'refs/tags/v')"
+        for body in jobs.values():
+            self.assertEqual(re.findall(r"^    if: (.+)$", body, re.M), [condition])
+            self.assertIn("          ref: ${{ github.sha }}", body)
+            self.assertIn("          persist-credentials: false", body)
+        signer = jobs["provenance"]
+        actions = re.findall(r"uses: ([^\s#]+)", signer)
+        self.assertEqual([value.partition("@")[0] for value in actions], [
+            "actions/checkout", "actions/attest-build-provenance", "actions/upload-artifact"])
+        for value in actions:
+            self.assertRegex(value, r"^[a-z-]+/[a-z-]+@[0-9a-f]{40}$")
+        commands = "\n".join(re.findall(r"^        run: (.*(?:\n {10}[^\n]*)*)", signer, re.M))
+        self.assertNotRegex(commands, r"\b(?:apt(?:-get)?|pip|uv|brew|unittest|install)\b")
+        self.assertNotIn("setup-python@", signer)
+        self.assertNotIn("download-artifact", signer)
+        self.assertNotIn("needs.validate.outputs", signer)
+        self.assertIn('/usr/bin/python3 -I scripts/build_release_candidate.py --tag "$RELEASE_TAG" --commit "$GITHUB_SHA"', commands)
+        self.assertIn("sys.version_info >= (3, 11)", commands)
+        self.assertIn("          PATH: /usr/bin:/bin", signer)
+        self.assertIn("          PYTHONSAFEPATH: '1'", signer)
+        self.assertIn("          PYTHONNOUSERSITE: '1'", signer)
+        self.assertNotIn("actions/upload-artifact@", jobs["validate"])
 
 
 class ProvenanceTests(unittest.TestCase):
