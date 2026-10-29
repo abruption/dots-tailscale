@@ -4,14 +4,17 @@ import contextlib
 import hashlib
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import signal
+import stat
 from pathlib import Path
 import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 import unittest
 import zipfile
 from unittest import mock
@@ -60,7 +63,23 @@ class ProvenanceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="provenance-tests-")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
+        if sys.platform == "darwin":
+            # Model only the host ancestry outside the private fixture as
+            # protected: macOS external test volumes can be group-writable.
+            # The product deliberately rejects those real paths. All leaf and
+            # fixture-subtree permission/UID checks below remain exercised;
+            # Linux CI uses its actual /tmp ancestry without this harness.
+            ancestors = set(self.root.parents)
+            actual_lstat = Path.lstat
+            def protected_host_ancestry(path):
+                info = actual_lstat(path)
+                if path in ancestors and info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX:
+                    values = list(info); values[stat.ST_MODE] &= ~0o022
+                    return os.stat_result(values)
+                return info
+            patcher = mock.patch.object(Path, "lstat", protected_host_ancestry)
+            patcher.start(); self.addCleanup(patcher.stop)
         self.trusted_root = self.root / "trusted-root.jsonl"
         self.trusted_root.write_text('{"fixture":"independently supplied root"}\n')
         self.trusted_root.chmod(0o600)
@@ -164,12 +183,125 @@ class ProvenanceTests(unittest.TestCase):
         with self.assertRaisesRegex(tool.ProvenanceError, "trusted_root_unsafe"):
             tool.provenance_trusted_root(self.trusted_root)
 
+    def test_root_is_read_from_one_descriptor_and_same_inode(self):
+        actual_open = os.open
+        with mock.patch.object(tool.os, "open", wraps=actual_open) as opened:
+            raw = tool.provenance_trusted_root(self.trusted_root)
+        self.assertEqual(raw, self.trusted_root.read_bytes())
+        self.assertEqual(opened.call_count, 1)
+        self.assertEqual(Path(opened.call_args.args[0]), self.trusted_root.resolve())
+        self.assertTrue(opened.call_args.args[1] & os.O_NOFOLLOW)
+        self.assertTrue(opened.call_args.args[1] & os.O_NONBLOCK)
+
+    def test_actual_opened_root_metadata_is_checked_and_descriptor_closed(self):
+        actual_open, actual_fstat = os.open, os.fstat
+        for field, value in ((stat.ST_UID, os.getuid() + 10000),
+                             (stat.ST_MODE, stat.S_IFREG | 0o666),
+                             (stat.ST_MODE, stat.S_IFDIR | 0o700),
+                             (stat.ST_INO, self.trusted_root.stat().st_ino + 1)):
+            with self.subTest(field=field, value=value):
+                descriptors = []
+                def opened(*args, **kwargs):
+                    descriptor = actual_open(*args, **kwargs); descriptors.append(descriptor)
+                    return descriptor
+                def changed_metadata(descriptor):
+                    values = list(actual_fstat(descriptor)); values[field] = value
+                    return os.stat_result(values)
+                with mock.patch.object(tool.os, "open", side_effect=opened), \
+                        mock.patch.object(tool.os, "fstat", side_effect=changed_metadata):
+                    with self.assertRaisesRegex(tool.ProvenanceError, "trusted_root_unsafe"):
+                        tool.provenance_trusted_root(self.trusted_root)
+                self.assertEqual(len(descriptors), 1)
+                with self.assertRaises(OSError):
+                    actual_fstat(descriptors[0])
+
+    def test_nonsticky_writable_parent_refuses_root_and_verifier(self):
+        shared = self.root / "shared"; shared.mkdir(mode=0o700)
+        anchor = shared / "trusted-root.jsonl"; anchor.write_bytes(b"root"); anchor.chmod(0o600)
+        verifier = shared / "gh"; verifier.write_bytes(b"fixture"); verifier.chmod(0o700)
+        shared.chmod(0o777)
+        with self.assertRaisesRegex(tool.ProvenanceError, "trusted_root_unsafe"):
+            tool.provenance_trusted_root(anchor)
+        with mock.patch.object(tool.shutil, "which", return_value=str(verifier)):
+            with self.assertRaisesRegex(tool.ProvenanceError, "verifier_unsafe"):
+                tool.provenance_gh()
+
+    def test_trusted_sticky_parent_allows_trusted_child(self):
+        shared = self.root / "sticky"; shared.mkdir(mode=0o700)
+        anchor = shared / "trusted-root.jsonl"; anchor.write_bytes(b"root"); anchor.chmod(0o600)
+        shared.chmod(0o1777)
+        self.assertEqual(tool.provenance_trusted_root(anchor), b"root")
+        actual_lstat = Path.lstat
+        def changed_owner(path):
+            value = actual_lstat(path)
+            if path == anchor:
+                values = list(value); values[stat.ST_UID] = os.getuid() + 10000
+                return os.stat_result(values)
+            return value
+        with mock.patch.object(Path, "lstat", changed_owner):
+            with self.assertRaisesRegex(tool.ProvenanceError, "trusted_root_unsafe"):
+                tool.provenance_trusted_root(anchor)
+
+    def test_untrusted_ancestor_owner_is_rejected_even_without_write_bits(self):
+        folder = self.root / "other-owner"; folder.mkdir(mode=0o700)
+        anchor = folder / "root.jsonl"; anchor.write_bytes(b"root"); anchor.chmod(0o600)
+        actual_lstat = Path.lstat
+        def changed_owner(path):
+            value = actual_lstat(path)
+            if path == folder:
+                values = list(value); values[stat.ST_UID] = os.getuid() + 10000
+                return os.stat_result(values)
+            return value
+        with mock.patch.object(Path, "lstat", changed_owner):
+            with self.assertRaisesRegex(tool.ProvenanceError, "trusted_root_unsafe"):
+                tool.provenance_trusted_root(anchor)
+
+    def test_unsafe_root_types_and_symlinks_are_refused(self):
+        link = self.root / "root-link"; link.symlink_to(self.trusted_root)
+        empty = self.root / "empty.jsonl"; empty.touch(mode=0o600)
+        folder = self.root / "root-directory"; folder.mkdir(mode=0o700)
+        fifo = self.root / "root-fifo"; os.mkfifo(fifo, 0o600)
+        for path in (link, empty, folder, fifo):
+            with self.subTest(path=path.name), self.assertRaisesRegex(tool.ProvenanceError, "trusted_root_unsafe"):
+                tool.provenance_trusted_root(path)
+
+    def test_verifier_symlink_uses_checked_canonical_target(self):
+        binary = self.root / "gh-real"; binary.write_bytes(b"fixture"); binary.chmod(0o700)
+        link = self.root / "gh"; link.symlink_to(binary)
+        with mock.patch.object(tool.shutil, "which", return_value=str(link)):
+            self.assertEqual(tool.provenance_gh(), str(binary.resolve()))
+            with self.assertRaisesRegex(tool.ProvenanceError, "verifier_unsafe"):
+                tool.provenance_gh((self.root,))
+
     def test_verifier_failures_are_sanitized_and_not_unsigned_fallback(self):
         for response, expected in (((1, b"PRIVATE"), "verification_failed"), ((0, b"not JSON"), "policy_mismatch")):
             with mock.patch.object(tool, "provenance_gh", return_value="/trusted/gh"), \
                     mock.patch.object(tool, "provenance_run", side_effect=[(0, b"gh version 2.103.3"), response]):
                 with self.assertRaisesRegex(tool.ProvenanceError, expected):
                     tool.provenance_verify_payload(self.payload, evidence=self.evidence, provenance_root=self.trusted_root)
+
+    def test_public_provenance_errors_use_only_closed_codes(self):
+        for raw in ("PRIVATE gh stderr and /private/path", [], {"token": "PRIVATE"}, None):
+            error = tool.ProvenanceError(raw)
+            self.assertEqual(str(error), "provenance_evidence_invalid")
+            self.assertEqual(tool.apply_error_report(error), {"error": "provenance_evidence_invalid"})
+        for code in ("provenance_trusted_root_required", "provenance_trusted_root_unsafe",
+                     "provenance_verifier_unavailable", "provenance_verifier_unsafe", "provenance_verification_failed"):
+            self.assertEqual(tool.apply_error_report(tool.ProvenanceError(code)), {"error": code})
+
+    def test_apply_cli_reports_actionable_sanitized_provenance_reason(self):
+        for failure, expected in (("provenance_trusted_root_required", "provenance_trusted_root_required"),
+                                  ("provenance_verifier_unavailable", "provenance_verifier_unavailable"),
+                                  ("provenance_verification_failed", "provenance_verification_failed"),
+                                  ("PRIVATE raw gh stderr", "provenance_evidence_invalid")):
+            output = io.StringIO()
+            with mock.patch.object(tool, "directories", return_value=(self.root, self.root)), \
+                    mock.patch.object(tool, "update_apply", side_effect=tool.ProvenanceError(failure)), \
+                    contextlib.redirect_stdout(output):
+                code = tool.main(["update", "apply", "--tag", "v0.8.0", "--confirm-recovery-terminal", "--json"])
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads(output.getvalue()), {"error": expected})
+            self.assertNotIn("PRIVATE", output.getvalue())
 
     def test_old_verifier_is_rejected(self):
         with mock.patch.object(tool, "provenance_gh", return_value="/trusted/gh"), \
@@ -215,7 +347,7 @@ class ReleaseCandidateTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="release-candidate-tests-")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         spec = importlib.util.spec_from_file_location("release_candidate", ROOT / "scripts/build_release_candidate.py")
         self.builder = importlib.util.module_from_spec(spec); spec.loader.exec_module(self.builder)
         self.builder.ROOT = self.root
@@ -260,6 +392,23 @@ class ReleaseCandidateTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.build()
         self.assertFalse((self.root / "dist").exists())
+
+    def test_portable_bundle_workflow_step_completes_all_asset_checksums(self):
+        self.build()
+        fixture = self.root / "attestation.json"; fixture.write_bytes(b'{"public":"fixture, not a signature"}')
+        workflow = (ROOT / ".github/workflows/release-provenance.yml").read_text()
+        step = workflow.split("      - name: Retain portable attestation evidence\n", 1)[1]
+        body = step.split("        run: |\n", 1)[1].split("      - name: Upload candidate", 1)[0]
+        subprocess.run(["bash", "-e", "-c", textwrap.dedent(body)], cwd=self.root,
+                       env=dict(os.environ, ATTESTATION_BUNDLE=str(fixture)), check=True)
+        destination = self.root / "dist"
+        rows = (destination / "SHA256SUMS").read_text().splitlines()
+        checksums = {name: digest for digest, name in (line.split("  ", 1) for line in rows)}
+        self.assertEqual(len(rows), len(checksums))
+        self.assertEqual(set(checksums), {p.name for p in destination.iterdir() if p.name != "SHA256SUMS"})
+        self.assertEqual(len(checksums), 9)
+        for name, digest in checksums.items():
+            self.assertEqual(hashlib.sha256((destination / name).read_bytes()).hexdigest(), digest)
 
 
 if __name__ == "__main__":

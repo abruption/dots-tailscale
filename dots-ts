@@ -336,8 +336,21 @@ def retry_headers(headers, now=None):
     return result
 
 
+PROVENANCE_ERRORS = frozenset({
+    "legacy_exception_not_applicable", "legacy_operator_review_required",
+    "provenance_evidence_invalid", "provenance_evidence_required", "provenance_metadata_invalid",
+    "provenance_policy_mismatch", "provenance_source_digest_mismatch", "provenance_tag_mismatch",
+    "provenance_trusted_root_required", "provenance_trusted_root_unsafe",
+    "provenance_verification_failed", "provenance_verifier_output_limit", "provenance_verifier_timeout",
+    "provenance_verifier_unavailable", "provenance_verifier_unsafe", "provenance_verifier_version_unsupported",
+})
+
+
 class ProvenanceError(Exception):
     """Sanitized, fixed-policy verification failure; never an unsigned fallback."""
+    def __init__(self, code):
+        self.code = code if isinstance(code, str) and code in PROVENANCE_ERRORS else "provenance_evidence_invalid"
+        super().__init__(self.code)
 
 
 def provenance_run(argv, cwd, env, limit=PROVENANCE_LIMIT, timeout=PROVENANCE_TIMEOUT):
@@ -375,21 +388,47 @@ def provenance_run(argv, cwd, env, limit=PROVENANCE_LIMIT, timeout=PROVENANCE_TI
             process.stdout.close()
 
 
+def provenance_safe_path(path, forbidden_directories=()):
+    """Bind a canonical file path to ancestors other UIDs cannot replace.
+
+    Root/the operator can still change their own files and are trusted here.
+    A trusted sticky directory protects a trusted-owned immediate child, so
+    private operator directories inside /tmp do not need an unsafe exception.
+    """
+    path = pathlib.Path(path)
+    if not path.is_absolute():
+        raise ValueError("unsafe_provenance_path")
+    canonical = path.resolve(strict=True)
+    if any(pathlib.Path(folder).resolve() in (canonical,) + tuple(canonical.parents)
+           for folder in forbidden_directories):
+        raise ValueError("unsafe_provenance_path")
+    owners = (0, os.getuid())
+    ancestors = list(reversed(canonical.parents))
+    for index, parent in enumerate(ancestors):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in owners:
+            raise ValueError("unsafe_provenance_parent")
+        if info.st_mode & 0o022:
+            child = ancestors[index + 1] if index + 1 < len(ancestors) else canonical
+            if not info.st_mode & stat.S_ISVTX or child.lstat().st_uid not in owners:
+                raise ValueError("unsafe_provenance_parent")
+    info = canonical.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid not in owners or info.st_mode & 0o022:
+        raise ValueError("unsafe_provenance_file")
+    return canonical, info
+
+
 def provenance_gh(forbidden_directories=()):
     """Only use a preinstalled host verifier, never one supplied by a candidate."""
     found = shutil.which("gh")
     if not found:
         raise ProvenanceError("provenance_verifier_unavailable")
-    path = pathlib.Path(found).resolve()
     try:
-        info = path.stat()
-        if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
-            raise ProvenanceError("provenance_verifier_unsafe")
-        for directory in forbidden_directories:
-            if pathlib.Path(directory).resolve() in (path,) + tuple(path.parents):
-                raise ProvenanceError("provenance_verifier_unsafe")
+        path, _ = provenance_safe_path(found, forbidden_directories)
     except OSError:
         raise ProvenanceError("provenance_verifier_unavailable") from None
+    except (ValueError, TypeError, RuntimeError):
+        raise ProvenanceError("provenance_verifier_unsafe") from None
     return str(path)
 
 
@@ -399,19 +438,21 @@ def provenance_trusted_root(provenance_root, forbidden_directories=()):
         raise ProvenanceError("provenance_trusted_root_required")
     try:
         path = pathlib.Path(provenance_root)
-        resolved = path.resolve()
-        if not path.is_absolute() or path.is_symlink() or any(
-                pathlib.Path(folder).resolve() in (resolved,) + tuple(resolved.parents)
-                for folder in forbidden_directories):
+        if path.is_symlink():
             raise ProvenanceError("provenance_trusted_root_unsafe")
-        info = path.stat()
-        if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022:
-            raise ProvenanceError("provenance_trusted_root_unsafe")
-        raw = bounded_code_read(path.parent, path.name, PROVENANCE_LIMIT)
-        if not raw:
-            raise ProvenanceError("provenance_trusted_root_unsafe")
-        return raw
-    except (OSError, ValueError, TypeError):
+        canonical, expected = provenance_safe_path(path, forbidden_directories)
+        descriptor = os.open(str(canonical), os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as stream:
+            actual = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(actual.st_mode) or actual.st_uid not in (0, os.getuid())
+                    or actual.st_mode & 0o022
+                    or (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino)):
+                raise ProvenanceError("provenance_trusted_root_unsafe")
+            raw = stream.read(PROVENANCE_LIMIT + 1)
+            if not 0 < len(raw) <= PROVENANCE_LIMIT:
+                raise ProvenanceError("provenance_trusted_root_unsafe")
+            return raw
+    except (OSError, ValueError, TypeError, RuntimeError):
         raise ProvenanceError("provenance_trusted_root_unsafe") from None
 
 
@@ -1121,7 +1162,8 @@ class ApplyError(Exception):
 
 
 def apply_error_report(error):
-    if isinstance(error, (ApplyError, ProvenanceError)): code = str(error)
+    if isinstance(error, ApplyError): code = str(error)
+    elif isinstance(error, ProvenanceError): code = error.code
     elif isinstance(error, UpdateError): code = error.code
     else:
         try:

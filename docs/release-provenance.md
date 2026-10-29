@@ -19,6 +19,22 @@ bundle. A separately obtained Sigstore trust-root file must be supplied with
 `--provenance-root`. The updater rejects a root or verifier taken from the candidate
 directory or installation directory. Keep the independent root outside those
 directories, owned by the operator or root, without group/other write permission.
+Their canonical parent directories must also belong to the operator or root and
+must not allow group/other writes. A trusted sticky parent is allowed only when
+its immediate child is also operator/root-owned, as with a private directory in
+`/tmp`. The root's actual opened descriptor is checked and read once; the verifier
+is executed by its checked canonical path after these ancestor checks. These
+checks prevent replacement by other UIDs, not malicious changes by the operator
+or root, who remain part of the trust boundary.
+
+Some macOS Homebrew or external-volume paths have group-writable ancestors and
+are therefore refused by these embedded checks, even when the leaf file is
+read-only. This is a path-trust refusal, not a finding that the binary is malicious.
+Package apply and automatic execution already require Linux/pidfd support. For
+the separately reviewed first-upgrade bootstrap, an operator may use their own
+independently trusted `gh` directly, or prepare verified tools and roots under
+protected paths. The updater does not change host permissions or implicitly
+trust a writable administrator group to make a path pass.
 
 The verification policy is fixed in the currently trusted updater:
 
@@ -114,8 +130,10 @@ the original manifest and both source archives using a pinned GitHub action.
 The portable bundle is retained as `source-manifest.sigstore.json`.
 
 The resulting artifact has ten files: the existing eight release assets plus
-the descriptor and Sigstore bundle. `SHA256SUMS` covers the prepared files before
-the Sigstore bundle exists; the bundle authenticates itself through verification.
+the descriptor and Sigstore bundle. After copying the portable bundle, the workflow
+adds its checksum to `SHA256SUMS`, covering all nine other distributed files.
+These checksums provide distribution consistency, while the bundle authenticates
+itself through attestation verification.
 The workflow uploads a temporary Actions artifact for maintainer review. It does
 **not** create a GitHub Release, overwrite an existing release or deploy anything.
 The maintainer must inspect the exact run/source/tag, independently verify its
