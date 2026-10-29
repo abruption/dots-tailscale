@@ -13,7 +13,7 @@ upgrades (control "tailscale-control-protocol", DERP "DERP") are re-issued
 upstream as WebSockets and bridged to the client as a raw byte stream.
 Non-443 CONNECTs are passed through untouched.
 """
-import base64, hashlib, re, os, socket, ssl, struct, subprocess, threading, sys, urllib.parse, time
+import base64, hashlib, ipaddress, re, os, socket, ssl, struct, subprocess, threading, sys, urllib.parse, time
 
 UP = (os.environ.get("UPSTREAM_HOST", "browser-proxy"), int(os.environ.get("UPSTREAM_PORT", "8889")))
 LISTEN = ("127.0.0.1", int(os.environ.get("SHIM_PORT", "18089")))
@@ -25,14 +25,45 @@ SETUP_TIMEOUT = 15
 MAX_HEADER_BYTES = 65536
 lock = threading.Lock()
 up_ctx = ssl.create_default_context(); up_ctx.set_alpn_protocols(["http/1.1"])
+DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+
+def is_dns_name(host):
+    # LDH hostname grammar only: no path, subject or SAN metacharacters.
+    return 0 < len(host) <= 253 and all(DNS_LABEL.fullmatch(label) for label in host.split("."))
+
+def parse_connect_target(target):
+    """Validate an authority-form CONNECT target before any networking.
+
+    The host reaches certificate identity fields, so reject rather than sanitize.
+    """
+    host, separator, port = target.rpartition(":")
+    if not separator or not re.fullmatch(r"[1-9][0-9]{0,4}", port) or int(port) > 65535:
+        raise OSError("invalid CONNECT target port")
+    if is_dns_name(host):
+        return host, port
+    # Bracketed IPv6 literals are only passed through; no local certificate is issued.
+    if port != "443" and host.startswith("[") and host.endswith("]") and "%" not in host:
+        try:
+            ipaddress.IPv6Address(host[1:-1])
+            return host, port
+        except ValueError:
+            pass
+    raise OSError("invalid CONNECT target host")
+
+def cert_paths(host):
+    # Host-independent cache names: CONNECT text never reaches a filesystem path.
+    base = os.path.join(CERTS, hashlib.sha256(host.encode("ascii")).hexdigest())
+    return base + ".crt", base + ".key", base + ".ext"
 
 def leaf(host):
-    crt, key = os.path.join(CERTS, host + ".crt"), os.path.join(CERTS, host + ".key")
+    if not is_dns_name(host):
+        raise OSError("invalid certificate host")
+    crt, key, ext = cert_paths(host)
     with lock:
         os.makedirs(CERTS, mode=0o700, exist_ok=True)
         if not os.path.exists(crt):
-            ext = os.path.join(CERTS, host + ".ext")
-            open(ext, "w").write(f"subjectAltName=DNS:{host}\nextendedKeyUsage=serverAuth\n")
+            with open(ext, "w") as extfile:
+                extfile.write(f"subjectAltName=DNS:{host}\nextendedKeyUsage=serverAuth\n")
             subprocess.run(["openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
                             "-nodes", "-keyout", key, "-subj", f"/CN={host}", "-out", crt + ".csr"], check=True, capture_output=True)
             subprocess.run(["openssl", "x509", "-req", "-in", crt + ".csr", "-CA", f"{D}/ca.crt", "-CAkey", f"{D}/ca.key",
@@ -262,7 +293,11 @@ def handle(c):
         if method != "CONNECT":
             c.sendall(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n")
             return
-        host, port = target.rsplit(":", 1)
+        try:
+            host, port = parse_connect_target(target)
+        except OSError:
+            c.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+            raise
         u, upstream_initial = upstream_connect(target)
         if port == "443" and upstream_initial:
             # An upstream TLS server cannot send handshake records until this
