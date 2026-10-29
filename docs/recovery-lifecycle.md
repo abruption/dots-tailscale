@@ -22,7 +22,8 @@ stop automatic execution. It never installs missing files, authenticates,
 re-registers a node, regenerates keys or changes tailnet policy. Independent access
 to the cloud terminal remains necessary for manual recovery.
 
-The local watchdog handles visibly missing components in the same boot. A missing
+The local watchdog can invoke the existing startup for visibly missing components
+in the same boot when that startup can safely proceed. A missing
 SSH component with an otherwise running daemon/shim is classified separately.
 `Running` and an SSH banner on loopback port 22 are local readiness only. They do
 not prove an authenticated SSH session, DERP reachability or external recovery.
@@ -30,6 +31,59 @@ An unknown/unresponsive backend or an existing SSH process with no valid banner
 is not treated as permission to keep restarting it.
 `NoState` can be a transient startup state. It is reported as unknown, not as a
 definitive diagnosis that the user must log in again.
+
+A crashed daemon can leave a Unix socket file behind. The existing startup
+deliberately refuses an unidentified existing socket. With default settings the
+coordinator also leaves such a file alone and reports unknown; default watchdog
+support must not be read as automatic recovery from every daemon crash.
+
+### Optional managed stale-socket recovery
+
+While the installation is healthy, an operator can separately enable this narrow
+runtime-file cleanup mode:
+
+```bash
+/workspace/.dots-tailscale/dots-ts recovery configure \
+  --enable --managed-socket-cleanup --json
+/workspace/.dots-tailscale/dots-ts recovery status --json
+```
+
+Check both `managed_socket.enabled` and `managed_socket.tracking_available` before
+expecting this kind of daemon-crash repair. They reveal no registry PID or socket
+inode. Tracking means prior ownership evidence is available in the same context,
+not current cleanup authority. Enabling after an untracked crash does not invent
+that evidence. Disable the mode with `--no-managed-socket-cleanup`; disabling
+retains the prior record but makes it unusable for cleanup. A failed healthy
+ownership capture invalidates tracking rather than pretending the daemon/socket
+was identified. Attempt history, unknown fences and shared budgets are retained.
+
+Healthy configuration, watchdog startup/checks and successful local recovery can
+capture a uniquely identified installed daemon and a listening Unix kernel inode
+held by one of its file descriptors. The private registry stores only that
+process identity, boot ID, network/PID/mount namespace identities, private runtime
+directory identity and socket file metadata; no daemon arguments, environment,
+node state or keys are stored. Status reads do not refresh or create this record.
+
+Cleanup requires all of that prior evidence to match, in the same boot and
+namespaces, the original process to be proven exited, no current expected daemon,
+unchanged socket metadata, and no active Unix kernel socket with either the
+registered inode or the path. Missing/untracked/changed files, another namespace,
+a new boot, an active socket or an uninspectable process/table remains unknown.
+Connection refusal alone is never proof that a socket can be removed.
+
+After checking the shared attempt budget, the helper takes the package operation
+lock, repeats preflight and the complete stale proof, and durably records a
+`socket_cleanup=intent` before removing only the checked `tailscaled.sock` through
+the verified private directory descriptor. It records `removed`, releases that
+lock, then invokes the unchanged installed `start.sh`, which acquires its own
+lock. An interruption or failed result write leaves the attempt fenced; a new ID
+does not authorize another cleanup/start. The original startup's unidentified
+socket guard remains unchanged, as does legacy direct-start behavior.
+
+The added physical Linux fixture binds a Unix socket using a compiled dummy
+configured executable, verifies its real `/proc` identity/FD ownership, kills only
+that fixture, and exercises the cleanup ordering with a staged startup stub.
+It is not a Tailscale-node, credential, real-Dots or production-outage test.
 
 Stop any older private watchdog using its own reviewed procedure before enabling
 the packaged watchdog. Both automatic actors must use this entry point for the
@@ -91,7 +145,9 @@ freshness and update fences still apply at execution time.
 /workspace/.dots-tailscale/dots-ts recovery stop --json
 ```
 
-An accepted stop is durable. If a stop/configuration command returns
+An accepted stop is durable. Under the current coordination policy, a configured
+global recovery stop also holds automatic package updates; it does not prevent a
+separately authorized manual update. If a stop/configuration command returns
 `recovery_busy`, its change has not been persisted: read fresh status and retry
 the stop; do not assume the watchdog or recovery was disabled. A command that
 has already started can finish, while later

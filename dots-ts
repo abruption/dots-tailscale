@@ -2770,7 +2770,8 @@ def recovery_default():
             'restart_after_external': False, 'max_attempts_24h': 3,
             'cooldown_seconds': 3600, 'timeout_seconds': 60,
             'interval_seconds': 60, 'last_clock': 0,
-            'watchdog': None, 'attempts': []}
+            'watchdog': None, 'attempts': [], 'managed_socket_cleanup': False,
+            'managed_socket': None}
 
 
 def recovery_identifier(value):
@@ -2790,11 +2791,25 @@ def recovery_identity_valid(value):
 
 
 def recovery_validate(state):
+    # Additive schema-1 extension: old ledgers keep every attempt and their
+    # disabled-by-default policy. No missing history or budget is recreated.
+    if isinstance(state, dict):
+        state = dict(state)
+        state.setdefault('managed_socket_cleanup', False)
+        state.setdefault('managed_socket', None)
+        if isinstance(state.get('attempts'), list):
+            state['attempts'] = [dict(row, socket_cleanup=row.get('socket_cleanup', 'none'))
+                                 if isinstance(row, dict) else row for row in state['attempts']]
     default = recovery_default()
     if not isinstance(state, dict) or set(state) != set(default) or type(state['schema']) is not int or state['schema'] != 1:
         raise RecoveryError('invalid_recovery_state')
-    if any(type(state[key]) is not bool for key in ('enabled', 'watchdog_wanted', 'restart_after_external')):
+    if any(type(state[key]) is not bool for key in ('enabled', 'watchdog_wanted', 'restart_after_external', 'managed_socket_cleanup')):
         raise RecoveryError('invalid_recovery_state')
+    registry = state['managed_socket']
+    if registry is not None:
+        recovery_validate_managed_socket(registry)
+        if registry['captured_at'] > state['last_clock']:
+            raise RecoveryError('invalid_recovery_state')
     for key, low, high in (('max_attempts_24h', 1, 12), ('cooldown_seconds', 60, 86400),
                            ('timeout_seconds', 10, 120), ('interval_seconds', 15, 300)):
         if type(state[key]) is not int or not low <= state[key] <= high:
@@ -2805,7 +2820,7 @@ def recovery_validate(state):
     previous_time = -1
     for row in state['attempts']:
         keys = {'id', 'actor', 'reason', 'boot_id', 'created_at', 'finished_at', 'state',
-                'exit_code', 'external_confirmation', 'executor', 'child', 'counted', 'reconciled'}
+                'exit_code', 'external_confirmation', 'executor', 'child', 'counted', 'reconciled', 'socket_cleanup'}
         if (not isinstance(row, dict) or set(row) != keys or not recovery_identifier(row['id'])
                 or row['id'] in seen or row['actor'] not in ('watchdog', 'external')
                 or row['reason'] not in ('components_missing', 'ssh_only', 'external_outage', 'healthy')
@@ -2815,6 +2830,7 @@ def recovery_validate(state):
                 or row['exit_code'] is not None and (type(row['exit_code']) is not int or not -255 <= row['exit_code'] <= 255)
                 or row['external_confirmation'] != 'pending' or type(row['counted']) is not bool
                 or type(row['reconciled']) is not bool
+                or row['socket_cleanup'] not in ('none', 'intent', 'removed')
                 or any(row[key] is not None and not recovery_identity_valid(row[key]) for key in ('executor', 'child'))):
             raise RecoveryError('invalid_recovery_state')
         if row['state'] == 'running' and (row['finished_at'] is not None or not row['counted']):
@@ -2863,7 +2879,7 @@ def recovery_read(folder):
 
 
 def recovery_write(folder, state):
-    recovery_validate(state)
+    state = recovery_validate(state)
     raw = json.dumps(state, sort_keys=True).encode('ascii')
     if len(raw) > RECOVERY_STATE_LIMIT:
         raise RecoveryError('recovery_ledger_full')
@@ -2962,12 +2978,187 @@ def recovery_summary(state, boot):
             'manual_review_required': pending, 'external_confirmation': 'pending',
             'blocked_reason': blocked_reason, 'next_allowed_at': next_allowed_at,
             'admission_scope': 'advisory_local_ledger_only_fresh_run_rechecks_all_conditions',
+            'managed_socket': {'enabled': state['managed_socket_cleanup'],
+                               'tracking_available': recovery_managed_tracking(state, boot),
+                               'scope': 'prior_healthy_ownership_only_not_cleanup_authority'},
             'last_attempt': recovery_result(state['attempts'][-1]) if state['attempts'] else None}
 
 
 def recovery_result(row):
     return {key: row[key] for key in ('id', 'actor', 'reason', 'state', 'created_at', 'finished_at',
-                                     'exit_code', 'external_confirmation', 'reconciled')}
+                                     'exit_code', 'external_confirmation', 'reconciled', 'socket_cleanup')}
+
+
+def recovery_validate_managed_socket(registry):
+    number = lambda value: type(value) is int and 0 <= value < 2 ** 64
+    if (not isinstance(registry, dict) or set(registry) != {'boot_id', 'namespaces', 'daemon', 'runtime', 'socket', 'kernel_inode', 'captured_at'}
+            or not recovery_identifier(registry['boot_id']) or not recovery_identity_valid(registry['daemon'])
+            or not recovery_time(registry['captured_at'])
+            or not isinstance(registry['kernel_inode'], str) or not re.fullmatch(r'[1-9][0-9]{0,29}', registry['kernel_inode'])):
+        raise RecoveryError('invalid_managed_socket_registry')
+    namespaces = registry['namespaces']
+    if not isinstance(namespaces, dict) or set(namespaces) != {'net', 'pid', 'mnt'}:
+        raise RecoveryError('invalid_managed_socket_registry')
+    for identity in list(namespaces.values()) + [registry['runtime']]:
+        if (not isinstance(identity, dict) or set(identity) != {'dev', 'ino'}
+                or not all(number(value) for value in identity.values())):
+            raise RecoveryError('invalid_managed_socket_registry')
+    sock = registry['socket']
+    if (not isinstance(sock, dict) or set(sock) != {'dev', 'ino', 'ctime_ns', 'mode', 'uid', 'gid', 'nlink'}
+            or not all(number(value) for value in sock.values())
+            or not stat.S_ISSOCK(sock['mode']) or sock['uid'] != os.getuid() or sock['nlink'] != 1):
+        raise RecoveryError('invalid_managed_socket_registry')
+
+
+def recovery_namespaces(pid='self'):
+    result = {}
+    for name in ('net', 'pid', 'mnt'):
+        info = pathlib.Path('/proc/{}/ns/{}'.format(pid, name)).stat()
+        result[name] = {'dev': info.st_dev, 'ino': info.st_ino}
+    return result
+
+
+def recovery_unix_sockets():
+    # /proc/self/net is explicitly the caller's current network namespace.
+    with open('/proc/self/net/unix', 'rb') as stream:
+        raw = stream.read(2 * 1024 * 1024 + 1)
+    if len(raw) > 2 * 1024 * 1024:
+        raise RecoveryError('managed_socket_inspection_unknown')
+    lines = raw.decode('utf-8', 'strict').splitlines()
+    if not lines or not lines[0].split()[:7] == ['Num', 'RefCount', 'Protocol', 'Flags', 'Type', 'St', 'Inode']:
+        raise RecoveryError('managed_socket_inspection_unknown')
+    result = []
+    for line in lines[1:]:
+        fields = line.split(None, 7)
+        if len(fields) < 7 or not re.fullmatch(r'[0-9]{1,30}', fields[6]):
+            raise RecoveryError('managed_socket_inspection_unknown')
+        result.append({'inode': fields[6], 'path': fields[7] if len(fields) == 8 else None,
+                       'listener': bool(int(fields[3], 16) & 0x10000) and int(fields[4], 16) == socket.SOCK_STREAM})
+    return result
+
+
+def recovery_socket_metadata(runtime):
+    apply_private(runtime)
+    parent = runtime.stat()
+    info = (runtime / 'tailscaled.sock').lstat()
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+        raise RecoveryError('unsafe_daemon_socket')
+    return ({'dev': parent.st_dev, 'ino': parent.st_ino},
+            {'dev': info.st_dev, 'ino': info.st_ino, 'ctime_ns': info.st_ctime_ns,
+             'mode': info.st_mode, 'uid': info.st_uid, 'gid': info.st_gid, 'nlink': info.st_nlink})
+
+
+def recovery_capture_managed_socket(directory, runtime, now):
+    """Return proven healthy ownership metadata, or no registry. Never infer it."""
+    try:
+        import dots_proxy as proxy
+        daemon = proxy._daemon(directory, runtime)
+        if daemon is None:
+            return None
+        identity = recovery_identity(daemon['pid'])
+        if (identity is None or identity['ticks'] != daemon['ticks']
+                or identity['exe'] != str(directory / 'tailscaled')):
+            return None
+        namespaces = recovery_namespaces()
+        if recovery_namespaces(daemon['pid']) != namespaces:
+            return None
+        parent, metadata = recovery_socket_metadata(runtime)
+        rows = [row for row in recovery_unix_sockets()
+                if row['path'] == str(runtime / 'tailscaled.sock') and row['listener']]
+        if len(rows) != 1:
+            return None
+        target = 'socket:[{}]'.format(rows[0]['inode'])
+        owned = False
+        for entry in pathlib.Path('/proc/{}/fd'.format(daemon['pid'])).iterdir():
+            try:
+                if os.readlink(str(entry)) == target:
+                    owned = True
+            except FileNotFoundError:
+                continue  # unrelated short-lived accepted descriptors may close
+        if (not owned or recovery_identity(daemon['pid']) != identity
+                or recovery_namespaces() != namespaces
+                or recovery_socket_metadata(runtime) != (parent, metadata)):
+            return None
+        registry = {'boot_id': recovery_boot(), 'namespaces': namespaces, 'daemon': identity,
+                    'runtime': parent, 'socket': metadata, 'kernel_inode': rows[0]['inode'], 'captured_at': now}
+        recovery_validate_managed_socket(registry)
+        return registry
+    except Exception:
+        return None
+
+
+def recovery_refresh_managed_socket(state, directory, runtime, now):
+    if not state['managed_socket_cleanup']:
+        return False
+    registry = recovery_capture_managed_socket(directory, runtime, now)
+    old = state['managed_socket']
+    if registry is not None and old is not None and dict(registry, captured_at=old['captured_at']) == old:
+        return False
+    if old == registry:
+        return False
+    state['managed_socket'] = registry
+    state['last_clock'] = now
+    return True
+
+
+def recovery_managed_tracking(state, boot):
+    registry = state.get('managed_socket')
+    try:
+        return bool(state['managed_socket_cleanup'] and registry is not None
+                    and registry['boot_id'] == boot and registry['namespaces'] == recovery_namespaces())
+    except Exception:
+        return False
+
+
+def recovery_managed_socket_stale(directory, runtime, state):
+    """Positive same-context exit/absence proof; any failed inspection refuses."""
+    import dots_proxy as proxy
+    apply_private(directory)
+    for relative in ('state', 'shim', 'sshd'):
+        apply_private(directory / relative)
+    registry = state.get('managed_socket')
+    if not state.get('managed_socket_cleanup') or registry is None:
+        raise RecoveryError('managed_socket_not_tracked')
+    recovery_validate_managed_socket(registry)
+    if registry['daemon']['exe'] != str(directory / 'tailscaled'):
+        raise RecoveryError('managed_socket_context_changed')
+    if registry['boot_id'] != recovery_boot() or registry['namespaces'] != recovery_namespaces():
+        raise RecoveryError('managed_socket_context_changed')
+    if recovery_socket_metadata(runtime) != (registry['runtime'], registry['socket']):
+        raise RecoveryError('managed_socket_changed')
+    original = registry['daemon']
+    current = recovery_identity(original['pid'])
+    if current is not None and current['ticks'] == original['ticks']:
+        raise RecoveryError('managed_socket_owner_not_proven_exited')
+    if process_checks(directory).get('tailscaled') != 'not_running' or proxy._daemon(directory, runtime) is not None:
+        raise RecoveryError('managed_socket_daemon_not_proven_absent')
+    for row in recovery_unix_sockets():
+        if row['inode'] == registry['kernel_inode'] or row['path'] == str(runtime / 'tailscaled.sock'):
+            raise RecoveryError('managed_socket_still_active')
+    if (recovery_namespaces() != registry['namespaces']
+            or recovery_socket_metadata(runtime) != (registry['runtime'], registry['socket'])):
+        raise RecoveryError('managed_socket_changed')
+    return registry
+
+
+def recovery_remove_managed_socket(directory, runtime, state):
+    registry = recovery_managed_socket_stale(directory, runtime, state)
+    # Caller holds the shared package operation lock. An owned directory FD
+    # also keeps the unlink tied to the checked private runtime directory.
+    descriptor = os.open(str(runtime), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parent = os.fstat(descriptor)
+        if {'dev': parent.st_dev, 'ino': parent.st_ino} != registry['runtime']:
+            raise RecoveryError('managed_socket_changed')
+        info = os.stat('tailscaled.sock', dir_fd=descriptor, follow_symlinks=False)
+        metadata = {'dev': info.st_dev, 'ino': info.st_ino, 'ctime_ns': info.st_ctime_ns,
+                    'mode': info.st_mode, 'uid': info.st_uid, 'gid': info.st_gid, 'nlink': info.st_nlink}
+        if metadata != registry['socket']:
+            raise RecoveryError('managed_socket_changed')
+        os.unlink('tailscaled.sock', dir_fd=descriptor)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def recovery_update_fence(directory):
@@ -3050,6 +3241,7 @@ def recovery_preflight(directory, runtime):
         if (directory / relative).exists() or (directory / relative).is_symlink():
             raise RecoveryError('runtime_update_blocks_recovery')
     recovery_automatic_fence(directory)
+    recovery_environment(directory)
 
 
 def recovery_capture(argv):
@@ -3084,12 +3276,21 @@ def recovery_capture(argv):
             process.stdout.close()
 
 
-def recovery_probe(directory, runtime):
+def recovery_probe(directory, runtime, managed_state=None):
     processes = process_checks(directory)
     sock = socket_status(runtime / 'tailscaled.sock')
     if any(value == 'unknown' for value in processes.values()) or sock not in ('present', 'missing'):
         return {'state': 'unknown', 'backend': 'unknown', 'ssh': 'unknown'}
     backend = 'unavailable'
+    if processes.get('tailscaled') == 'not_running' and sock == 'present':
+        try:
+            state = managed_state if managed_state is not None else recovery_read(recovery_folder(directory))
+            recovery_managed_socket_stale(directory, runtime, state)
+        except Exception:
+            return {'state': 'unknown', 'backend': backend, 'ssh': 'unknown',
+                    'managed_socket_cleanup': 'manual_required'}
+        return {'state': 'components_missing', 'backend': backend, 'ssh': 'unavailable',
+                'managed_socket_cleanup': 'eligible'}
     if sock == 'present':
         value = recovery_capture([str(directory / 'tailscale'), '--socket=' + str(runtime / 'tailscaled.sock'), 'status', '--json'])
         if not isinstance(value, dict) or not isinstance(value.get('BackendState'), str):
@@ -3156,7 +3357,8 @@ def recovery_run(directory, runtime, options):
             if any(row['state'] in ('running', 'unknown') for row in state['attempts']):
                 raise RecoveryError('unknown_result_requires_reconciliation')
             recovery_preflight(directory, runtime)
-            local = recovery_probe(directory, runtime)
+            environment = recovery_environment(directory)
+            local = recovery_probe(directory, runtime, state)
             if local['state'] == 'authentication_required':
                 raise RecoveryError('authentication_requires_manual_review')
             if local['state'] not in ('healthy', 'components_missing', 'ssh_only'):
@@ -3170,6 +3372,8 @@ def recovery_run(directory, runtime, options):
                 if counted and now < counted[-1]['created_at'] + state['cooldown_seconds']:
                     raise RecoveryError('shared_cooldown')
             if local['state'] == 'healthy' and options.actor == 'watchdog':
+                if recovery_refresh_managed_socket(state, directory, runtime, now):
+                    recovery_write(folder, state)
                 return {'state': 'healthy', 'external_confirmation': 'pending', 'counted': False}
             if len(state['attempts']) >= RECOVERY_MAX_RECORDS:
                 raise RecoveryError('recovery_ledger_full')
@@ -3177,24 +3381,38 @@ def recovery_run(directory, runtime, options):
                    'reason': local['state'] if options.actor == 'watchdog' or local['state'] == 'healthy' else 'external_outage',
                    'boot_id': boot, 'created_at': now, 'finished_at': None, 'state': 'running',
                    'exit_code': None, 'external_confirmation': 'pending', 'executor': recovery_identity(os.getpid()),
-                   'child': None, 'counted': True, 'reconciled': False}
+                   'child': None, 'counted': True, 'reconciled': False, 'socket_cleanup': 'none'}
             state['last_clock'] = now
             state['attempts'].append(row)
             if local['state'] == 'healthy':
+                recovery_refresh_managed_socket(state, directory, runtime, now)
                 row.update(state='skipped_healthy', finished_at=now, counted=False)
                 recovery_write(folder, state)
                 return dict(recovery_result(row), local=local)
-            # Probe the package lock, then release it: start.sh must take that
-            # same lock itself. Holding it across the child would deadlock.
+            # A managed stale socket is the only runtime file this helper may
+            # remove. Journal before mutation and recheck ownership/absence
+            # under the same operation lock used by startup and updates.
             with recovery_lock(directory, '.operation.lock'):
-                pass
-            recovery_write(folder, state)
+                recovery_preflight(directory, runtime)
+                if local.get('managed_socket_cleanup') == 'eligible':
+                    row['socket_cleanup'] = 'intent'
+                    recovery_write(folder, state)
+                    try:
+                        recovery_remove_managed_socket(directory, runtime, state)
+                        state['managed_socket'] = None
+                        row['socket_cleanup'] = 'removed'
+                        recovery_write(folder, state)
+                    except Exception:
+                        raise RecoveryError('execution_or_journal_uncertain') from None
+                else:
+                    recovery_write(folder, state)
+            # start.sh must acquire this lock itself. Never hold it across Popen.
             process = None
             try:
                 process = subprocess.Popen(['/bin/bash', str(directory / 'start.sh')],
                                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                            stderr=subprocess.DEVNULL, close_fds=True,
-                                           start_new_session=True, env=recovery_environment(directory))
+                                           start_new_session=True, env=environment)
                 row['child'] = recovery_identity(process.pid)
                 recovery_write(folder, state)
             except Exception:
@@ -3229,6 +3447,8 @@ def recovery_run(directory, runtime, options):
                 row = next(item for item in state['attempts'] if item['id'] == options.request_id)
                 row.update(state=outcome, finished_at=now, exit_code=code)
                 state['last_clock'] = now
+                if outcome == 'local_ready':
+                    recovery_refresh_managed_socket(state, directory, runtime, now)
                 recovery_write(folder, state)
                 result = dict(recovery_result(row), local_result_only=True,
                               external_claim_validation='caller_asserted_structure_and_freshness_only' if options.actor == 'external' else 'not_applicable')
@@ -3269,7 +3489,8 @@ def recovery_configure(directory, runtime, options):
         recovery_clock(state)
         for option, key in (('enabled', 'enabled'), ('max_attempts', 'max_attempts_24h'),
                             ('cooldown_seconds', 'cooldown_seconds'), ('timeout_seconds', 'timeout_seconds'),
-                            ('interval_seconds', 'interval_seconds'), ('restart_after_external', 'restart_after_external')):
+                            ('interval_seconds', 'interval_seconds'), ('restart_after_external', 'restart_after_external'),
+                            ('managed_socket_cleanup', 'managed_socket_cleanup')):
             value = getattr(options, option, None)
             if value is not None:
                 state[key] = value
@@ -3279,6 +3500,13 @@ def recovery_configure(directory, runtime, options):
         if state['enabled']:
             recovery_preflight(directory, runtime)
         state['last_clock'] = int(time.time())
+        if state['enabled'] and state['managed_socket_cleanup']:
+            try:
+                healthy = recovery_probe(directory, runtime, state)['state'] == 'healthy'
+            except Exception:
+                healthy = False
+            if healthy:
+                recovery_refresh_managed_socket(state, directory, runtime, state['last_clock'])
         recovery_write(folder, state)
         return recovery_summary(state, recovery_boot())
 
@@ -3351,6 +3579,7 @@ def recovery_watchdog_start(directory, runtime, explicit=True):
         if not explicit and (not state['watchdog_wanted'] or not state['restart_after_external']):
             return {'state': 'not_requested_or_stopped'}
         recovery_preflight(directory, runtime)
+        environment = recovery_environment(directory)
         boot = recovery_boot()
         status = recovery_worker_status(state['watchdog'], boot)
         if status == 'running':
@@ -3372,6 +3601,13 @@ def recovery_watchdog_start(directory, runtime, explicit=True):
                 raise RecoveryError('watchdog_previous_worker_exiting') from None
             raise
         state['watchdog_wanted'] = True
+        if state['managed_socket_cleanup']:
+            try:
+                healthy = recovery_probe(directory, runtime, state)['state'] == 'healthy'
+            except Exception:
+                healthy = False
+            if healthy:
+                recovery_refresh_managed_socket(state, directory, runtime, recovery_clock(state))
         identifier = uuid.uuid4().hex
         state['watchdog'] = {'id': identifier, 'boot_id': boot, 'identity': None, 'state': 'starting',
                              'code_hash': hashlib.sha256(bounded_code_read(directory, 'dots-ts', 8 * 1024 * 1024)).hexdigest()}
@@ -3380,7 +3616,7 @@ def recovery_watchdog_start(directory, runtime, explicit=True):
                                     'recovery', '_watchdog', '--id', identifier],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
-                                   env=recovery_environment(directory))
+                                   env=environment)
         identity = recovery_identity(process.pid)
         if identity is None:
             raise RecoveryError('watchdog_start_uncertain')
@@ -3485,6 +3721,9 @@ def recovery_main(argv, directory, runtime):
     restart = configure.add_mutually_exclusive_group()
     restart.add_argument('--restart-watchdog-after-external', dest='restart_after_external', action='store_const', const=True, default=None)
     restart.add_argument('--no-restart-watchdog-after-external', dest='restart_after_external', action='store_const', const=False)
+    managed = configure.add_mutually_exclusive_group()
+    managed.add_argument('--managed-socket-cleanup', dest='managed_socket_cleanup', action='store_const', const=True, default=None)
+    managed.add_argument('--no-managed-socket-cleanup', dest='managed_socket_cleanup', action='store_const', const=False)
     run = commands.add_parser('run')
     run.add_argument('--actor', choices=('watchdog', 'external'), required=True)
     run.add_argument('--request-id', required=True)
