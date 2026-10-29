@@ -339,19 +339,35 @@ class AdmissionTests(unittest.TestCase):
 
     def test_non_socket_websocket_worker_error_wakes_parent_and_returns_slot(self):
         admission = shim.ConnectionAdmission(1)
-        conn = ScriptedSocket([b"CONNECT example.test:443 HTTP/1.1\r\n\r\n",
-                               b"GET /derp HTTP/1.1\r\nHost: example.test\r\nUpgrade: DERP\r\n\r\n"], wait_at_eof=True)
+        waiting, woke, guard_expired = threading.Event(), threading.Event(), threading.Event()
+        class WakeupSocket(ScriptedSocket):
+            def recv(self, size):
+                if self.chunks:
+                    return super().recv(size)
+                waiting.set()
+                if not self.closed.wait(1):
+                    guard_expired.set()
+                    raise AssertionError('parent safety timeout; worker did not wake it')
+                woke.set()
+                return b''
+        conn = WakeupSocket([b"CONNECT example.test:443 HTTP/1.1\r\n\r\n",
+                             b"GET /derp HTTP/1.1\r\nHost: example.test\r\nUpgrade: DERP\r\n\r\n"], wait_at_eof=True)
         upstream = ScriptedSocket([valid_response], wait_at_eof=True)
         exceptions = []
+        def fail_receiver(*args):
+            self.assertTrue(waiting.wait(WAIT), 'parent must be blocked before the worker fails')
+            raise MemoryError('controlled fixture')
         with self.track_threads(), \
                 mock.patch.object(shim.threading, 'excepthook', side_effect=lambda args: exceptions.append(args.exc_type)), \
-                mock.patch.object(shim, 'recv_exact', side_effect=MemoryError('controlled fixture')), \
+                mock.patch.object(shim, 'recv_exact', side_effect=fail_receiver), \
                 mock.patch.object(shim, "upstream_connect", return_value=(upstream, b"")), \
                 mock.patch.object(shim, "leaf", return_value=IdentityTLS()), \
                 mock.patch.object(shim, "up_ctx", IdentityTLS()):
             self.assertTrue(admission.dispatch(conn))
             self.joined()
             self.assertEqual(exceptions, [MemoryError])
+            self.assertFalse(guard_expired.is_set(), 'parent safety timeout must not masquerade as cleanup')
+            self.assertTrue(woke.is_set(), 'parent must wake via worker shutdown')
             self.assertTrue(conn.closed.is_set())
             self.assertTrue(upstream.closed.is_set())
         with self.track_threads():

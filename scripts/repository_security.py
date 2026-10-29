@@ -78,6 +78,7 @@ def policy_matches(protection, expected):
                 and protection["required_pull_request_reviews"]["dismiss_stale_reviews"] is True
                 and protection["required_pull_request_reviews"]["require_code_owner_reviews"] is False
                 and protection["required_pull_request_reviews"]["require_last_push_approval"] is False
+                # GitHub omits this optional field when push restrictions are unset.
                 and protection.get("restrictions") is None
                 and protection["enforce_admins"]["enabled"] is False
                 and protection["required_conversation_resolution"]["enabled"] is True
