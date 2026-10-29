@@ -111,6 +111,17 @@ class RepositoryPolicyTests(unittest.TestCase):
             self.assertTrue(caught.exception.mutation_attempted)
             self.assertEqual(caught.exception.phase, 'effective_readback')
 
+    def test_github_optional_restrictions_omission_is_distinct_from_required_fields(self):
+        self.calls, self.protected = [], True
+        response = self.api('/branches/main/protection')
+        response.pop('restrictions')
+        self.assertTrue(tool.policy_matches(response, self.policy))
+        for name in ('required_status_checks', 'required_pull_request_reviews', 'enforce_admins',
+                     'required_conversation_resolution', 'allow_force_pushes', 'allow_deletions'):
+            malformed = copy.deepcopy(response)
+            malformed.pop(name)
+            self.assertFalse(tool.policy_matches(malformed, self.policy))
+
 
 if __name__ == "__main__":
     unittest.main()
