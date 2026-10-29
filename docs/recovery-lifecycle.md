@@ -53,7 +53,8 @@ expecting this kind of daemon-crash repair. They reveal no registry PID or socke
 inode. Tracking means prior ownership evidence is available in the same context,
 not current cleanup authority. Enabling after an untracked crash does not invent
 that evidence. Disable the mode with `--no-managed-socket-cleanup`; disabling
-retains the prior record but makes it unusable for cleanup. A failed healthy
+retains the prior record but prevents its use while disabled. Re-enabling can reuse
+that record only if every original proof still matches. A failed healthy
 ownership capture invalidates tracking rather than pretending the daemon/socket
 was identified. Attempt history, unknown fences and shared budgets are retained.
 
@@ -61,8 +62,12 @@ Healthy configuration, watchdog startup/checks and successful local recovery can
 capture a uniquely identified installed daemon and a listening Unix kernel inode
 held by one of its file descriptors. The private registry stores only that
 process identity, boot ID, network/PID/mount namespace identities, private runtime
-directory identity and socket file metadata; no daemon arguments, environment,
-node state or keys are stored. Status reads do not refresh or create this record.
+directory identity, kernel inode, capture time, daemon executable path and socket
+file metadata; no daemon arguments, environment,
+node state or keys are stored. An external `skipped_healthy` check can also refresh it. Status reads do not
+refresh or create this record. Tracking availability does not check current socket
+metadata; after a manual/runtime/proxy restart it may remain true until the next
+healthy refresh, while cleanup still refuses a mismatched file.
 
 Cleanup requires all of that prior evidence to match, in the same boot and
 namespaces, the original process to be proven exited, no current expected daemon,
@@ -80,10 +85,34 @@ lock. An interruption or failed result write leaves the attempt fenced; a new ID
 does not authorize another cleanup/start. The original startup's unidentified
 socket guard remains unchanged, as does legacy direct-start behavior.
 
+Even a rejection after the durable intent but before unlink leaves the attempt
+fenced and consumes its recorded budget. Inspect the particular attempt rather
+than assuming that no action occurred. Before choosing `not_executed` in manual
+reconciliation, establish that the socket was not removed and startup did not run;
+a surviving pathname alone does not establish its original identity.
+
+Process visibility and the bounded Unix table are conservative prerequisites.
+An unreadable same-UID process, invalid UTF-8 table path or table above 2 MiB can
+make recovery unknown. This mode does not promise cleanup in every Dots context.
+A previously abandoned automatic preparation can also be blocked by the nested
+operation-lock check during recovery. First use the proof-only
+[`update automatic abandon-preparation` procedure](automatic-updates.md#a-preparer-exits-before-staging),
+then request fresh recovery eligibility; do not delete either ledger.
+
+Older development code that rejects these additive ledger fields may refuse the
+new ledger after code rollback. Preserve the ledger and use compatible reviewed
+code; restoring an older ledger would rewind execution and budget evidence.
+
 The added physical Linux fixture binds a Unix socket using a compiled dummy
 configured executable, verifies its real `/proc` identity/FD ownership, kills only
-that fixture, and exercises the cleanup ordering with a staged startup stub.
-It is not a Tailscale-node, credential, real-Dots or production-outage test.
+that fixture, and exercises cleanup ordering with a staged startup stub. The full
+host inventory is checked separately: unknown visibility must preserve the socket.
+For the positive flow, the original process inspector enumerates only the
+controller and dummy fixture PIDs; entry contents and the separate PID identity,
+namespace, FD, Unix-table and socket metadata checks remain real. This controlled
+inventory is neither an actual isolated PID namespace nor evidence that the full
+CI host or a Dots context permits those observations. It is not a Tailscale-node,
+credential, real-Dots or production-outage test.
 
 Stop any older private watchdog using its own reviewed procedure before enabling
 the packaged watchdog. Both automatic actors must use this entry point for the
