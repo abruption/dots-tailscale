@@ -133,7 +133,8 @@ class UpdateCheckTests(unittest.TestCase):
 
     def test_offline_rate_tls_and_timeout_remain_sanitized(self):
         for code in ("offline", "rate_limited", "tls_error", "timeout", "invalid_metadata"):
-            with mock.patch.object(tool, "fetch_release", side_effect=tool.UpdateError(code)):
+            # Classify independent failures here; persistent backoff is covered separately.
+            with mock.patch.object(tool, "rate_limit_release", side_effect=tool.UpdateError(code)):
                 report = tool.update_check(self.directory)
             self.assertEqual(report["status"], "check_failed")
             self.assertEqual(report["error"], code)

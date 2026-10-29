@@ -149,9 +149,44 @@ UPDATE_ERRORS = {"invalid_version", "invalid_proxy", "invalid_url", "redirect_ho
 
 
 class UpdateError(Exception):
-    def __init__(self, code):
+    def __init__(self, code, retry=None, cached=False, storage_warning=False):
         self.code = code if isinstance(code, str) and code in UPDATE_ERRORS else "invalid_response"
+        self.retry = validated_retry(retry) if self.code == "rate_limited" else {}
+        self.cached = cached is True
+        self.storage_warning = storage_warning is True
         super().__init__(self.code)
+
+
+def validated_retry(value, now=None):
+    """Fixed numeric fields only; never expose arbitrary HTTP headers or text."""
+    now = int(time.time()) if now is None else now
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for key in ("retry_after_seconds", "rate_limit_reset", "retry_at"):
+        item = value.get(key)
+        if type(item) is not int:
+            continue
+        if key == "retry_after_seconds" and 0 <= item <= 86400:
+            result[key] = item
+        elif key != "retry_after_seconds" and now - 86400 <= item <= now + 86400:
+            result[key] = item
+    return result
+
+
+def retry_headers(headers, now=None):
+    now = int(time.time()) if now is None else now
+    result = {}
+    for header, field in (("Retry-After", "retry_after_seconds"),
+                          ("X-RateLimit-Reset", "rate_limit_reset")):
+        value = headers.get(header)
+        if isinstance(value, str) and re.fullmatch(r"[0-9]{1,12}", value):
+            result[field] = int(value)
+    result = validated_retry(result, now)
+    candidates = [result.get("rate_limit_reset", now), now + result.get("retry_after_seconds", 0)]
+    # Missing/invalid retry headers receive a bounded conservative minute, not success.
+    result["retry_at"] = max(now + 60, *candidates)
+    return result
 
 
 def stable_version(text):
@@ -232,8 +267,9 @@ def _network_fetch(url, proxy, limit):
         code = ("rate_limited" if error.code == 429 or error.code == 403 and
                 (error.headers.get("X-RateLimit-Remaining") == "0" or error.headers.get("Retry-After"))
                 else "not_found" if error.code == 404 else "http_error")
+        retry = retry_headers(error.headers) if code == "rate_limited" else None
         error.close()
-        raise UpdateError(code)
+        raise UpdateError(code, retry)
     except urllib.error.URLError as error:
         if isinstance(error.reason, ssl.SSLError):
             raise UpdateError("tls_error")
@@ -262,7 +298,7 @@ def fetch_bytes(url, proxy=None, limit=2097152, deadline=None):
         if not isinstance(reply, dict) or result.returncode:
             raise UpdateError("invalid_response")
         if "error" in reply:
-            raise UpdateError(reply["error"])
+            raise UpdateError(reply["error"], reply.get("retry"))
         raw = base64.b64decode(reply["data"], validate=True)
         if len(raw) > limit:
             raise UpdateError("response_too_large")
@@ -366,12 +402,67 @@ def fetch_release(tag=None, proxy=None, timeout=UPDATE_TIMEOUT):
     return release
 
 
-def update_check(directory, tag=None, proxy=None):
-    package = package_report(directory)
-    report = {"status": "check_failed", "selection": "pinned" if tag else "latest", "package": package,
-              "release": None, "error": None}
+def rate_limit_release(directory, tag=None, proxy=None):
+    """Persist only a bounded error window. Cached errors never become releases."""
+    validate_proxy(proxy)
+    if tag is not None:
+        if not isinstance(tag, str) or not tag.startswith("v"):
+            raise UpdateError("invalid_version")
+        stable_version(tag[1:])
+    now = int(time.time())
+    key = hashlib.sha256((proxy or "direct").encode("ascii")).hexdigest()
+    storage_warning = False
     try:
-        release = fetch_release(tag, proxy)
+        with notice_store(directory) as folder:
+            cache = notice_read(folder, "network-limit.json")
+        if cache is not None:
+            if (not isinstance(cache, dict) or set(cache) != {"observed_at", "proxy_hash", "retry"}
+                    or type(cache["observed_at"]) is not int
+                    or not now - 86400 <= cache["observed_at"] <= now
+                    or not isinstance(cache["proxy_hash"], str)
+                    or not re.fullmatch("[0-9a-f]{64}", cache["proxy_hash"])
+                    or not isinstance(cache["retry"], dict)
+                    or validated_retry(cache["retry"], now) != cache["retry"]):
+                raise NoticeError("invalid_cache")
+            if cache["proxy_hash"] == key and cache["retry"].get("retry_at", 0) > now:
+                raise UpdateError("rate_limited", cache["retry"], cached=True)
+    except (NoticeError, OSError):
+        storage_warning = True
+    try:
+        return fetch_release(tag, proxy)
+    except UpdateError as error:
+        if error.code == "rate_limited":
+            if not error.retry.get("retry_at"):
+                error.retry = retry_headers({})
+            try:
+                with notice_store(directory, create=True) as folder:
+                    notice_write(folder, "network-limit.json", {
+                        "observed_at": now, "proxy_hash": key, "retry": error.retry})
+            except (NoticeError, OSError):
+                storage_warning = True
+            error.storage_warning = storage_warning
+        raise
+
+
+def local_bundle_release(bundle):
+    """Inspect original bundle bytes without executing code or contacting GitHub."""
+    try:
+        payload = apply_bundle(pathlib.Path(bundle), "source")
+        manifest = parse_release_json(payload[MANIFEST])
+        stable_version(manifest["package_version"])
+        return {"version": manifest["package_version"], "tag": "v" + manifest["package_version"]}
+    except (ApplyError, OSError, KeyError, ValueError, TypeError):
+        raise UpdateError("invalid_metadata")
+
+
+def update_check(directory, tag=None, proxy=None, bundle=None):
+    package = package_report(directory)
+    report = {"status": "check_failed", "selection": "local_bundle" if bundle else "pinned" if tag else "latest", "package": package,
+              "release": None, "error": None, "evidence": "local_bundle" if bundle else "github_live"}
+    try:
+        if bundle and (tag is not None or proxy is not None):
+            raise UpdateError("invalid_metadata")
+        release = local_bundle_release(bundle) if bundle else rate_limit_release(directory, tag, proxy)
         report["release"] = {"tag": release["tag"], "version": release["version"]}
         if package["integrity"] != "match":
             report["status"] = "not_comparable"
@@ -385,6 +476,13 @@ def update_check(directory, tag=None, proxy=None):
                 report["status"] = "update_available" if candidate > installed else "local_newer" if candidate < installed else "current"
     except UpdateError as error:
         report["error"] = error.code
+        if error.code == "rate_limited":
+            report["retry"] = error.retry
+            report["evidence"] = "rate_limit_cache" if error.cached else "github_live"
+            if error.storage_warning:
+                report["warning"] = "backoff_storage_unavailable"
+    if bundle:
+        report["trust"] = "local_hash_consistency_not_fresh_publication_or_provenance"
     return report
 
 
@@ -556,7 +654,7 @@ def notification_refresh(directory, proxy=None, force=False):
         if not force and not report["stale"]:
             return dict(report, status="cached")
         try:
-            release = fetch_release(proxy=proxy)
+            release = rate_limit_release(directory, proxy=proxy)
             cache.update(checked_at=int(time.time()), last_attempt_at=int(time.time()), last_error=None,
                          release={"tag": release["tag"], "version": release["version"]})
             status = "refreshed"
@@ -600,9 +698,12 @@ BASELINE_MIGRATION = ('1.102.4', '1.104.4')
 
 
 class ApplyError(Exception):
-    def __init__(self, code, transaction_id=None):
+    def __init__(self, code, transaction_id=None, retry=None, cached=False, storage_warning=False):
         super().__init__(code)
         self.transaction_id = transaction_id
+        self.retry = validated_retry(retry) if code == 'rate_limited' else {}
+        self.cached = cached is True
+        self.storage_warning = storage_warning is True
 
 
 def apply_error_report(error):
@@ -618,6 +719,11 @@ def apply_error_report(error):
         elif isinstance(error, (ValueError, TypeError, KeyError, RecursionError)): code = 'invalid_apply_data'
         else: code = 'apply_internal_error'
     report = {'error': code}
+    if code == 'rate_limited':
+        report['retry'] = validated_retry(getattr(error, 'retry', {}))
+        report['evidence'] = 'rate_limit_cache' if getattr(error, 'cached', False) else 'github_live'
+        if getattr(error, 'storage_warning', False):
+            report['warning'] = 'backoff_storage_unavailable'
     identifier = getattr(error, 'transaction_id', None)
     if identifier: report['transaction_id'] = identifier
     return report
@@ -1133,7 +1239,9 @@ def update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy
         return _update_apply(directory, runtime, tag, bundle, confirm, proxy_url, migrate_baseline, context)
     except Exception as error:
         report = apply_error_report(error)
-        raise ApplyError(report['error'], context.get('transaction_id')) from None
+        raise ApplyError(report['error'], context.get('transaction_id'),
+                         getattr(error, 'retry', None), getattr(error, 'cached', False),
+                         getattr(error, 'storage_warning', False)) from None
 
 
 def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, proxy_url=None, migrate_baseline=False, context=None):
@@ -1162,7 +1270,7 @@ def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, prox
         if bundle:
             payload = apply_bundle(pathlib.Path(bundle), 'source')
         else:
-            release = fetch_release(tag, proxy_url)
+            release = rate_limit_release(directory, tag, proxy_url)
             deadline = time.monotonic() + 60
             payload = {name: download_release_asset(release, name, proxy_url, deadline) for name in CORE_FILES}
             payload[MANIFEST] = release['manifest_bytes']
@@ -2162,7 +2270,7 @@ def main(argv=None):
                 raw = _network_fetch(request["url"], request["proxy"], request["limit"])
                 print(json.dumps({"data": base64.b64encode(raw).decode("ascii")}))
             except UpdateError as error:
-                print(json.dumps({"error": error.code}))
+                print(json.dumps({"error": error.code, "retry": error.retry}))
             return 0
         if argv and argv[0] == "_verify-package":
             if len(argv) != 4 or argv[2] not in ("source", "installed"):
@@ -2204,7 +2312,9 @@ def main(argv=None):
         update = commands.add_parser("update", help="check stable releases without changing code or services")
         update_commands = update.add_subparsers(dest="update_command", required=True)
         check = update_commands.add_parser("check")
-        check.add_argument("--tag")
+        check_selection = check.add_mutually_exclusive_group()
+        check_selection.add_argument("--tag")
+        check_selection.add_argument("--bundle", type=pathlib.Path)
         check.add_argument("--proxy")
         check.add_argument("--json", action="store_true")
         apply = update_commands.add_parser('apply', help='verified detached manual update; requires independent recovery terminal')
@@ -2292,7 +2402,7 @@ def main(argv=None):
                 print("update notifications: " + json.dumps(report, sort_keys=True))
             return int("error" in report or report.get("status") == "refresh_failed")
         if options.command == "update":
-            report = update_check(directory, options.tag, options.proxy)
+            report = update_check(directory, options.tag, options.proxy, options.bundle)
             if options.json:
                 print(json.dumps(report, sort_keys=True))
             else:
@@ -2301,6 +2411,13 @@ def main(argv=None):
                     print("release: " + report["release"]["tag"] + " (" + report["selection"] + ")")
                 if report["error"]:
                     print("error: " + report["error"])
+                print("evidence: " + report["evidence"])
+                if report.get("trust"):
+                    print("trust: " + report["trust"])
+                if report.get("retry"):
+                    print("retry (advisory): " + json.dumps(report["retry"], sort_keys=True))
+                if report.get("warning"):
+                    print("warning: " + report["warning"])
             return update_check_exit(report)
         if options.command == "version":
             report = {"package": package_report(directory), "tailscale": tailscale_version(directory)}
