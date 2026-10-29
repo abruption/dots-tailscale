@@ -605,6 +605,108 @@ class RecoveryLifecycleTests(unittest.TestCase):
         self.assertTrue(tool.recovery_status(self.directory, self.runtime)['manual_review_required'])
         self.assertEqual(self.popen.call_count, 1)
 
+    def test_code_changed_restart_refuses_until_old_lifetime_lock_is_released(self):
+        self.configure(restart_after_external=True)
+        state = self.state()
+        state['watchdog_wanted'] = True
+        state['watchdog'] = {'id': 'old-worker', 'boot_id': self.boot, 'identity': self.child_identity,
+                             'state': 'code_changed', 'code_hash': '1' * 64}
+        self.save(state)
+        before = (tool.recovery_folder(self.directory) / 'state.json').read_bytes()
+        with tool.recovery_lock(tool.recovery_folder(self.directory), 'watchdog.lock'):
+            for explicit in (True, False):
+                with self.subTest(explicit=explicit):
+                    self.assert_rejected('watchdog_previous_worker_exiting', lambda: tool.recovery_watchdog_start(
+                        self.directory, self.runtime, explicit=explicit))
+            self.assertEqual((tool.recovery_folder(self.directory) / 'state.json').read_bytes(), before)
+            self.popen.assert_not_called()
+        self.child_alive = True
+        result = tool.recovery_watchdog_start(self.directory, self.runtime, explicit=False)
+        self.assertEqual(result['state'], 'started')
+        self.assertNotEqual(self.state()['watchdog']['id'], 'old-worker')
+        self.assertEqual(self.popen.call_count, 1)
+
+    def test_reconciliation_accepts_pid_reuse_but_not_exec_of_original_process(self):
+        self.configure()
+        self.child_alive = True
+        self.probe.return_value = {'state': 'components_missing'}
+        self.popen.return_value = FakeProcess(timeout=True)
+        tool.recovery_run(self.directory, self.runtime, self.options())
+        options = argparse.Namespace(confirm_reviewed=True, request_id='request-1', outcome='failed')
+        self.child_identity = dict(self.child_identity, exe='/some/other/executable')
+        self.assert_rejected('attempt_process_not_proven_exited', lambda: tool.recovery_reconcile(
+            self.directory, self.runtime, options))
+        self.child_identity = dict(self.child_identity, ticks='300')
+        result = tool.recovery_reconcile(self.directory, self.runtime, options)
+        self.assertEqual(result['state'], 'failed')
+        self.assertTrue(result['reconciled'])
+
+    def test_advisory_local_admission_reports_daily_cooldown_and_unknown_without_writes(self):
+        self.configure(max_attempts=2, cooldown_seconds=60)
+        self.missing_then_healthy()
+        tool.recovery_run(self.directory, self.runtime, self.options())
+        root = tool.recovery_folder(self.directory)
+        before = (root / 'state.json').read_bytes()
+        report = tool.recovery_status(self.directory, self.runtime)
+        self.assertEqual(report['blocked_reason'], 'shared_cooldown')
+        self.assertEqual(report['next_allowed_at'], self.now + 60)
+        self.assertEqual((root / 'state.json').read_bytes(), before)
+        self.now += 60
+        self.missing_then_healthy()
+        tool.recovery_run(self.directory, self.runtime, self.options(identifier='second-claim'))
+        report = tool.recovery_status(self.directory, self.runtime)
+        self.assertEqual(report['blocked_reason'], 'shared_daily_budget_exhausted')
+        self.assertEqual(report['next_allowed_at'], self.now - 60 + 86400)
+        state = self.state()
+        state['attempts'][-1]['state'] = 'unknown'
+        self.save(state)
+        report = tool.recovery_status(self.directory, self.runtime)
+        self.assertEqual(report['blocked_reason'], 'unknown_result_requires_reconciliation')
+        self.assertIsNone(report['next_allowed_at'])
+        tool.recovery_stop(self.directory)
+        self.assertEqual(tool.recovery_status(self.directory, self.runtime)['blocked_reason'], 'recovery_disabled')
+
+    def test_busy_stop_is_not_persisted_until_command_is_accepted(self):
+        self.configure()
+        folder = tool.recovery_folder(self.directory)
+        with tool.recovery_lock(folder, 'control.lock'):
+            self.assert_rejected('recovery_busy', lambda: tool.recovery_stop(self.directory))
+        self.assertTrue(self.state()['enabled'])
+        tool.recovery_stop(self.directory)
+        self.assertFalse(self.state()['enabled'])
+
+    def test_zero_exit_with_unhealthy_postprobe_remains_unknown(self):
+        self.configure()
+        self.probe.side_effect = [{'state': 'components_missing'}, {'state': 'unknown', 'backend': 'NoState'}]
+        result = tool.recovery_run(self.directory, self.runtime, self.options())
+        self.assertEqual(result['state'], 'unknown')
+        self.assertEqual(result['exit_code'], 0)
+        self.assertEqual(result['external_confirmation'], 'pending')
+        self.assertTrue(tool.recovery_status(self.directory, self.runtime)['manual_review_required'])
+        self.popen.assert_called_once()
+
+    def test_no_state_probe_is_transient_unknown_not_a_login_diagnosis(self):
+        with mock.patch.object(tool, 'recovery_probe', ORIGINAL_PROBE), \
+                mock.patch.object(tool, 'process_checks', return_value={'shim': 'running', 'tailscaled': 'running', 'sshd': 'running'}), \
+                mock.patch.object(tool, 'socket_status', return_value='present'), \
+                mock.patch.object(tool, 'recovery_capture', return_value={'BackendState': 'NoState'}):
+            result = tool.recovery_probe(self.directory, self.runtime)
+        self.assertEqual(result['state'], 'unknown')
+        self.assertEqual(result['backend'], 'NoState')
+        self.popen.assert_not_called()
+
+    def test_shell_created_operation_lock_mode_is_compatible(self):
+        # Exercise the installer's actual umask/redirection spelling,
+        # rather than creating this fixture through recovery_lock itself.
+        lock = self.directory / '.operation.lock'
+        script = 'umask 077; exec 9> "$1/.operation.lock"'
+        with mock.patch.object(tool.subprocess, 'Popen', REAL_POPEN):
+            subprocess.run(['/bin/bash', '-c', script, 'fixture', str(self.directory)], check=True)
+        self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(lock.stat().st_uid, os.getuid())
+        with tool.recovery_lock(self.directory, '.operation.lock'):
+            pass
+
 
 if __name__ == '__main__':
     unittest.main()

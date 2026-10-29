@@ -2934,6 +2934,23 @@ def recovery_summary(state, boot):
     counted = [row for row in state['attempts'] if row['counted'] and row['created_at'] > now - 86400]
     pending = any(row['state'] in ('running', 'unknown') for row in state['attempts'])
     worker = recovery_worker_status(state['watchdog'], boot)
+    blocked_reason = None
+    next_allowed_at = None
+    if not state['enabled']:
+        blocked_reason = 'recovery_disabled'
+    elif pending:
+        blocked_reason = 'unknown_result_requires_reconciliation'
+    elif len(state['attempts']) >= RECOVERY_MAX_RECORDS:
+        blocked_reason = 'recovery_ledger_full'
+    else:
+        daily_at = counted[-state['max_attempts_24h']]['created_at'] + 86400 if len(counted) >= state['max_attempts_24h'] else 0
+        cooldown_at = counted[-1]['created_at'] + state['cooldown_seconds'] if counted else 0
+        if daily_at > now:
+            blocked_reason = 'shared_daily_budget_exhausted'
+        elif cooldown_at > now:
+            blocked_reason = 'shared_cooldown'
+        if blocked_reason is not None:
+            next_allowed_at = max(daily_at, cooldown_at)
     return {'schema': 1, 'enabled': state['enabled'], 'scope': 'current_execution_context',
             'watchdog': {'wanted': state['watchdog_wanted'], 'status': worker,
                          'restart_after_external': state['restart_after_external'],
@@ -2943,6 +2960,8 @@ def recovery_summary(state, boot):
                        'timeout_seconds': state['timeout_seconds'], 'retained_records': len(state['attempts']),
                        'max_retained_records': RECOVERY_MAX_RECORDS},
             'manual_review_required': pending, 'external_confirmation': 'pending',
+            'blocked_reason': blocked_reason, 'next_allowed_at': next_allowed_at,
+            'admission_scope': 'advisory_local_ledger_only_fresh_run_rechecks_all_conditions',
             'last_attempt': recovery_result(state['attempts'][-1]) if state['attempts'] else None}
 
 
@@ -3076,7 +3095,7 @@ def recovery_probe(directory, runtime):
         if not isinstance(value, dict) or not isinstance(value.get('BackendState'), str):
             raise RecoveryError('local_probe_unknown')
         backend = value['BackendState']
-        if backend in ('NeedsLogin', 'NeedsMachineAuth', 'NoState'):
+        if backend in ('NeedsLogin', 'NeedsMachineAuth'):
             return {'state': 'authentication_required', 'backend': backend, 'ssh': 'unknown'}
         if backend != 'Running':
             return {'state': 'unknown', 'backend': backend, 'ssh': 'unknown'}
@@ -3277,7 +3296,10 @@ def recovery_stop(directory):
 def recovery_status(directory, runtime):
     root = directory / RECOVERY_DIRECTORY
     if not root.exists() and not root.is_symlink():
-        return {'schema': 1, 'state': 'not_configured', 'enabled': False, 'network': 'not_probed', 'external_confirmation': 'pending'}
+        return {'schema': 1, 'state': 'not_configured', 'enabled': False, 'network': 'not_probed',
+                'external_confirmation': 'pending', 'blocked_reason': 'recovery_not_configured',
+                'next_allowed_at': None,
+                'admission_scope': 'advisory_local_ledger_only_fresh_run_rechecks_all_conditions'}
     state = recovery_read(recovery_folder(directory))
     result = recovery_summary(state, recovery_boot())
     try:
@@ -3302,8 +3324,12 @@ def recovery_reconcile(directory, runtime, options):
         if row['boot_id'] == recovery_boot():
             candidates = [row['child']] + ([row['executor']] if row['state'] == 'running' else [])
             for identity in candidates:
-                if identity is not None and recovery_identity(identity['pid']) is not None:
-                    raise RecoveryError('attempt_process_not_proven_exited')
+                if identity is not None:
+                    current = recovery_identity(identity['pid'])
+                    # A different start tick proves PID reuse. An exec in the
+                    # original process can change exe without proving death.
+                    if current is not None and (current['ticks'], current['uid']) == (identity['ticks'], identity['uid']):
+                        raise RecoveryError('attempt_process_not_proven_exited')
         if options.outcome == 'local_ready':
             recovery_preflight(directory, runtime)
             if recovery_probe(directory, runtime)['state'] != 'healthy':
@@ -3334,6 +3360,17 @@ def recovery_watchdog_start(directory, runtime, explicit=True):
             return {'state': 'already_running'}
         if status in ('unknown', 'identity_changed'):
             raise RecoveryError('watchdog_identity_unknown')
+        try:
+            # A worker may have saved code_changed but not yet released this
+            # lifetime lock. Probe under control.lock before replacing its
+            # record or spawning a successor. Release before the new child can
+            # acquire it; control.lock excludes another legitimate starter.
+            with recovery_lock(folder, 'watchdog.lock'):
+                pass
+        except RecoveryError as error:
+            if str(error) == 'recovery_busy':
+                raise RecoveryError('watchdog_previous_worker_exiting') from None
+            raise
         state['watchdog_wanted'] = True
         identifier = uuid.uuid4().hex
         state['watchdog'] = {'id': identifier, 'boot_id': boot, 'identity': None, 'state': 'starting',

@@ -28,6 +28,8 @@ SSH component with an otherwise running daemon/shim is classified separately.
 not prove an authenticated SSH session, DERP reachability or external recovery.
 An unknown/unresponsive backend or an existing SSH process with no valid banner
 is not treated as permission to keep restarting it.
+`NoState` can be a transient startup state. It is reported as unknown, not as a
+definitive diagnosis that the user must log in again.
 
 Stop any older private watchdog using its own reviewed procedure before enabling
 the packaged watchdog. Both automatic actors must use this entry point for the
@@ -64,6 +66,18 @@ claim does not bypass the local gate: the stricter effective policy can refuse
 it. The maintainer's historical 12-claim broker setting is not silently copied
 into the local policy. Operator changes to the local cooldown apply to both local
 actors and are not the broker's evidence-qualified new-incident policy.
+To benefit from a shorter broker interval, the local cooldown must not remain
+longer than that interval. Lowering it also changes watchdog startup retry
+cooldown; it does not change the separate watchdog polling interval.
+
+Before consuming a broker claim, read `recovery status --json` and its
+`blocked_reason` and `next_allowed_at`. Shared cooldown/daily limits, unknown
+attempts, disabled policy and a full ledger are reported without modifying the
+ledger. Do not claim while a local block exists or the execution context is
+unknown. `next_allowed_at` describes only the currently known local ledger gate;
+it is advisory, not a scheduled run or future permission. After it passes, read
+fresh local and broker state again. File checks, current readiness, claim
+freshness and update fences still apply at execution time.
 
 ```bash
 # Explicitly start the packaged watchdog in the current boot.
@@ -77,7 +91,10 @@ actors and are not the broker's evidence-qualified new-incident policy.
 /workspace/.dots-tailscale/dots-ts recovery stop --json
 ```
 
-Stopping is durable. A command that has already started can finish, while later
+An accepted stop is durable. If a stop/configuration command returns
+`recovery_busy`, its change has not been persisted: read fresh status and retry
+the stop; do not assume the watchdog or recovery was disabled. A command that
+has already started can finish, while later
 requests are refused. A watchdog exits within one configured interval after it
 sees the stop intention; an in-flight startup may take its configured deadline.
 Stopping recovery does not stop the existing Tailscale/SSH connection. Re-enabling
@@ -89,6 +106,9 @@ check the saved process identity and do not create a duplicate worker. On anothe
 boot, starting it requires visible, intact files and a supported execution
 context again. If package code changes while a watchdog is running, it exits as
 `code_changed`, retaining the wanted flag for an explicitly authorized restart.
+While that old worker is still releasing its lifetime lock, a restart returns
+`watchdog_previous_worker_exiting` without creating another process. Recheck and
+retry after the lock is released; `code_changed` alone is not proof of exit.
 The helper never starts or replaces the older private trial watchdog.
 
 An external startup can restart the packaged watchdog only after both explicit
@@ -101,6 +121,9 @@ choices exist: the watchdog is still wanted, and this policy is enabled:
 
 This setting alone does not start the watchdog or cancel `watchdog stop`. Disable
 it with `--no-restart-watchdog-after-external`.
+This explicit opt-in also permits starting the newly verified packaged code
+after a `code_changed` exit, once the old lifetime lock has been released. It
+never authorizes restarting an older private watchdog.
 
 ## External claim contract
 
@@ -125,6 +148,11 @@ are not proof of a broker-issued claim and add no security boundary against the
 same Unix user. Keep broker authentication, owner checks, one-claim semantics and
 result reporting in the external task. Do not run an external actor merely
 because a previous `retry_at` has passed.
+
+The 120/150-second checks are deliberately conservative and do not add clock
+skew allowance. Broker/Dots clock disagreement or a near-expiry observation can
+cause rejection; inspect clocks and fresh state rather than extending an expiry,
+rewriting an observation time, or retrying the consumed claim.
 
 After acquiring the nonblocking local run lock, the helper rechecks files,
 policy, local state and shared budget. If the installation is already locally
@@ -165,6 +193,10 @@ requires the relevant startup/executor processes to be proven exited (or a
 different boot), and checks fresh local readiness for `local_ready`. Reconciliation
 does not create external confirmation, delete the attempt, refund budget, or
 execute another command.
+In the same boot, a different process start tick proves PID reuse; a changed
+executable with the original start tick does not prove exit. For an unfinished
+watchdog-owned attempt, stop the watchdog and confirm its executor has exited
+before reconciliation. A busy stop is not an accepted stop.
 
 Configuration, stop intention, worker identity and attempt records live in the
 owned private `.recovery` directory inside the installation. They survive code-only

@@ -54,7 +54,11 @@ adopt a hosted relay, deploy a Worker, or promise a server-free setup.
    intended task instructions with the coordinated template. Both sides must be
    ready before enabling that task. The default broker command remains legacy;
    package installation alone does not change it.
-7. Use a fresh claim only for a fresh failed observation. In coordinated mode,
+7. Before requesting a claim, inspect fresh local `blocked_reason` and
+   `next_allowed_at`: do not claim while local policy blocks execution or the
+   execution context is unknown. A future time is advisory, so reread local and
+   broker state after any delay. Use a fresh claim only for a fresh failed
+   observation. In coordinated mode,
    compare the fixed command/argv, claim ID, expiry and observation time against
    the current authorized broker result. The local command validates structure,
    freshness and its own durable budget; its flags are **not** cryptographic
@@ -96,8 +100,10 @@ describe disabling future attempts as cancellation of an in-flight startup.
 | Natural outage without edits, renewed auth or an explicit resume prompt | Assess dated observer and claim evidence per trial; do not turn observed successes into a latency guarantee |
 | New VM/environment and long-term operation | Remain research in [#20](https://github.com/abruption/dots-tailscale/issues/20) and [#43](https://github.com/abruption/dots-tailscale/issues/43); a changed boot ID alone is not proof of VM replacement |
 
-**Decision:** keep the advanced route as a documented, opt-in preview until the
-fresh-account and lifecycle gates are satisfied. Ordinary installation must not
+**Decision:** development-candidate documentation is available, but this is not a
+completed public-support release decision. Issue #45 remains open until the real
+fresh-account and lifecycle gates are satisfied. Keep the advanced route limited
+to an explicitly opted-in development preview. Ordinary installation must not
 register a plugin, subscription, scheduler or watchdog. Before a live trial,
 write down its observation window, stopping criteria, independent terminal and
 what counts as success; record unsuccessful and manually assisted attempts too.
