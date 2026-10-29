@@ -44,7 +44,7 @@ class RelayTest(unittest.TestCase):
 
     def test_minimization(self):
         clean = sanitize(sample(), NOW)
-        self.assertEqual(set(clean), {'observed_at', 'state', 'ssh', 'peer_ping'})
+        self.assertEqual(set(clean), {'observed_at', 'state', 'ssh', 'peer_ping', 'external_health'})
         self.assertNotIn('PRIVATE', json.dumps(clean))
         self.assertNotIn('SECRET', json.dumps(clean))
 
