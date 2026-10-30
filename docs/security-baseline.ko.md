@@ -8,7 +8,7 @@
 
 2026-10-28 확인한 [공식 stable 정보](https://pkgs.tailscale.com/stable/?mode=json)는 1.104.4를 선택했고, [공식 릴리스](https://github.com/tailscale/tailscale/releases/tag/v1.104.4)는 01:05:26 UTC에 공개됐습니다. 공식 amd64 파일은 `tailscale_1.104.4_amd64.tgz`이며 체크섬 주소가 반환한 SHA-256은 `624ea093d47d62cf56f17b8332d74b8decda4a1faa610ebc60a1de334b2b3dc9`입니다. 이 기록만 믿지 말고 실제로 내려받은 파일의 해시를 대조해야 합니다.
 
-2026-10-21 발표된 [TS-2026-013](https://tailscale.com/security-bulletins)은 1.104.2 이상으로 업데이트할 것을 권합니다. 해당 버전의 Go 1.27.3은 유출된 eMudhra 중간 인증서 8개를 명시적으로 신뢰하지 않습니다. 현재 stable인 1.104.4는 이 공지의 최소 버전 조건을 충족합니다. 이 문서에서 별도의 CVE 번호를 주장하지는 않습니다.
+2026-10-21 발표된 [TS-2026-013](https://tailscale.com/security-bulletins)은 1.104.2 이상으로 업데이트할 것을 권합니다. 해당 버전의 Go 1.27.3은 침해된 eMudhra 중간 인증서 8개를 명시적으로 신뢰하지 않습니다. 현재 stable인 1.104.4는 이 공지의 최소 버전 조건을 충족합니다. 이 문서에서 별도의 CVE 번호를 주장하지는 않습니다.
 
 검토 시점에는 [변경 이력](https://tailscale.com/changelog)에 1.104.4의 상세 항목이 없었고, [SSH 조사 업데이트](https://tailscale.com/ssh-investigation-update)도 모든 문제에 대한 확정 수정 버전 범위를 제시하지 않았습니다. 태그가 공개됐다는 사실만으로 SSH·Tailworm 보고 항목이 모두 해결됐다고 볼 수는 없습니다. 설치 스크립트는 `--ssh=false`와 로컬 OpenSSH를 사용하지만, 기존 노드의 현재 설정이나 다른 공격 경로까지 확인한 것은 아닙니다.
 

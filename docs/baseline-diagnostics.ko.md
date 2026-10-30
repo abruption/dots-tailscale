@@ -2,7 +2,7 @@
 
 [English](baseline-diagnostics.md)
 
-이 문서는 v0.8.0의 추가 진단을 설명합니다. 배포 파일은 릴리스 페이지에서 확인하세요.
+이 문서는 v0.8.0의 추가 진단을 설명합니다. 배포 파일은 릴리스 페이지에서 확인하세요. 패키지를 설치해도 자동 업데이트가 켜지거나 복구 작업이 등록되지는 않습니다.
 
 `dots-ts version`과 `dots-ts doctor`는 현재 실행 환경에서 보이는 Tailscale 버전을 설치의 `setup.sh`에 선언된 `TS_VERSION`과 비교합니다. 업데이트·프로세스 재시작·인증 변경·보안 권고 조회는 하지 않습니다.
 
@@ -24,7 +24,7 @@
 
 `version` JSON은 기존 `package`, `tailscale` 필드를 유지하고 `runtime_baseline`을 추가합니다. `doctor`는 같은 구조를 `checks.runtime_baseline`에 넣습니다. 사람이 읽는 출력에서도 각 관측값과 비교 결과를 따로 보여줍니다.
 
-## JSON 계약: 스키마 버전 1
+## JSON 응답 규격: 스키마 버전 1
 
 | 필드 | 의미 |
 | --- | --- |
