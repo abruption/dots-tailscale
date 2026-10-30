@@ -1,7 +1,8 @@
 # Shim connection budget
 
-These features belong to the **v0.8.0 development candidate**. The latest published
-stable release is v0.7.1; publishing this branch does not upgrade an installation.
+This guide covers features included in **v0.8.0**. Check the release page for
+published artifacts. Installing the package does not enable automatic updates or
+register a recovery task.
 
 The transport shim accepts at most **64 active connections** by default. A slot
 is reserved before a handler thread is created and stays reserved until the

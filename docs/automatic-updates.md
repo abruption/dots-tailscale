@@ -1,7 +1,8 @@
 # Opt-in automatic package updates
 
-These features belong to the **v0.8.0 development candidate**. The latest published
-stable release is v0.7.1; publishing this branch does not upgrade an installation.
+This guide covers features included in **v0.8.0**. Check the release page for
+published artifacts. Installing the package does not enable automatic updates or
+register a recovery task.
 
 Automatic updates are off by default. Installing or updating dots-tailscale does not register a task, install cron/systemd, create a watchdog, or start this runner. This feature updates the four package sources through the existing manual transaction; it does not update Tailscale binaries or migrate their declared baseline.
 

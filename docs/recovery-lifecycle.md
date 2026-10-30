@@ -1,13 +1,14 @@
-# Coordinated recovery (development)
+# Coordinated recovery (experimental)
 
-These features belong to the **v0.8.0 development candidate**. The latest published
-stable release is v0.7.1; publishing this branch does not upgrade an installation.
+This guide covers features included in **v0.8.0**. Check the release page for
+published artifacts. Installing the package does not enable automatic updates or
+register a recovery task.
 
 [한국어](recovery-lifecycle.ko.md)
 
 This opt-in helper gives a packaged local watchdog and an explicitly integrated
-external recovery task one local execution ledger and budget. It is development
-work for #44, not a claim that v0.7.1 or an existing MCP task uses this path.
+external recovery task one local execution ledger and budget. It implements #44 as an experimental opt-in; it does not claim that v0.7.1 or
+an existing MCP task already uses this path.
 Installing the normal package does not enable recovery, start a watchdog,
 register a scheduled task, or deploy the external broker.
 

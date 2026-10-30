@@ -1,7 +1,8 @@
 # Read the installed Tailscale baseline
 
-These features belong to the **v0.8.0 development candidate**. The latest published
-stable release is v0.7.1; publishing this branch does not upgrade an installation.
+This guide covers features included in **v0.8.0**. Check the release page for
+published artifacts. Installing the package does not enable automatic updates or
+register a recovery task.
 
 `dots-ts version` and `dots-ts doctor` compare the Tailscale versions visible in the current execution context with the `TS_VERSION` declaration in the installation's `setup.sh`. They do not update anything, restart a process, change authentication or fetch security advisories.
 

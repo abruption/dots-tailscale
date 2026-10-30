@@ -6,15 +6,15 @@
 
 通过 Tailscale 和 SSH，你可以从自己的设备连接 Dots 云电脑。dots-tailscale 不需要 root 权限或 systemd，会将安装文件、Tailscale 节点状态和 SSH 身份信息保存在 `/workspace` 中。环境变化后，只要这个目录还在，就可以继续使用原来的安装和身份。
 
-**当前版本：[v0.7.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.1)。** 本安全版本让 shim 在生成证书前校验 CONNECT 目标主机（[GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)），v0.7.0 及更早版本受影响。新安装使用 Tailscale 1.104.4，并提供更严格的二进制检查和现有软件包的明确迁移流程。本项目独立开发，并非 OpenAI 或 Tailscale 的官方工具。
+**本指南适用于 [v0.8.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.8.0)，安装前请在发布页面确认已发布的文件。** 此版本包含 v0.7.1 的安全修复，在生成证书前验证 CONNECT 目标主机（[GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)）；v0.7.0 及更早版本受影响。新安装使用 Tailscale 1.104.4。本项目独立开发，并非 OpenAI 或 Tailscale 的官方工具。
 
 **从 v0.6.0 等旧基线更新时：** 默认声明为 Tailscale 1.102.4 的软件包，需要先更新运行时，再执行[明确的安全基线迁移（英文）](docs/security-baseline.md)。普通 `update apply` 仍保留跨基线变更检查。
 
-## 开发分支：v0.8.0 候选版本
+## v0.8.0 功能
 
-当前代码库包含 **v0.8.0 开发候选版本**，并不表示 v0.8.0 已正式发布。最新稳定版以及下方安装示例仍以 **v0.7.1** 为准。
+下方安装示例固定为 **v0.8.0**。自动更新和恢复执行器需要明确启用，普通安装不会注册自动启动或恢复任务。
 
-| 候选版本的功能 | 需要了解的范围 |
+| 功能 | 需要了解的范围 |
 |---|---|
 | 运行版本与基线比较 | `version` 和 `doctor` 会将安装中声明的基线与分别观测到的版本比较。连接正常或符合基线，都不是安全性结论。 |
 | 更严格的软件包来源验证 | 更新到 v0.8.0 及以上版本，需要发布来源证明、预先准备的可信 `gh`，以及单独获取的信任根。未签名的旧版本只能走明确的人工审核例外，自动更新不能使用该例外。 |
@@ -24,7 +24,7 @@
 
 只有先停止旧 watchdog，并让内部、外部执行方**都**切换到统一恢复入口，才会共用本地恢复记录和本地尝试预算。生产任务如果仍直接调用 `start.sh`，就仍在使用旧路径。MCP 路径继续作为高级用户预览：另一个真实账号的设置与恢复复现测试**尚未完成**，因此不能视为已提供通用自动恢复支持。
 
-启用前，请阅读[候选版本使用说明](docs/usage.zh-CN.md#development-v080)、[自动更新（英文）](docs/automatic-updates.md)、[来源验证（英文）](docs/release-provenance.md)、[恢复协调（英文）](docs/recovery-lifecycle.md)和[预览准备情况（英文）](docs/recovery-support-readiness.md)。
+启用前，请阅读[v0.8.0 使用说明](docs/usage.zh-CN.md#development-v080)、[自动更新（英文）](docs/automatic-updates.md)、[来源验证（英文）](docs/release-provenance.md)、[恢复协调（英文）](docs/recovery-lifecycle.md)和[预览准备情况（英文）](docs/recovery-support-readiness.md)。
 
 ## 可以做什么
 
@@ -45,7 +45,7 @@
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.7.1 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.8.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -75,10 +75,12 @@ bash /workspace/.dots-tailscale/start.sh
 
 ```bash
 /workspace/.dots-tailscale/dots-ts version
-/workspace/.dots-tailscale/dots-ts update check --tag v0.7.1 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.8.0 --proxy http://browser-proxy:8889 --json
 ```
 
-v0.7.0 软件包声明相同的 Tailscale 基线，可通过普通[软件包更新](docs/usage.zh-CN.md#update-management)升级到 v0.7.1，应用后会以修复后的 shim 重新启动。Tailscale 基线声明为 1.102.4 的现有软件包（包括 v0.6.0），需要按[安全基线迁移流程（英文）](docs/security-baseline.md)更新到 v0.7.1。工具早于 v0.6.0 时，请先按[软件包更新说明](docs/usage.zh-CN.md#update-management)安装同一基线的 v0.6.0。缺少可信元数据的旧安装需要手动检查。
+从 v0.8.0 之前的更新器首次迁移时，请按[独立验证的首次迁移流程（英文）](docs/release-provenance.md)操作。在执行候选工具之前，先验证原始清单和四个源文件的来源。仅凭哈希一致无法认证发布者。
+
+v0.7.0 软件包声明相同的 Tailscale 基线，可通过普通[软件包更新](docs/usage.zh-CN.md#update-management)升级到 v0.7.1，应用后会以修复后的 shim 重新启动。Tailscale 基线声明为 1.102.4 的现有软件包（包括 v0.6.0），需要按[安全基线迁移流程（英文）](docs/security-baseline.md)更新到 v0.7.1。工具早于 v0.6.0 时，请先按[软件包更新说明](docs/usage.zh-CN.md#update-management)安装同一基线的 v0.6.0。缺少可信元数据的旧安装需要手动检查。这些旧版步骤用于对齐基线；迁移到 v0.8.0 时，请按上方的独立验证流程操作。
 
 安装 v0.6.0 或更新的工具后，可以检查 Tailscale 官方稳定版：
 
@@ -86,7 +88,7 @@ v0.7.0 软件包声明相同的 Tailscale 基线，可通过普通[软件包更�
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-**v0.7.1 新安装使用 Tailscale 1.104.4。** 软件包更新和 `install` 不会悄悄替换已有二进制文件。需要更新时，请先核对查询到的版本和官方公告，再按[手动更新指南（英文）](docs/runtime-updates.md)操作。基线迁移要求两个已安装的二进制文件和运行中的后端都恰好为 1.104.4，然后才更换源码。
+**v0.8.0 新安装使用 Tailscale 1.104.4。** 软件包更新和 `install` 不会悄悄替换已有二进制文件。需要更新时，请先核对查询到的版本和官方公告，再按[手动更新指南（英文）](docs/runtime-updates.md)操作。基线迁移要求两个已安装的二进制文件和运行中的后端都恰好为 1.104.4，然后才更换源码。
 
 应用更新前，请确认可以操作一个不依赖 Tailscale 连接的云端恢复终端。更新 Tailscale 二进制文件时，应先暂停外部恢复任务，待新的 SSH 连接和 ping 检查通过后再恢复。一旦尝试执行候选守护进程，即使启动失败，也不会自动降级；失败后的状态不明确时，需要按指南手动恢复。回退软件包代码与 Tailscale 状态数据是否兼容，是两回事。
 
@@ -121,13 +123,13 @@ v0.7.0 软件包声明相同的 Tailscale 基线，可通过普通[软件包更�
 
 具备外部服务运维条件的用户，可以了解[通过 Dots 执行外部恢复的实验（英文）](docs/experimental-recovery.md)。它结合外部监控、带认证的 MCP Events 服务器和已获授权的 Dots 任务，在连接故障后请求执行启动命令。普通安装程序不会部署这些服务，也不会启用恢复任务。
 
-当前实验需要外部服务器和 SSO 设置。事件处理可能延迟，其他账号的设置复现和任意 VM 替换后的恢复仍未验证。watchdog 协调和可选自动更新已在 v0.8.0 开发候选版本中实现，但 v0.7.1 和普通安装都不会启用它们。请同时查看上方的预览准备条件。
+当前实验需要外部服务器和 SSO 设置。事件处理可能延迟，其他账号的设置复现和任意 VM 替换后的恢复仍未验证。watchdog 协调和可选自动更新已在 v0.8.0 中实现，但 v0.7.1 和普通安装都不会启用它们。请同时查看上方的预览准备条件。
 
 ## 文档与项目文件
 
 - [使用与故障排查](docs/usage.zh-CN.md) · [手动更新 Tailscale（英文）](docs/runtime-updates.md)
 - [私有 HTTPS API 示例](docs/private-http-api.zh-CN.md) · [恢复实验（英文）](docs/experimental-recovery.md)
-- [发布说明](docs/releases/v0.7.1.md) · [更新记录](CHANGELOG.md) · [MIT 许可证](LICENSE)
+- [发布说明](docs/releases/v0.8.0.md) · [更新记录](CHANGELOG.md) · [MIT 许可证](LICENSE)
 
 | 路径 | 用途 |
 |---|---|

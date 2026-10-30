@@ -5,6 +5,6 @@
     "shim.py": "f0d98b55089a0095c4a14c6a21e2a8874cdb5df6675ad475b271500ac9effac3",
     "tailscale-setup.sh": "29adb7c37dde3d9556fd51c97c0d5c06635efa8f8ed052f3c897725f627b2b06"
   },
-  "package_version": "0.8.0-dev",
+  "package_version": "0.8.0",
   "schema_version": 1
 }

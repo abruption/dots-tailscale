@@ -2,9 +2,9 @@
 
 [한국어](experimental-recovery.ko.md)
 
-## v0.8.0 development integration
+## v0.8.0 experimental integration
 
-The new local coordination path is an opt-in development candidate, not a change
+The new local coordination path is an opt-in experimental feature, not a change
 to existing tasks or the published v0.7.1 package. Follow the
 [setup and publication gates](recovery-support-readiness.md) and
 [local lifecycle guide](recovery-lifecycle.md). A separately deployed broker

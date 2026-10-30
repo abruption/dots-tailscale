@@ -1,7 +1,8 @@
 # Inspecting updates when GitHub requests are limited
 
-These features belong to the **v0.8.0 development candidate**. The latest published
-stable release is v0.7.1; publishing this branch does not upgrade an installation.
+This guide covers features included in **v0.8.0**. Check the release page for
+published artifacts. Installing the package does not enable automatic updates or
+register a recovery task.
 
 The package checker uses unauthenticated GitHub REST requests, even when a tag is
 specified. A shared outbound proxy can exhaust that address's quota independently

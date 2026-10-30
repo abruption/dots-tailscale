@@ -2,7 +2,7 @@
 
 [English](baseline-diagnostics.md)
 
-이 문서는 v0.8.0 개발 후보의 추가 진단을 설명합니다. 최신 안정 버전은 v0.7.1입니다.
+이 문서는 v0.8.0의 추가 진단을 설명합니다. 배포 파일은 릴리스 페이지에서 확인하세요.
 
 `dots-ts version`과 `dots-ts doctor`는 현재 실행 환경에서 보이는 Tailscale 버전을 설치의 `setup.sh`에 선언된 `TS_VERSION`과 비교합니다. 업데이트·프로세스 재시작·인증 변경·보안 권고 조회는 하지 않습니다.
 
