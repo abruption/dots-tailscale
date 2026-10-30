@@ -4,17 +4,17 @@ English · [한국어](usage.ko.md) · [简体中文](usage.zh-CN.md) · [日本
 
 These instructions target a user-level installation in an environment that preserves `/workspace` across environment replacements. The recovery path reuses saved installation files, authentication state, and SSH host keys, without a new login while saved credentials remain valid. Installation does not register a startup hook; run the start command in each new environment.
 
-## Published release
+## Release files
 
-At the initial public publication, the repository clone and raw downloads were verified against the prepared source. That historical check does not verify v0.7.1 assets. [Release v0.7.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.1) includes ZIP and tar.gz archives plus `tailscale-setup.sh`, `shim.py`, `dots-ts`, `dots_proxy.py`, and `source-manifest.json` as individual assets. The installation examples pin the source to `v0.7.1`. `SHA256SUMS` covers the release artifacts. New installations use Tailscale `1.104.4`.
+This guide covers **v0.8.0**. Check the [release page](https://github.com/abruption/dots-tailscale/releases/tag/v0.8.0) for published ZIP/tar.gz archives, the four source files (`tailscale-setup.sh`, `shim.py`, `dots-ts`, `dots_proxy.py`), `source-manifest.json`, checksums and attestation evidence before installing. The examples pin the source to `v0.8.0`; new installations use Tailscale `1.104.4`. Initial clone/raw-download checks are historical evidence, not verification of these release artifacts.
 
 **Existing 1.102.4-baseline packages (including v0.6.0):** use the [runtime-first baseline migration](security-baseline.md) to reach v0.7.1. The ordinary apply examples below are only for packages already declaring 1.104.4; they intentionally reject a changed `TS_VERSION`. Do not edit the declaration or regenerate a manifest to bypass the check.
 
 <a id="development-v080"></a>
 
-## v0.8.0 development candidate
+## v0.8.0 features
 
-The latest published stable release is **v0.7.1**. This branch also contains v0.8.0 development work; the new commands below require that candidate and must not be read as a v0.8.0 release announcement. The stable installation and historical update examples elsewhere on this page remain pinned to v0.7.1.
+The installation examples below pin **v0.8.0**. Automatic updates and recovery runners remain opt-in; ordinary installation does not register a startup hook or recovery task.
 
 - **Read the actual versions.** `version` compares the local CLI and daemon binaries with the declared baseline without querying a running daemon. `doctor` also uses its bounded socket reply for the backend version. Missing, nonstable and mismatched versions remain explicit. Exit codes and connection-health results keep their existing meaning; neither `healthy` nor meeting the baseline proves security. See [baseline diagnostics](baseline-diagnostics.md).
 - **Separate inspection from trust.** `update check --bundle` reads the original manifest and four sources without changing the installation or contacting GitHub. It is local evidence, not a fresh publication or publisher check. A quota failure remains an error; bounded retry/reset diagnostics and local backoff do not turn cached errors into success. See [rate-limit and offline checks](update-check-resilience.md).
@@ -23,7 +23,7 @@ The latest published stable release is **v0.7.1**. This branch also contains v0.
 - **Switch both recovery actors together.** Stop any older watchdog first. The packaged watchdog and external task share a local ledger only when both use `dots-ts recovery`; a legacy task that directly calls `start.sh` bypasses that ledger. Installation does not switch the existing production task. Durable stop and unknown-result fences remain effective. See [coordinated recovery](recovery-lifecycle.md).
 - **Bound new shim connections.** Admission defaults to **64 active connections**. An operator-managed launch can select **1–256** with `SHIM_MAX_CONNECTIONS`; this is not a new automatic package setting. Excess connections are closed promptly, while healthy control/DERP streams keep their normal lifetime. A loopback bind alone does not exclude tailnet access under userspace networking; ACLs still matter. See [shim admission](shim-admission.md).
 
-These are read-only candidate checks:
+These checks inspect state without applying an update:
 
 ```bash
 /workspace/.dots-tailscale/dots-ts version --json
@@ -73,12 +73,12 @@ The local shim does not configure a global proxy or route unrelated applications
 
 Clone the repository from `https://github.com/abruption/dots-tailscale` into `/workspace` so the setup script and `shim.py` are available together. Cloning requires Git and GitHub HTTPS access through the cloud computer's proxy. The setup requires Linux x86_64, Python 3, `timeout`, `flock`, OpenSSL, `ssh-keygen`, and `/usr/sbin/sshd`. Installation additionally requires curl, tar, and sha256sum. Binding port 22 must be allowed for the current user; root or systemd is not required.
 
-For v0.7.1, keep all four source files together with `source-manifest.json`: `tailscale-setup.sh`, `shim.py`, `dots-ts`, and `dots_proxy.py`. The older v0.2.0 installation uses only the original two files and does not include these helpers.
+For v0.8.0, keep all four source files together with `source-manifest.json`: `tailscale-setup.sh`, `shim.py`, `dots-ts`, and `dots_proxy.py`. The older v0.2.0 installation uses only the original two files and does not include these helpers.
 
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.7.1 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
+  git clone --branch v0.8.0 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -186,6 +186,8 @@ JSON separates `package.declared_version`, `package.source_revision`, `package.i
 
 For maintainers: after intentional source changes, run `python3 scripts/source_manifest.py`, review the resulting diff, then run `python3 scripts/source_manifest.py --check`. CI runs the check without rewriting files. Regenerate only in the reviewed source checkout, not in an installed directory. A release must distribute the matching manifest alongside the four source assets; the existing v0.3.1 release does not contain it.
 
+For the first upgrade from a pre-v0.8.0 updater, follow the [independently verified bootstrap](release-provenance.md): authenticate the original manifest and all four sources before executing a candidate helper. Matching hashes alone do not authenticate the publisher.
+
 <a id="update-management"></a>
 
 ## Release checks and local notifications
@@ -194,7 +196,7 @@ These commands are included in v0.4.0 and require its helpers; publishing a rele
 
 ```bash
 /workspace/.dots-tailscale/dots-ts update check --json
-/workspace/.dots-tailscale/dots-ts update check --tag v0.7.1 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.8.0 --proxy http://browser-proxy:8889 --json
 ```
 
 The second example selects a specific stable version; it works only after that release exists. Without `--proxy`, the check uses direct HTTPS and does not inherit proxy credentials from the shell. Pass the platform download proxy explicitly when needed. This is separate from the shim and application SOCKS/HTTP proxies. HTTPS certificate verification remains enabled. No GitHub token is needed.
@@ -222,17 +224,17 @@ Choose a fixed stable release after checking it:
 This ordinary apply example requires an installed package already declaring Tailscale 1.104.4. For a 1.102.4 declaration, follow [baseline migration](security-baseline.md) instead.
 
 ```bash
-/workspace/.dots-tailscale/dots-ts update apply --tag v0.7.1 --proxy http://browser-proxy:8889 --confirm-recovery-terminal --json
+/workspace/.dots-tailscale/dots-ts update apply --tag v0.8.0 --proxy http://browser-proxy:8889 --provenance-root /workspace/trusted-tools/dots-ts/trusted-root.jsonl --confirm-recovery-terminal --json
 /workspace/.dots-tailscale/dots-ts update status --id TRANSACTION_ID --json
 ```
 
 The selected release must be published before applying it. Replace `TRANSACTION_ID` with the ID returned by apply. A reviewed local source bundle can be used when release downloads are blocked or when explicitly testing an unreleased candidate:
 
 ```bash
-/workspace/.dots-tailscale/dots-ts update apply --bundle /workspace/reviewed-bundle --confirm-recovery-terminal --json
+/workspace/.dots-tailscale/dots-ts update apply --bundle /workspace/reviewed-bundle --provenance-root /workspace/trusted-tools/dots-ts/trusted-root.jsonl --confirm-recovery-terminal --json
 ```
 
-The bundle must contain the four sources and their matching original manifest. The stable v0.7.1 updater can handle an explicitly reviewed development bundle without presenting it as a published release. The v0.8.0 candidate adds a stricter rule: targets from v0.8.0 onward require provenance, including for local selection; an unsigned development bundle is not an exception. Unsigned targets below v0.8.0 require manual `--allow-unsigned-legacy`. Hash consistency alone is not publisher authentication. See the [provenance and bootstrap guide](release-provenance.md).
+The v0.8.0 bundle must contain the four sources, their matching original manifest, `release-provenance.json` and `source-manifest.sigstore.json`. v0.8.0 enforces a stricter rule: targets from v0.8.0 onward require provenance, including for local selection; an unsigned development bundle is not an exception. Unsigned targets below v0.8.0 require manual `--allow-unsigned-legacy`. Hash consistency alone is not publisher authentication. See the [provenance and bootstrap guide](release-provenance.md).
 
 `started` means the detached worker has accepted the operation, not that the update succeeded. Poll `update status` after reconnecting. Terminal outcomes distinguish `applied`, `failed_rolled_back`, and `rollback_failed_manual_required`. Local readiness and version verification do not prove external SSH access: after `applied` or a successful rollback, open a new SSH connection with strict host-key checking and test the intended connection separately.
 
@@ -256,7 +258,7 @@ The reviewed development candidate was tested in Dots on 2026-10-21. See the [da
 
 ## Tailscale binary updater
 
-v0.7.1 includes the separate `dots-ts runtime check/apply/status` workflow. First install the matching tool package, keep an independent recovery terminal available, and verify external SSH/ping after a change. v0.7.1 defaults to 1.104.4 for new installations. Existing 1.102.4-baseline packages require the explicit [baseline migration](security-baseline.md); runtime updates remain a separate explicit command and do not enable automatic updates. See the [runtime update guide](runtime-updates.md) for the recovery limits, including the lack of automatic downgrade once execution of the candidate daemon has been attempted, even if startup fails.
+v0.8.0 includes the separate `dots-ts runtime check/apply/status` workflow. First install the matching tool package, keep an independent recovery terminal available, and verify external SSH/ping after a change. v0.8.0 defaults to 1.104.4 for new installations. Existing 1.102.4-baseline packages require the explicit [baseline migration](security-baseline.md); runtime updates remain a separate explicit command and do not enable automatic updates. See the [runtime update guide](runtime-updates.md) for the recovery limits, including the lack of automatic downgrade once execution of the candidate daemon has been attempted, even if startup fails.
 
 <a id="development-helpers"></a>
 
@@ -302,16 +304,16 @@ Applying a changed configuration requires an explicit daemon restart and can int
 
 Application proxies listen on loopback for explicitly configured local clients. They are distinct from the daemon's TLS/WebSocket shim on `127.0.0.1:18089`. Do not use that shim as an application HTTP proxy. Set a proxy on an individual curl request or child process; there is no global environment, browser, MCP, or ChatGPT connector propagation. Local processes that can reach the loopback proxy can attempt to use it, so network policy and API authentication are still required.
 
-### Install v0.7.1 without Git
+### Install v0.8.0 without Git
 
 Download the four source files and `source-manifest.json` into a separate source directory. Stop if any request fails, and review the files and hashes before installation:
 
 ```bash
 (
   set -euo pipefail
-  mkdir -p /workspace/dots-tailscale-v0.7.1
-  cd /workspace/dots-tailscale-v0.7.1
-  DOTS_TS_REF=v0.7.1
+  mkdir -p /workspace/dots-tailscale-v0.8.0
+  cd /workspace/dots-tailscale-v0.8.0
+  DOTS_TS_REF=v0.8.0
   for file in tailscale-setup.sh shim.py dots-ts dots_proxy.py source-manifest.json; do
     curl -fsSL --proxy http://browser-proxy:8889 --connect-timeout 5 --max-time 60 \
       "https://github.com/abruption/dots-tailscale/releases/download/${DOTS_TS_REF}/${file}" \
@@ -324,13 +326,13 @@ Download the four source files and `source-manifest.json` into a separate source
 After all downloads succeed and you have reviewed the files, run these commands for a fresh installation:
 
 ```bash
-cd /workspace/dots-tailscale-v0.7.1
+cd /workspace/dots-tailscale-v0.8.0
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
 bash /workspace/.dots-tailscale/start.sh login
 ```
 
-Keep the four source files and `source-manifest.json` in the same directory before running setup. If the release-asset host is unavailable, use the same tag and filenames at `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.7.1/`, or transfer the reviewed files from another trusted device. For an existing installation of v0.4.0 or later, use [update management](#update-management); for older installations, review the [legacy procedure](#restart-update). `install` does not overwrite differing installed source files.
+Keep the four source files and `source-manifest.json` in the same directory before running setup. If the release-asset host is unavailable, use the same tag and filenames at `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.8.0/`, or transfer the reviewed files from another trusted device. For an existing installation of v0.4.0 or later, use [update management](#update-management); for older installations, review the [legacy procedure](#restart-update). `install` does not overwrite differing installed source files.
 
 ### Optional noninteractive authentication
 

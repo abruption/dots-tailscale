@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.8.0
+
+- Require authenticated original-manifest provenance before v0.8.0+ package updates; retain explicit manual handling for older unsigned targets and document the first-upgrade bootstrap (#67).
+- Distinguish declared, CLI, daemon-binary and backend versions; add offline bundle inspection and bounded GitHub rate-limit backoff (#66, #72).
+- Add explicitly enabled automatic source updates and a coordinated watchdog/external recovery ledger with persistent budgets, stop intent and unknown-result fences. No scheduler or VM startup hook is installed (#31, #44).
+- Shorten eligible new-incident cooldowns only after sustained external recovery; separate strict connection-health evidence from `prior_boot` watchdog diagnostics (#61, #75).
+- Bound shim admission while retaining healthy stream lifetimes, maintain pinned Actions/static checks, and add private security-reporting and main-protection policies (#68–#71).
+
+Tailscale remains pinned to **1.104.4**. Package updates do not update the Tailscale binary pair. The advanced MCP route remains experimental; cross-account and VM-replacement support gates in #45 are still open. See the [release and verification notes](docs/releases/v0.8.0.md).
+
 ## v0.7.1 — 2026-10-29
 
 - Security: the transport shim now validates the CONNECT host and port before contacting the upstream proxy, and names cached leaf certificates by a hash of the host. Previously, if the upstream proxy accepted a crafted CONNECT host, the shim could create files with certificate suffixes outside its certificate directory, or overwrite such files with random key material ([GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m), Low). v0.1.0 through v0.7.0 are affected.

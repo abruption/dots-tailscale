@@ -6,15 +6,15 @@
 
 내 기기에서 Tailscale과 SSH로 Dots 클라우드 컴퓨터에 접속할 수 있게 해주는 도구입니다. root 권한이나 systemd 없이 설치할 수 있으며, 설치 파일과 Tailscale 기기 정보, SSH 키를 `/workspace`에 보관합니다. 실행 환경이 바뀌어도 이 경로가 남아 있다면 기존 정보를 다시 사용할 수 있습니다.
 
-**현재 릴리스는 [v0.7.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.1)입니다.** shim이 인증서를 만들기 전에 CONNECT 대상 호스트를 검증하도록 고친 보안 릴리스입니다([GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)). v0.7.0 이하 버전이 영향을 받습니다. 신규 설치의 Tailscale은 1.104.4이며, 바이너리 검증과 기존 패키지의 명시적 전환 절차를 제공합니다. OpenAI나 Tailscale의 공식 도구가 아닌 독립 프로젝트입니다.
+**이 안내는 [v0.8.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.8.0) 기준입니다. 설치 전에 릴리스 페이지에서 발행된 파일을 확인하세요.** 인증서 생성 전에 CONNECT 대상 호스트를 검증하는 v0.7.1 보안 수정을 포함합니다([GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)). v0.7.0 이하 버전이 영향을 받습니다. 신규 설치의 Tailscale은 1.104.4입니다. OpenAI나 Tailscale의 공식 도구가 아닌 독립 프로젝트입니다.
 
 **v0.6.0 등 이전 기본 버전에서 업데이트한다면:** Tailscale 기본값이 1.102.4인 패키지는 실행 파일을 먼저 갱신한 뒤 [명시적 보안 기본 버전 전환](docs/security-baseline.ko.md)을 거쳐야 합니다. 일반 `update apply`의 기본 버전 변경 제한은 유지됩니다.
 
-## 개발 브랜치: v0.8.0 후보
+## v0.8.0 기능
 
-이 체크아웃에는 **v0.8.0 개발 후보**가 들어 있습니다. v0.8.0이 정식으로 발행된 것은 아니며, 최신 안정 버전과 아래 설치 예시는 여전히 **v0.7.1** 기준입니다.
+아래 설치 예시는 **v0.8.0**으로 고정합니다. 자동 업데이트와 복구 실행기는 직접 켜야 하며, 일반 설치는 자동 시작이나 복구 작업을 등록하지 않습니다.
 
-| 개발 후보의 기능 | 알아둘 점 |
+| 기능 | 알아둘 점 |
 |---|---|
 | 실행 버전과 기준 비교 | `version`과 `doctor`가 설치에 선언된 기준과 각각 관측한 버전을 비교합니다. 연결이 정상이거나 기준과 같다는 이유만으로 안전한 버전이라고 판단하지 않습니다. |
 | 패키지 업데이트 출처 검증 | v0.8.0 이상 대상은 릴리스 출처 증명, 미리 준비한 신뢰할 수 있는 `gh`, 별도로 확보한 신뢰 루트가 필요합니다. 서명 없는 이전 버전은 명시적인 수동 검토 예외로만 다루며, 자동 업데이트에는 이 예외를 쓰지 않습니다. |
@@ -24,7 +24,7 @@
 
 공통 로컬 복구 원장은 기존 watchdog을 중지하고 내부·외부 실행 주체가 **모두** 새 복구 진입점을 사용할 때만 적용됩니다. 운영 중인 작업이 `start.sh`를 직접 호출한다면 여전히 기존 경로를 사용합니다. MCP 방식은 고급 사용자용 미리보기로 남겨 둡니다. 다른 실제 계정에서 설정과 복구를 재현한 시험은 **아직 완료하지 않았으며**, 일반적인 자동 복구 지원을 뜻하지 않습니다.
 
-활성화하기 전에 [개발 후보 사용 안내](docs/usage.ko.md#development-v080), [자동 업데이트](docs/automatic-updates.ko.md), [릴리스 출처 검증](docs/release-provenance.ko.md), [내부·외부 복구 조정](docs/recovery-lifecycle.ko.md), [실험 지원 준비 상태](docs/recovery-support-readiness.ko.md)를 확인하세요.
+활성화하기 전에 [v0.8.0 사용 안내](docs/usage.ko.md#development-v080), [자동 업데이트](docs/automatic-updates.ko.md), [릴리스 출처 검증](docs/release-provenance.ko.md), [내부·외부 복구 조정](docs/recovery-lifecycle.ko.md), [실험 지원 준비 상태](docs/recovery-support-readiness.ko.md)를 확인하세요.
 
 ## 할 수 있는 일
 
@@ -45,7 +45,7 @@
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.7.1 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.8.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -75,10 +75,12 @@ bash /workspace/.dots-tailscale/start.sh
 
 ```bash
 /workspace/.dots-tailscale/dots-ts version
-/workspace/.dots-tailscale/dots-ts update check --tag v0.7.1 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.8.0 --proxy http://browser-proxy:8889 --json
 ```
 
-v0.7.0 패키지는 같은 Tailscale 기본 버전을 선언하므로 일반 [패키지 업데이트](docs/usage.ko.md#update-management)로 v0.7.1로 올릴 수 있으며, 적용하면 수정된 shim이 다시 시작됩니다. 기본 Tailscale을 1.102.4로 선언하는 v0.6.0 등 기존 패키지는 [보안 기본 버전 전환](docs/security-baseline.ko.md)에 따라 v0.7.1로 이동하세요. 설치된 도구가 v0.6.0보다 오래됐다면 [패키지 업데이트 안내](docs/usage.ko.md#update-management)로 같은 기본 버전의 v0.6.0 도구를 먼저 준비하세요. 신뢰할 수 있는 메타데이터가 없는 이전 설치는 수동 확인이 필요합니다.
+v0.8.0 이전 updater에서 처음 전환할 때는 [독립 검증을 거치는 첫 전환 절차](docs/release-provenance.ko.md)를 따르세요. 후보 도구를 실행하기 전에 원본 manifest와 소스 네 파일의 출처를 확인해야 합니다. 해시 일치만으로 배포자를 인증할 수는 없습니다.
+
+v0.7.0 패키지는 같은 Tailscale 기본 버전을 선언하므로 일반 [패키지 업데이트](docs/usage.ko.md#update-management)로 v0.7.1로 올릴 수 있으며, 적용하면 수정된 shim이 다시 시작됩니다. 기본 Tailscale을 1.102.4로 선언하는 v0.6.0 등 기존 패키지는 [보안 기본 버전 전환](docs/security-baseline.ko.md)에 따라 v0.7.1로 이동하세요. 설치된 도구가 v0.6.0보다 오래됐다면 [패키지 업데이트 안내](docs/usage.ko.md#update-management)로 같은 기본 버전의 v0.6.0 도구를 먼저 준비하세요. 신뢰할 수 있는 메타데이터가 없는 이전 설치는 수동 확인이 필요합니다. 이 이전 버전 절차로 기본 버전을 맞춘 뒤, v0.8.0으로 전환할 때는 위의 독립 검증 절차를 따르세요.
 
 v0.6.0 이상 도구가 설치됐다면 공식 Tailscale 안정 버전을 확인할 수 있습니다.
 
@@ -86,7 +88,7 @@ v0.6.0 이상 도구가 설치됐다면 공식 Tailscale 안정 버전을 확인
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-**v0.7.1로 새로 설치하면 Tailscale은 1.104.4로 시작합니다.** 패키지 업데이트나 `install`이 기존 실행 파일을 조용히 바꾸지는 않습니다. 실행 파일을 갱신하려면 조회된 버전과 공식 공지를 검토한 뒤 [수동 업데이트 가이드](docs/runtime-updates.ko.md)를 따르세요. 기본 버전 전환은 설치된 두 실행 파일과 실행 중인 백엔드가 모두 정확히 1.104.4인 것을 확인한 뒤 소스를 바꿉니다.
+**v0.8.0으로 새로 설치하면 Tailscale은 1.104.4로 시작합니다.** 패키지 업데이트나 `install`이 기존 실행 파일을 조용히 바꾸지는 않습니다. 실행 파일을 갱신하려면 조회된 버전과 공식 공지를 검토한 뒤 [수동 업데이트 가이드](docs/runtime-updates.ko.md)를 따르세요. 기본 버전 전환은 설치된 두 실행 파일과 실행 중인 백엔드가 모두 정확히 1.104.4인 것을 확인한 뒤 소스를 바꿉니다.
 
 업데이트를 적용하기 전에 Tailscale SSH가 끊겨도 사용할 수 있는 별도의 클라우드 복구 터미널을 확인하세요. Tailscale 자체를 업데이트할 때는 외부 복구 작업을 잠시 중지하고, 새 SSH 연결과 ping이 정상인지 확인한 뒤 다시 켜세요. 새 데몬의 실행을 시도한 뒤에는 시작에 실패했더라도 자동으로 이전 버전으로 되돌리지 않습니다. 실패 원인이 불확실하면 가이드의 수동 복구 절차가 필요합니다. 패키지 코드의 원복과 Tailscale 상태 정보의 하위 버전 호환성은 별개입니다.
 
@@ -121,13 +123,13 @@ v0.6.0 이상 도구가 설치됐다면 공식 Tailscale 안정 버전을 확인
 
 고급 설정이 필요하다면 [Dots를 통한 외부 복구 실험](docs/experimental-recovery.ko.md)을 살펴보세요. 외부 감시 도구, 인증을 거치는 MCP Events 서버, 사용자가 허용한 Dots 작업으로 연결 장애 후 시작 명령 실행을 요청하는 방식입니다. 일반 설치 과정에서 이 구성을 배포하거나 복구 작업을 켜지는 않습니다.
 
-현재 실험에는 외부 서버와 SSO 설정이 필요합니다. 이벤트 처리가 지연될 수 있고, 다른 계정에서의 설정 재현이나 임의의 VM 교체 후 복구는 아직 검증하지 않았습니다. watchdog과 외부 복구 조정, 선택적 자동 업데이트는 v0.8.0 개발 후보에 구현돼 있지만 v0.7.1이나 일반 설치가 켜주는 기능은 아닙니다. 위의 실험 지원 조건을 함께 확인하세요.
+현재 실험에는 외부 서버와 SSO 설정이 필요합니다. 이벤트 처리가 지연될 수 있고, 다른 계정에서의 설정 재현이나 임의의 VM 교체 후 복구는 아직 검증하지 않았습니다. watchdog과 외부 복구 조정, 선택적 자동 업데이트는 v0.8.0에 구현돼 있지만 v0.7.1이나 일반 설치가 켜주는 기능은 아닙니다. 위의 실험 지원 조건을 함께 확인하세요.
 
 ## 문서와 구성 파일
 
 - [사용법과 문제 해결](docs/usage.ko.md) · [Tailscale 수동 업데이트](docs/runtime-updates.ko.md)
 - [비공개 HTTPS API 연결 예시](docs/private-http-api.ko.md) · [외부 복구 실험](docs/experimental-recovery.ko.md)
-- [릴리스 노트](docs/releases/v0.7.1.md) · [변경 이력](CHANGELOG.md) · [MIT 라이선스](LICENSE)
+- [릴리스 노트](docs/releases/v0.8.0.md) · [변경 이력](CHANGELOG.md) · [MIT 라이선스](LICENSE)
 
 | 경로 | 역할 |
 |---|---|

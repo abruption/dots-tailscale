@@ -1,7 +1,8 @@
 # Release provenance and the update trust boundary
 
-These features belong to the **v0.8.0 development candidate**. The latest published
-stable release is v0.7.1; publishing this branch does not upgrade an installation.
+This guide covers features included in **v0.8.0**. Check the release page for
+published artifacts. Installing the package does not enable automatic updates or
+register a recovery task.
 
 Starting with package **v0.8.0**, the updater requires a GitHub Actions artifact
 attestation for the exact original `source-manifest.json`. That manifest binds
