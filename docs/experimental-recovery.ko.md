@@ -24,7 +24,7 @@
 2. 외부 Linux 서버, `dots-events.example.com` 같은 공개 HTTPS 주소, Caddy, 개인 Authelia SSO를 준비합니다. 정확한 허용 계정·OAuth 클라이언트·리디렉션 URI·리소스를 설정합니다. Caddy는 `/authorize`와 `/oauth/consent` 모두에서 인증하고 클라이언트가 보낸 신원 헤더를 제거해야 합니다. 두 upstream 경로 모두에서 `X-Dots-Client-IP`를 Caddy의 `{client_ip}` 값으로 덮어씁니다. 보강된 서버는 전용 Unix 계정과 접근이 제한된 Unix 소켓을 사용합니다.
 3. [서버 설정 예시](../research/mcp-events/config.example.json), [보안 배포 설명](../research/mcp-events/security-hardening.md), `research/mcp-events/` 코드를 검토합니다. 예시는 복구가 꺼진 상태입니다. 관리자 권한 bootstrap은 **이미 운영 중인 시험 설치를 이전하는 도구**이며, 새 서버용 설치기가 아닙니다. 이 자료만으로 다른 계정에서 처음부터 설치하는 과정은 독립 재현하지 않았습니다. 서비스 경로·의존성 잠금 파일·프록시·SSO 설정을 환경에 맞게 확인한 뒤 적용하세요.
 4. tailnet에 접근할 수 있고 SSH·ping을 각각 확인하는 상시 감시 장비를 준비합니다. 별도 [HTTPS 전달기와 기기용 인증정보](../research/mcp-events/relay-transport.md)를 설정합니다. 인증정보와 실행 상태는 저장소 밖의 전용 비공개 디렉터리에 보관합니다. 토큰·콜백 URL/secret·노드 state·개인키는 공개하지 마세요. Mac 구현은 기기가 깨어 있고 온라인이며, LaunchAgent를 실행할 GUI 로그인 세션이 있어야 합니다.
-5. Dots에 사용자 지정 MCP 앱을 연결하고 `events:observe`, `recovery:execute` 권한을 승인합니다. 해당 앱의 제한된 복구 도구만 의도한 무인 작업에서 사용하도록 설정합니다. [저장된 작업 지침](../research/mcp-events/dots-recovery-instructions.ko.txt)과 [상시 시험 계약](../research/mcp-events/continuous-trial.md)을 검토하세요. 서버 프로세스뿐 아니라 이벤트 구독과 OAuth 갱신도 계속 동작해야 합니다.
+5. Dots에 사용자 지정 MCP 앱을 연결하고 `events:observe`, `recovery:execute` 권한을 승인합니다. 해당 앱의 제한된 복구 도구만 의도한 무인 작업에서 사용하도록 설정합니다. [저장된 작업 지침](../research/mcp-events/dots-recovery-instructions.ko.txt)과 [상시 시험 운영 기준](../research/mcp-events/continuous-trial.md)을 검토하세요. 서버 프로세스뿐 아니라 이벤트 구독과 OAuth 갱신도 계속 동작해야 합니다.
 6. 정상 관측과 읽기 전용 이벤트 확인부터 시작합니다. SSH·ping이 정상일 때 복구 시도가 생기지 않아야 합니다. 장애를 일부러 발생시키려면 먼저 Dots 클라우드 터미널에 별도로 접근할 수 있어야 합니다. 이벤트 구독이나 시험 콜백 성공만으로 실제 복구를 확인했다고 판단하지 마세요.
 
 ### OAuth 요청 제한과 프록시 신뢰 경계

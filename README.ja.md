@@ -4,11 +4,11 @@
 
 <p align="center"><a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · 日本語</p>
 
-Tailscale と SSH を使って、自分の端末から Dots のクラウドコンピューターに接続できます。dots-tailscale は root 権限や systemd を使わずに必要なツールをインストールし、インストールファイル、Tailscale のノード状態、SSH の識別情報を `/workspace` に保存します。環境が変わってもこのディレクトリが残っていれば、そのまま再利用できます。
+Tailscale と SSH を使って、自分の端末から Dots のクラウドコンピューターに接続できます。dots-tailscale は root 権限や systemd を使わずに必要なツールをインストールし、インストール一式、Tailscale のノード状態、SSH の識別情報を `/workspace` に保存します。環境が変わってもこのディレクトリが残っていれば、そのまま再利用できます。
 
 **このガイドは [v0.8.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.8.0) を対象としています。インストール前にリリースページで公開済みのファイルを確認してください。** 証明書生成前に CONNECT 先ホストを検証する v0.7.1 のセキュリティ修正を含みます（[GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)）。v0.7.0 以前が影響を受けます。新規インストールの Tailscale は 1.104.4 です。OpenAI や Tailscale の公式ツールではない独立プロジェクトです。
 
-**v0.6.0 など旧基準からの更新:** Tailscale の既定値が 1.102.4 のパッケージでは、先にランタイムを更新してから[明示的な基準バージョン移行（英語）](docs/security-baseline.md)を行ってください。通常の `update apply` の変更ガードは維持されます。
+**v0.6.0 など旧基準からの更新:** Tailscale の既定値が 1.102.4 のパッケージでは、先にランタイムを更新してから[明示的な基準バージョン移行（英語）](docs/security-baseline.md)を行ってください。通常の `update apply` では、基準バージョンをまたぐ変更は引き続き拒否されます。
 
 ## v0.8.0 の機能
 

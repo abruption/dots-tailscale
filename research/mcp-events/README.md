@@ -10,7 +10,7 @@ subscriptions are disabled; the continuous recovery subscription is separate.
 
 ## Question
 
-Can an observer outside the Dots VM deliver an event to a subscribed dot,
+Can an observer outside the Dots VM deliver an event to a subscribed Dots agent,
 which then runs the existing startup script in its own cloud computer?
 
 Persisted Tailscale state and an external startup trigger solve different parts

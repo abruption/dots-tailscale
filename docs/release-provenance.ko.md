@@ -2,9 +2,9 @@
 
 [English](release-provenance.md)
 
-이 문서는 v0.8.0부터 적용하는 출처 검증 정책을 설명합니다. 배포 파일은 릴리스 페이지에서 확인하세요.
+이 문서는 v0.8.0부터 적용하는 출처 검증 정책을 설명합니다. 배포 파일은 릴리스 페이지에서 확인하세요. 패키지를 설치해도 자동 업데이트가 켜지거나 복구 작업이 등록되지는 않습니다.
 
-패키지 **v0.8.0부터** 업데이트 대상의 원본 `source-manifest.json`에 대한 GitHub Actions artifact attestation을 요구합니다. 이 명세가 실행 소스 네 개의 SHA-256을 연결합니다. 검증은 문법 검사, 트랜잭션 준비, 코드 교체, 후보 실행 전에 수행합니다. 분리된 worker도 준비된 명세가 검증 기록에 남은 것과 같은지 확인합니다. 이 정책으로 설치·노드 state·SSH 키·별도 Tailscale 바이너리 업데이트의 계약이 바뀌지는 않습니다.
+패키지 **v0.8.0부터** 업데이트 대상의 원본 `source-manifest.json`에 대한 GitHub Actions artifact attestation을 요구합니다. 이 명세가 실행 소스 네 개의 SHA-256을 연결합니다. 검증은 문법 검사, 트랜잭션 준비, 코드 교체, 후보 실행 전에 수행합니다. 분리된 worker도 준비된 명세가 검증 기록에 남은 것과 같은지 확인합니다. 이 정책은 설치 절차, 노드 state·SSH 키 관리, 별도 Tailscale 바이너리 업데이트 방식에는 영향을 주지 않습니다.
 
 ## 무엇을 신뢰하나요?
 
@@ -20,11 +20,11 @@
 - 소유자 `abruption`, 숫자 소유자 ID `23277516`
 - 해당 저장소의 `.github/workflows/release-provenance.yml` 워크플로
 - 후보 명세의 버전과 정확히 일치하는 안정 태그 `refs/tags/vX.Y.Z`
-- 인증서와 출처 문장에 연결된 소스 커밋
+- 인증서와 출처 진술에 연결된 소스 커밋
 - GitHub Actions의 OIDC issuer와 GitHub가 호스팅하는 runner
 - SLSA provenance v1과 원본 명세의 정확한 SHA-256
 
-인증서의 인증된 필드와 검증된 문장의 워크플로·ref·소스 의존성이 모두 일치해야 합니다. 이동 가능한 `release-provenance.json`은 이 확인을 통과하기 전까지 **신뢰할 수 없는 선택 정보**일 뿐입니다. 서명 확인 없이 DSSE payload를 풀어 읽은 주장이나, 저장된 “검증 성공” 텍스트를 신뢰하지 않습니다.
+인증서의 인증된 필드와 검증된 출처 진술에 담긴 워크플로·ref·소스 의존성이 모두 일치해야 합니다. 별도로 전달할 수 있는 `release-provenance.json`은 이 확인을 통과하기 전까지 **신뢰할 수 없는 선택용 메타데이터**일 뿐입니다. 서명 확인 없이 DSSE payload를 풀어 읽은 주장이나, 저장된 “검증 성공” 텍스트를 신뢰하지 않습니다.
 
 검증기는 비공개 임시 GitHub 설정 디렉터리와 home에서, 최소한의 고정 환경만 받아 실행합니다. 기존 자격증명·프록시·로더 설정을 넘기거나 대화형 입력을 받지 않습니다. 검증은 30초, stdout은 2 MiB로 제한하고 원시 오류를 사용자 진단에 복사하지 않습니다. 검증기 버전 조회는 별도로 5초·4 KiB로 제한합니다.
 
@@ -32,7 +32,7 @@
 
 신뢰 루트 파일은 비공개 임시 검증 경로로 복사합니다. `--bundle`과 `--custom-trusted-root`를 쓰면 `gh`가 attestation을 받거나 TUF 메타데이터를 갱신하지 않고 제공된 증거를 검증합니다. 독립적으로 신뢰하는 장비에 설치된 `gh attestation trusted-root`로 루트를 확보·갱신하고, 출처를 확인해 따로 전송하세요. 릴리스 묶음에 `trusted-root.jsonl`이 들어 있다는 사실만으로 그 파일을 신뢰할 수는 없습니다.
 
-이 정책이 이미 침해된 로컬 운영자·root, 악성 검증기, 바뀐 신뢰 루트, 허용된 attestation을 만들 권한이 있는 관리자·워크플로·계정의 침해까지 막는 것은 아닙니다. 문장의 predicate는 워크플로가 제어하므로 소스·ref를 OIDC 인증서와 함께 묶어 확인합니다. 그렇다고 워크플로 자체가 침해될 수 없다는 뜻은 아닙니다. 브랜치·태그·워크플로 보호와 독립 리뷰도 계속 필요합니다.
+이 정책이 이미 침해된 로컬 운영자·root, 악성 검증기, 바뀐 신뢰 루트, 허용된 attestation을 만들 권한이 있는 관리자·워크플로·계정의 침해까지 막는 것은 아닙니다. 출처 진술의 predicate는 워크플로가 제어하므로 소스·ref를 OIDC 인증서와 함께 묶어 확인합니다. 그렇다고 워크플로 자체가 침해될 수 없다는 뜻은 아닙니다. 브랜치·태그·워크플로 보호와 독립 리뷰도 계속 필요합니다.
 
 숫자 저장소·소유자 ID를 고정하면 오프라인에서도 이름 재사용을 거부할 수 있지만, 현재 소유권이나 철회 상태를 새로 조회하는 것은 아닙니다. 최신 릴리스인지, 서명 이후 태그가 다른 커밋으로 옮겨졌는지까지 확인하지는 않습니다. 선택한 버전·ref는 일치해야 하며 자동 업데이트는 별도로 prerelease와 downgrade를 제외해야 합니다. 유효한 과거 attestation 하나가 곧 설치 허가는 아닙니다.
 
@@ -65,16 +65,16 @@
 
 **Release provenance candidate** 워크플로는 정해진 저장소의 안정 버전 태그에서만 동작합니다. 검증 job은 `contents: read`만 갖고 시험 도구를 설치한 뒤 원본 명세·Bash 문법·오프라인 시험을 확인합니다. 이 job에는 `id-token: write`나 `attestations: write`를 부여하지 않습니다.
 
-별도의 서명 job은 검증 성공을 기다린 다음, 같은 `github.sha`를 새로 체크아웃해 후보를 다시 만듭니다. 검증 job의 서명 없는 artifact를 내려받아 신뢰하지 않습니다. 서명 job은 runner에 미리 설치된 `/usr/bin/python3` 3.11 이상을 사용합니다. 첫 Python 실행을 격리하고, 표준 라이브러리 빌드 도구의 하위 실행에도 시스템 도구 경로와 안전한 Python import 설정을 적용합니다. 서명 권한을 가진 채로 패키지 설치·setup-python·전체 시험을 실행하지 않습니다. 빌드 도구는 계속 체크아웃 커밋·태그·`VERSION`의 일치를 요구합니다. SHA로 고정한 GitHub action으로 원본 명세와 두 소스 압축 파일에 attestation을 발행하고, 이동 가능한 증거를 `source-manifest.sigstore.json`으로 보관합니다. job을 나눠도 허용된 워크플로 신원·소스 ref·커밋 정책은 바뀌지 않습니다.
+별도의 서명 job은 검증 성공을 기다린 다음, 같은 `github.sha`를 새로 체크아웃해 후보를 다시 만듭니다. 검증 job의 서명 없는 artifact를 내려받아 신뢰하지 않습니다. 서명 job은 runner에 미리 설치된 `/usr/bin/python3` 3.11 이상을 사용합니다. 첫 Python 실행을 격리하고, 표준 라이브러리 빌드 도구의 하위 실행에도 시스템 도구 경로와 안전한 Python import 설정을 적용합니다. 서명 권한을 가진 채로 패키지 설치·setup-python·전체 시험을 실행하지 않습니다. 빌드 도구는 계속 체크아웃 커밋·태그·`VERSION`의 일치를 요구합니다. SHA로 고정한 GitHub action으로 원본 명세와 두 소스 압축 파일에 attestation을 발행하고, 별도로 전달할 수 있는 증거를 `source-manifest.sigstore.json`으로 보관합니다. job을 나눠도 허용된 워크플로 신원·소스 ref·커밋 정책은 바뀌지 않습니다.
 
 서명 job은 여전히 GitHub가 호스팅하는 runner와 사전 설치된 인터프리터, 검토한 저장소의 빌드·명세 도구, SHA로 고정한 checkout·attestation·upload Actions를 신뢰합니다. 배포자 권한으로 실행되는 불필요한 코드를 줄이는 설계이지, runner·인터프리터·저장소·모든 제삼자 침해를 막는다는 보장은 아닙니다.
 
-결과 artifact에는 기존 릴리스 파일 여덟 개와 선택 정보·Sigstore 묶음이 더해져 파일 열 개가 들어 있습니다. 워크플로는 이동 가능한 묶음을 복사한 뒤 그 체크섬을 `SHA256SUMS`에 추가하므로, 자기 자신을 제외한 배포 파일 아홉 개가 모두 포함됩니다. 체크섬은 배포 파일의 일관성을 확인하며, Sigstore 묶음의 인증은 attestation 검증으로 수행합니다. 워크플로는 관리자가 검토할 임시 Actions artifact만 올립니다. GitHub Release를 만들거나 기존 릴리스를 덮어쓰거나 운영 환경에 배포하지 않습니다. 관리자는 정확한 실행·소스·태그를 확인하고 증거를 독립적으로 검증한 뒤 다시 빌드하지 않은 원본 후보 바이트를 발행해야 합니다.
+결과 artifact에는 기존 릴리스 파일 여덟 개와 선택용 메타데이터·Sigstore 묶음이 더해져 파일 열 개가 들어 있습니다. 워크플로는 별도로 전달할 수 있는 묶음을 복사한 뒤 그 체크섬을 `SHA256SUMS`에 추가하므로, 자기 자신을 제외한 배포 파일 아홉 개가 모두 포함됩니다. 체크섬은 배포 파일의 일관성을 확인하며, Sigstore 묶음의 인증은 attestation 검증으로 수행합니다. 워크플로는 관리자가 검토할 임시 Actions artifact만 올립니다. GitHub Release를 만들거나 기존 릴리스를 덮어쓰거나 운영 환경에 배포하지 않습니다. 관리자는 정확한 실행·소스·태그를 확인하고 증거를 독립적으로 검증한 뒤 다시 빌드하지 않은 원본 후보 바이트를 발행해야 합니다.
 
 ## 검증한 범위
 
 오프라인 시험은 신뢰하는 `gh`의 성공을 mock한 뒤 정책용 fixture를 parser에 넣습니다. 다른 저장소·소유자 ID, 워크플로, ref, 소스 커밋, 명세·소스 바이트, 누락된 증거, 새 버전의 unsigned 예외와 이전 버전 fallback 거부를 시험합니다. 실제 로컬 자식 프로세스로 출력·시간 제한도 확인합니다. 이 fixture는 암호학적 서명이나 새 운영 attestation이 아니며 태그 워크플로가 실행됐다는 증거도 아닙니다. 실제 발행 전에는 해당 워크플로를 실행하고 신뢰하는 `gh`로 결과를 검증해야 합니다. 이 fixture 시험에서는 실제 Dots 운영 환경 설치나 공격 시나리오를 검증하지 않았습니다.
 
-별도의 도구 계약 점검에서는 [GitHub CLI v2.103.3의 공개 fixture](https://github.com/cli/cli/tree/v2.103.3/pkg/cmd/attestation/test/data)와 독립적으로 받은 신뢰 루트를 사용했습니다. 실제 `gh`가 정확한 워크플로·ref·소스에 고정된 `actions/attest-demo` 증명은 허용하고 저장소 선택이나 artifact 바이트가 바뀐 경우는 거부했습니다. 이는 CLI 옵션과 출력 구조를 확인한 것이지 dots-tailscale에 발행된 attestation이 아닙니다.
+별도의 도구 동작 점검에서는 [GitHub CLI v2.103.3의 공개 fixture](https://github.com/cli/cli/tree/v2.103.3/pkg/cmd/attestation/test/data)와 독립적으로 받은 신뢰 루트를 사용했습니다. 실제 `gh`가 정확한 워크플로·ref·소스에 고정된 `actions/attest-demo` 증명은 허용하고 저장소 선택이나 artifact 바이트가 바뀐 경우는 거부했습니다. 이는 CLI 옵션과 출력 구조를 확인한 것이지 dots-tailscale에 발행된 attestation이 아닙니다.
 
-도구의 공식 계약: [GitHub CLI attestation verify](https://cli.github.com/manual/gh_attestation_verify), [trusted-root](https://cli.github.com/manual/gh_attestation_trusted-root), [GitHub artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds).
+도구의 공식 문서: [GitHub CLI attestation verify](https://cli.github.com/manual/gh_attestation_verify), [trusted-root](https://cli.github.com/manual/gh_attestation_trusted-root), [GitHub artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds).
