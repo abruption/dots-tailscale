@@ -1,0 +1,90 @@
+name: Release provenance candidate
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate exact release source
+    if: github.repository == 'abruption/dots-tailscale' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+      - name: Ensure isolated test tools are installed
+        run: |
+          if ! test -x /usr/sbin/sshd || ! command -v cc >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --yes openssh-client openssh-server gcc
+          fi
+      - name: Validate original source manifest, shell and offline tests
+        run: |
+          python scripts/source_manifest.py --check
+          bash -n tailscale-setup.sh
+          python -m unittest discover -s tests -v
+
+  provenance:
+    name: Build and attest release candidate
+    needs: validate
+    if: github.repository == 'abruption/dots-tailscale' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check preinstalled runner Python
+        run: >-
+          /usr/bin/python3 -I -c
+          'import sys; sys.exit(0 if sys.version_info >= (3, 11) else "Python 3.11+ required")'
+      - name: Build exact source release candidate
+        env:
+          PATH: /usr/bin:/bin
+          PYTHONSAFEPATH: '1'
+          PYTHONNOUSERSITE: '1'
+        run: /usr/bin/python3 -I scripts/build_release_candidate.py --tag "$RELEASE_TAG" --commit "$GITHUB_SHA"
+      - name: Attest manifest and source archives
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/source-manifest.json
+            dist/dots-tailscale-*.tar.gz
+            dist/dots-tailscale-*.zip
+      - name: Retain portable attestation evidence
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          test -f "$ATTESTATION_BUNDLE"
+          cp -- "$ATTESTATION_BUNDLE" dist/source-manifest.sigstore.json
+          (cd dist && sha256sum source-manifest.sigstore.json >> SHA256SUMS)
+      - name: Upload candidate for separate maintainer review and publication
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dots-tailscale-${{ github.ref_name }}-candidate
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

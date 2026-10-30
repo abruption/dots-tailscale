@@ -1,0 +1,14 @@
+[
+  {
+    "case": "valid-upstream-fixture",
+    "exit": 0
+  },
+  {
+    "case": "wrong-repository",
+    "exit": 1
+  },
+  {
+    "case": "modified-subject",
+    "exit": 1
+  }
+]

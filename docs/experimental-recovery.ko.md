@@ -2,6 +2,12 @@
 
 [English](experimental-recovery.md)
 
+## v0.8.0 개발 후보의 통합 경로
+
+새 로컬 복구 통합 경로는 명시적으로 켜는 개발 후보입니다. 기존 작업이나 발행된 v0.7.1 패키지를 자동으로 바꾸지 않습니다. [설정·공개 조건](recovery-support-readiness.ko.md)과 [로컬 수명 주기 가이드](recovery-lifecycle.ko.md)를 먼저 확인하세요. 별도로 배포한 broker는 맞는 로컬 helper가 준비된 뒤 `recovery_local_coordination: true`를 명시하기 전까지 기존 시작 명령을 유지합니다. 이 모드에서만 버전 관리된 [영문](../research/mcp-events/coordinated-recovery-instructions.en.txt)·[한국어](../research/mcp-events/coordinated-recovery-instructions.ko.txt) 통합 지침을 사용하세요. 아래의 이전 시험 지침은 과거·기존 방식용이며, 패키지만 바꾼다고 자동으로 수정되지는 않습니다.
+
+통합 경로의 로컬 실행 예산과 외부 claim 예산도 별개입니다. 내부·외부 경로를 모두 바꾸고 예전 개인 watchdog을 중지해야 로컬 시도들이 같은 원장을 쓴다고 말할 수 있습니다. 로컬 준비 완료와 외부 SSH·ping 확인은 계속 구분합니다. 이번에는 별도 실제 ChatGPT 계정을 제공받을 수 없어 새 계정 설정과 일반 지원은 미검증으로 남깁니다. 두 소유자의 격리 fixture 시험이 그 실환경 검증을 대신하지는 않습니다.
+
 외부에서 연결 장애를 감지한 뒤 Dots에게 기존 dots-tailscale을 다시 시작하도록 요청하는 **고급 사용자용 실험 기능**입니다. Dots 밖의 서버와 감시 장비, 사용자가 승인한 Dots 작업이 필요합니다. 일반 패키지를 설치해도 이 기능이 켜지지는 않으며, 원클릭 설치나 모든 장애의 자동복구를 보장하지 않습니다.
 
 ## 어디까지 확인했나요?

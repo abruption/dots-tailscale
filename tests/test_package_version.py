@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -110,13 +111,15 @@ class PackageVersionTests(unittest.TestCase):
 
     def binary(self, body):
         path = self.directory / "tailscale"
-        path.write_text("#!" + sys.executable + "\n" + body)
+        path.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + " -c " + shlex.quote(body) + "\n")
         path.chmod(0o700)
 
     def test_local_tailscale_is_separate_and_output_bounded(self):
         self.binary("print('1.102.4')\nprint('long build description')\n")
         self.assertEqual(tool.tailscale_version(self.directory), {"version": "1.102.4", "status": "available"})
         self.binary("print('x' * 10000)\n")
+        self.assertEqual(tool.tailscale_version(self.directory)["status"], "invalid_response")
+        self.binary("import sys; sys.stdout.buffer.write(b'\\xff')\n")
         self.assertEqual(tool.tailscale_version(self.directory)["status"], "invalid_response")
         self.binary("import time\ntime.sleep(10)\n")
         with mock.patch.object(tool, "MANAGEMENT_TIMEOUT", .05):

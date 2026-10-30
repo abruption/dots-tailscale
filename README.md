@@ -10,6 +10,22 @@ Use Tailscale and SSH to reach your Dots cloud computer from your own devices. d
 
 **Upgrading from v0.6.0 or an older baseline:** packages declaring Tailscale 1.102.4 need the [explicit security-baseline migration](docs/security-baseline.md), after a separate runtime upgrade. Ordinary `update apply` keeps its cross-baseline guard.
 
+## Development branch: v0.8.0 candidate
+
+This checkout contains the **v0.8.0 development candidate**, not a published v0.8.0 release. The latest stable release and the installation examples below remain **v0.7.1**.
+
+| Candidate feature | What to expect |
+|---|---|
+| Runtime baseline diagnostics | `version` and `doctor` compare the declared baseline with separately observed versions. A healthy connection or matching baseline is not a security verdict. |
+| Stronger package-update verification | Targets from v0.8.0 onward require release provenance, a preinstalled trusted `gh` and an independently prepared trust root. Older unsigned targets need explicit manual review; automatic updates cannot use that exception. |
+| Offline release inspection | `update check --bundle` compares a reviewed local bundle without changing the installation. It does not establish fresh publication or publisher identity. |
+| Bounded shim admission | The default budget is 64 active connections; an operator-managed launch can select 1–256. Healthy control/DERP streams keep their normal lifetime. |
+| Optional update and recovery runners | Both stay off until explicitly enabled. A runner still needs an execution environment; it cannot restart itself after VM replacement. Automatic package updates do not update Tailscale binaries. |
+
+The local recovery ledger is shared only after the older watchdog is stopped and **both** local and external actors use the coordinated entry point. Existing production tasks that call `start.sh` directly still follow the legacy path. The MCP route remains an advanced preview: a second real account has **not** completed setup/recovery reproduction, so this is not a claim of general automatic-recovery support.
+
+Read the [candidate usage notes](docs/usage.md#development-v080), [automatic updates](docs/automatic-updates.md), [release provenance](docs/release-provenance.md), [coordinated recovery](docs/recovery-lifecycle.md) and [preview readiness](docs/recovery-support-readiness.md) before opting in.
+
 ## What you can do
 
 | Task | How it helps |
@@ -105,7 +121,7 @@ This maintainer-provided screenshot is a historical installation/status check, n
 
 Advanced users can explore [Dots-assisted external recovery](docs/experimental-recovery.md). It uses an external monitor, an authenticated MCP Events server and an authorized Dots task to request a start command after a connection failure. The normal installer does not deploy this infrastructure or enable a recovery task.
 
-The current experiment requires external server/SSO setup. Event processing can be delayed; setup on another account and recovery after arbitrary VM replacement remain unverified. Watchdog coordination and opt-in automatic updates are deferred to v0.8.0; v0.7.1 does not enable them.
+The current experiment requires external server/SSO setup. Event processing can be delayed; setup on another account and recovery after arbitrary VM replacement remain unverified. Watchdog coordination and opt-in automatic updates are implemented in the v0.8.0 development candidate, but are not enabled by v0.7.1 or by ordinary installation. See the preview readiness gates above.
 
 ## Documentation and project files
 

@@ -74,9 +74,10 @@ class UpdateNoticeTests(unittest.TestCase):
 
     def test_failed_refresh_retains_last_success_and_marks_stale(self):
         before = self.enable_and_refresh()
+        # Independent error projections; real lock/backoff sharing has its own regressions.
         for code in ("offline", "rate_limited", "tls_error"):
             with mock.patch.object(tool.time, "time", return_value=before["checked_at"] + 10), \
-                    mock.patch.object(tool, "fetch_release", side_effect=tool.UpdateError(code)):
+                    mock.patch.object(tool, "rate_limit_release", side_effect=tool.UpdateError(code)):
                 after = tool.notification_refresh(self.directory, force=True)
             self.assertEqual(after["checked_at"], before["checked_at"])
             self.assertEqual(after["release"], before["release"])
