@@ -141,8 +141,15 @@ def patch_server(body):
         'max_claims_per_24h': "cfg.get('recovery_max_claims_per_24h', 3)",
         'cooldown_seconds': "cfg.get('recovery_cooldown_seconds', 3600)",
         'new_incident_cooldown_seconds': "cfg.get('recovery_new_incident_cooldown_seconds')",
+        'local_coordination': "cfg.get('recovery_local_coordination', False)",
     }
-    if set(names) not in (set(expected) - {'new_incident_cooldown_seconds'}, set(expected)):
+    required = {'max_claims_per_24h', 'cooldown_seconds'}
+    supported_shapes = {
+        frozenset(required | optional)
+        for optional in (set(), {'new_incident_cooldown_seconds'}, {'local_coordination'},
+                         {'new_incident_cooldown_seconds', 'local_coordination'})
+    }
+    if frozenset(names) not in supported_shapes:
         raise ValueError('unexpected recovery policy call shape')
     for keyword in call.keywords:
         if _expression(keyword.value) != _expression(ast.parse(expected[keyword.arg], mode='eval').body):
@@ -168,7 +175,7 @@ def patch_server(body):
     return result
 
 
-def config_candidate(body, seconds):
+def config_candidate(body, seconds, max_claims_per_24h=None):
     def unique(pairs):
         result = {}
         for key, value in pairs:
@@ -187,10 +194,16 @@ def config_candidate(body, seconds):
     cooldown = value.get('recovery_cooldown_seconds', 3600)
     if type(budget) is not int or not 1 <= budget <= 24:
         raise ValueError('invalid existing claim budget')
+    if max_claims_per_24h is not None and (
+            type(max_claims_per_24h) is not int or not 1 <= max_claims_per_24h <= 24):
+        raise ValueError('new claim budget must be an integer from 1 to 24')
     if type(cooldown) is not int or not 300 <= cooldown <= 86400:
         raise ValueError('invalid existing global cooldown')
     if type(seconds) is not int or not 300 <= seconds <= cooldown:
         raise ValueError('new incident interval must be from 300 to the existing cooldown')
+    if max_claims_per_24h is not None:
+        value['recovery_max_claims_per_24h'] = max_claims_per_24h
+        budget = max_claims_per_24h
     value['recovery_new_incident_cooldown_seconds'] = seconds
     return value, {'max_claims_per_24h': budget, 'cooldown_seconds': cooldown,
                    'new_incident_cooldown_seconds': seconds}
@@ -223,6 +236,8 @@ def main():
     parser.add_argument('--expected-server-sha256', required=True)
     parser.add_argument('--candidate-core-sha256', required=True)
     parser.add_argument('--new-incident-cooldown-seconds', type=int, required=True)
+    parser.add_argument('--max-claims-per-24h', type=int,
+                        help='explicitly set the rolling claim cap (integer 1..24); omission preserves the current value')
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('root required')
@@ -238,7 +253,8 @@ def main():
     initial_config, initial_meta = read_regular(CONFIG, account.pw_uid)
     if stat.S_IMODE(initial_meta.st_mode) != 0o600:
         raise ValueError('private configuration permissions required')
-    config_candidate(initial_config, args.new_incident_cooldown_seconds)
+    config_candidate(initial_config, args.new_incident_cooldown_seconds,
+                     args.max_claims_per_24h)
     locks = []
     try:
         # The release updater owns the first lock; earlier policy helpers own the
@@ -250,7 +266,8 @@ def main():
         original, config_meta = read_regular(CONFIG, account.pw_uid)
         if stat.S_IMODE(config_meta.st_mode) != 0o600:
             raise ValueError('private configuration permissions required')
-        cfg, policy = config_candidate(original, args.new_incident_cooldown_seconds)
+        cfg, policy = config_candidate(original, args.new_incident_cooldown_seconds,
+                                       args.max_claims_per_24h)
         patched = patch_server(server)
         parsed_origin = urlsplit(cfg['origin'])
         if (parsed_origin.scheme != 'https' or not parsed_origin.hostname
@@ -333,7 +350,7 @@ def main():
                 raise ValueError('new policy not exposed by installed server')
             for key in ('max_claims_per_24h', 'cooldown_seconds'):
                 if observed['policy'].get(key) != policy[key]:
-                    raise ValueError('existing policy changed')
+                    raise ValueError('requested policy not exposed by installed server')
             phase = 'start_broker'
             run(['systemctl', 'start', *UNITS])
             health()
