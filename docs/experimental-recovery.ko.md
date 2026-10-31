@@ -43,7 +43,7 @@ MCP 서버가 원격 셸을 실행하지는 않습니다. claim 만료 시각은
 
 ## 정책과 운영 상태 확인
 
-기본값은 **최근 24시간 최대 3회, 실행 허가 사이 최소 3,600초**입니다. 관리자 시험은 간격을 유지하면서 최대 12회로 명시적으로 설정했습니다. 성공한 시도도 횟수에 포함됩니다. 설정 키는 `recovery_max_claims_per_24h`, `recovery_cooldown_seconds`이며, 정책 변경은 서버 설정 검토를 거쳐야 합니다. Dots에게 제한을 무시하라고 요청하는 방식으로 바꾸지 마세요.
+기본값은 **최근 24시간 최대 3회, 실행 허가 사이 최소 3,600초**입니다. 관리자 시험은 간격을 유지하면서 최대 12회로 명시적으로 설정했습니다. 성공한 시도도 횟수에 포함됩니다. 별도로 검토할 [운영 한도 24회 변경안](../research/mcp-events/recovery-budget.ko.md)이 있으며, 패키지 기본값 변경이나 운영 반영 완료를 뜻하지는 않습니다. 설정 키는 `recovery_max_claims_per_24h`, `recovery_cooldown_seconds`이며, 정책 변경은 서버 설정 검토를 거쳐야 합니다. Dots에게 제한을 무시하라고 요청하는 방식으로 바꾸지 마세요.
 
 MCP의 `get_current_recovery`로 `observation_fresh`, `claimable`, `eligibility_reason`, `retry_at`, `policy`를 확인합니다. `retry_at`은 참고 시각입니다. 그 시간이 지나도 최신 상태를 다시 조회하고 새 claim을 받아야 실행할 수 있습니다. 같은 incident ID로 알림이 다시 올 수 있지만, 새 실행 권한을 뜻하지 않습니다. 원래 장애·claim·전송 이력은 보존됩니다. 이미 claim이 있는 장애는 결과가 불명확해도 다시 claim하거나 실행하지 않습니다.
 

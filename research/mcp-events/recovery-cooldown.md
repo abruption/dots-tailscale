@@ -148,3 +148,5 @@ only legacy claims, confirmation evidence is deliberately not backfilled. Actual
 a separate end-to-end observation. To disable the short path, remove/set the
 new configuration key to `null` through a controlled operator change; leave all
 budgets and histories intact.
+
+For the later proposed operating increase from 12 to 24 claims, see the [recovery budget guide](recovery-budget.md). That proposal preserves both intervals and existing claim history; it does not change the defaults described here.

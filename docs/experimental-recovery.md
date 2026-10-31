@@ -55,7 +55,7 @@ The broker does not execute a remote shell. The claim's expiry must be respected
 
 ## Policy and operating status
 
-The default is **three claims per rolling 24 hours, at least 3,600 seconds apart**. The maintainer's trial uses an explicit 12-claim limit with the same interval. Successful attempts also count. Operator configuration keys are `recovery_max_claims_per_24h` and `recovery_cooldown_seconds`; changes require reviewed server configuration, not a prompt asking Dots to bypass policy.
+The default is **three claims per rolling 24 hours, at least 3,600 seconds apart**. The maintainer's trial uses an explicit 12-claim limit with the same interval. Successful attempts also count. A separate [24-claim operating change](../research/mcp-events/recovery-budget.md) is now proposed; it is not a changed package default or evidence of deployment. Operator configuration keys are `recovery_max_claims_per_24h` and `recovery_cooldown_seconds`; changes require reviewed server configuration, not a prompt asking Dots to bypass policy.
 
 Use the MCP `get_current_recovery` tool to inspect `observation_fresh`, `claimable`, `eligibility_reason`, `retry_at`, and `policy`. A future `retry_at` is advisory. Even after that time, Dots must reread fresh state and obtain an accepted claim. A reminder can carry the same incident ID; it does not create new execution authority. The original incident, claims and delivery history remain intact. An already claimed incident must not be claimed or executed again, including when its result is unknown.
 

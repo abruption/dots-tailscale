@@ -1,5 +1,6 @@
 """Isolated deployment fixtures; never access production files or services."""
 import contextlib
+import ast
 import hashlib
 import io
 import json
@@ -70,6 +71,40 @@ class PatchTests(unittest.TestCase):
         compile(result, '<fixture>', 'exec')
         self.assertNotIn(b',,', result)
 
+    def test_adds_cooldown_without_changing_local_coordination_setting(self):
+        body = SERVER.replace(
+            b"cooldown_seconds=cfg.get('recovery_cooldown_seconds', 3600))",
+            b"cooldown_seconds=cfg.get('recovery_cooldown_seconds', 3600),\n"
+            b"                        local_coordination=cfg.get('recovery_local_coordination', False))")
+        result = deploy.patch_server(body)
+        insertion = (b",\n                        new_incident_cooldown_seconds="
+                     b"cfg.get('recovery_new_incident_cooldown_seconds')")
+        self.assertEqual(result.replace(insertion, b'', 1), body)
+        self.assertIn(b"local_coordination=cfg.get('recovery_local_coordination', False)", result)
+        compile(result, '<fixture>', 'exec')
+
+    def test_current_patched_server_with_local_coordination_is_byte_preserved(self):
+        for local_coordination in (True, False):
+            with self.subTest(local_coordination=local_coordination):
+                body = deploy.patch_server(SERVER).replace(
+                    b"new_incident_cooldown_seconds=cfg.get('recovery_new_incident_cooldown_seconds'))",
+                    b"new_incident_cooldown_seconds=cfg.get('recovery_new_incident_cooldown_seconds'),\n"
+                    b"                        local_coordination=cfg.get('recovery_local_coordination', False))")
+                self.assertEqual(deploy.patch_server(body), body)
+                tree = ast.parse(body.decode('utf-8'))
+                function = next(node for node in tree.body
+                                if isinstance(node, ast.FunctionDef)
+                                and node.name == 'load_recovery')
+                call = next(node for node in ast.walk(function)
+                            if isinstance(node, ast.Call)
+                            and isinstance(node.func, ast.Name)
+                            and node.func.id == 'RecoveryCore')
+                expression = next(keyword.value for keyword in call.keywords
+                                  if keyword.arg == 'local_coordination')
+                value = eval(compile(ast.Expression(expression), '<fixture>', 'eval'),
+                             {}, {'cfg': {'recovery_local_coordination': local_coordination}})
+                self.assertIs(value, local_coordination)
+
 
 class ConfigTests(unittest.TestCase):
     def config(self):
@@ -92,6 +127,26 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(policy['max_claims_per_24h'], 3)
         self.assertEqual(policy['cooldown_seconds'], 3600)
 
+    def test_explicit_budget_override_changes_only_budget_and_interval(self):
+        before = self.config()
+        before['recovery_local_coordination'] = True
+        before['unrelated_extension'] = {'preserve': 'yes'}
+        candidate, policy = deploy.config_candidate(json.dumps(before).encode(), 600, 24)
+        self.assertEqual(candidate.pop('recovery_new_incident_cooldown_seconds'), 600)
+        self.assertEqual(candidate['recovery_max_claims_per_24h'], 24)
+        candidate['recovery_max_claims_per_24h'] = before['recovery_max_claims_per_24h']
+        self.assertEqual(candidate, before)
+        self.assertEqual(policy, {'max_claims_per_24h': 24, 'cooldown_seconds': 3600,
+                                  'new_incident_cooldown_seconds': 600})
+        self.assertNotIn('DUMMY_TEST_ONLY', json.dumps(policy))
+
+    def test_omitting_budget_override_preserves_existing_value(self):
+        before = self.config()
+        before['recovery_max_claims_per_24h'] = 12
+        candidate, policy = deploy.config_candidate(json.dumps(before).encode(), 600)
+        self.assertEqual(candidate['recovery_max_claims_per_24h'], 12)
+        self.assertEqual(policy['max_claims_per_24h'], 12)
+
     def test_rejects_invalid_new_or_existing_policy_values(self):
         for seconds in (True, '600', None, 299, 3601, -1):
             with self.subTest(seconds=seconds), self.assertRaises(ValueError):
@@ -105,6 +160,16 @@ class ConfigTests(unittest.TestCase):
             cfg = self.config(); cfg[key] = value
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 deploy.config_candidate(json.dumps(cfg).encode(), 600)
+
+    def test_explicit_budget_override_is_a_strict_integer_from_one_to_twenty_four(self):
+        for value in (True, False, '24', 24.0, 0, 25, -1):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                deploy.config_candidate(json.dumps(self.config()).encode(), 600, value)
+
+    def test_explicit_override_does_not_heal_an_invalid_existing_budget(self):
+        cfg = self.config(); cfg['recovery_max_claims_per_24h'] = 25
+        with self.assertRaisesRegex(ValueError, 'existing claim budget'):
+            deploy.config_candidate(json.dumps(cfg).encode(), 600, 24)
 
     def test_runtime_dir_must_match_exact_canonical_data_directory(self):
         for value in (None, False, '/var/lib/other', str(deploy.DATA) + '/',
@@ -170,19 +235,31 @@ class FileTests(unittest.TestCase):
 
 class OrchestrationTests(unittest.TestCase):
     def invoke(self, *, schema_failure=False, inactive_unit=None, wrong_runtime=False,
-               post_start_failure=False, new_claims_after_start=False):
+               post_start_failure=False, new_claims_after_start=False,
+               max_claims_per_24h=None, budget_only=False, initial_budget=12):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); app = root / 'app'; app.mkdir()
             data = root / 'data'; data.mkdir(); records = root / 'records'; records.mkdir()
             stage = root / 'stage'; stage.mkdir()
-            core = b'OLD_CORE = True\n'; candidate = b'NEW_CORE = True\n'
+            core = b'OLD_CORE = True\n'; candidate = core if budget_only else b'NEW_CORE = True\n'
+            server = SERVER
+            if budget_only:
+                server = deploy.patch_server(SERVER).replace(
+                    b"new_incident_cooldown_seconds=cfg.get('recovery_new_incident_cooldown_seconds'))",
+                    b"new_incident_cooldown_seconds=cfg.get('recovery_new_incident_cooldown_seconds'),\n"
+                    b"                        local_coordination=cfg.get('recovery_local_coordination', False))")
             cfg = json.dumps({'enable_recovery': True, 'origin': 'https://recovery.example.com',
                               'runtime_dir': '/var/lib/other' if wrong_runtime else str(data),
-                              'recovery_max_claims_per_24h': 12,
+                              'recovery_max_claims_per_24h': initial_budget,
                               'recovery_cooldown_seconds': 3600,
                               'mail': {'settings': 'DUMMY_KEEP_ME'}}).encode()
+            if budget_only:
+                existing = json.loads(cfg)
+                existing['recovery_new_incident_cooldown_seconds'] = 600
+                existing['recovery_local_coordination'] = False
+                cfg = json.dumps(existing).encode()
             config = data / 'config.json'
-            for path, body in [(app / 'recovery_core.py', core), (app / 'server.py', SERVER),
+            for path, body in [(app / 'recovery_core.py', core), (app / 'server.py', server),
                                (stage / 'recovery_core.py', candidate), (config, cfg)]:
                 path.write_bytes(body); path.chmod(0o600)
             ledger = data / 'recovery.sqlite'
@@ -216,14 +293,18 @@ class OrchestrationTests(unittest.TestCase):
                     if script == deploy.ADOPT:
                         self.assertEqual((app / 'recovery_core.py').read_bytes(), candidate)
                         self.assertTrue(any(cmd[:2] == ['systemctl', 'stop'] for cmd in commands))
-                        if schema_failure:
-                            raise RuntimeError('simulated schema adoption failure')
                         written = json.loads(config.read_bytes())
                         self.assertEqual(written['runtime_dir'], str(data))
                         self.assertEqual(written['recovery_new_incident_cooldown_seconds'], 600)
+                        expected_budget = (initial_budget if max_claims_per_24h is None
+                                           else max_claims_per_24h)
+                        self.assertEqual(written['recovery_max_claims_per_24h'], expected_budget)
+                        if schema_failure:
+                            raise RuntimeError('simulated schema adoption failure')
                         return subprocess.CompletedProcess(argv, 0, json.dumps({'policy': {
                             'new_incident_cooldown_seconds': 600,
-                            'max_claims_per_24h': 12, 'cooldown_seconds': 3600}}), '')
+                            'max_claims_per_24h': expected_budget,
+                            'cooldown_seconds': 3600}}), '')
                 return subprocess.CompletedProcess(argv, 0, '', '')
 
             def lock(path):
@@ -233,9 +314,11 @@ class OrchestrationTests(unittest.TestCase):
             actual_read = deploy.read_regular
             actual_pin = deploy.pinned_body
             argv = ['helper', '--source-dir', str(stage), '--expected-core-sha256', deploy.sha256(core),
-                    '--expected-server-sha256', deploy.sha256(SERVER),
+                    '--expected-server-sha256', deploy.sha256(server),
                     '--candidate-core-sha256', deploy.sha256(candidate),
                     '--new-incident-cooldown-seconds', '600']
+            if max_claims_per_24h is not None:
+                argv.extend(['--max-claims-per-24h', str(max_claims_per_24h)])
             output = io.StringIO(); previous_umask = os.umask(0o077)
             error = None
             try:
@@ -261,16 +344,56 @@ class OrchestrationTests(unittest.TestCase):
                     'result': json.loads(output.getvalue()) if output.getvalue() else None,
                     'core': (app / 'recovery_core.py').read_bytes(), 'original_core': core,
                     'candidate': candidate, 'server': (app / 'server.py').read_bytes(),
+                    'original_server': server,
                     'config': config.read_bytes(), 'original_config': cfg,
                     'ledger': ledger.read_bytes()}
 
+    def test_budget_only_operating_recipe_changes_one_config_key(self):
+        state = self.invoke(max_claims_per_24h=24, budget_only=True)
+        self.assertIsNone(state['error'])
+        self.assertTrue(state['result']['applied'])
+        self.assertEqual(state['core'], state['original_core'])
+        self.assertEqual(state['server'], state['original_server'])
+        expected = {**json.loads(state['original_config']), 'recovery_max_claims_per_24h': 24}
+        self.assertEqual(json.loads(state['config']), expected)
+        self.assertEqual(state['ledger'], b'Never rewind authorization ledger')
+        self.assertEqual(state['result']['policy'], {
+            'max_claims_per_24h': 24, 'cooldown_seconds': 3600,
+            'new_incident_cooldown_seconds': 600})
+
+    def test_omitted_cap_success_retains_twelve(self):
+        state = self.invoke()
+        self.assertIsNone(state['error'])
+        self.assertEqual(state['result']['policy']['max_claims_per_24h'], 12)
+        self.assertEqual(json.loads(state['config'])['recovery_max_claims_per_24h'], 12)
+
+    def test_already_twenty_four_operating_recipe_never_stops_or_rewrites(self):
+        state = self.invoke(max_claims_per_24h=24, budget_only=True, initial_budget=24)
+        self.assertIsNone(state['error'])
+        self.assertTrue(state['result']['already_current'])
+        self.assertFalse(state['result']['applied'])
+        self.assertEqual(state['config'], state['original_config'])
+        self.assertEqual(state['server'], state['original_server'])
+        self.assertEqual(state['core'], state['original_core'])
+        self.assertFalse(any(cmd[:2] == ['systemctl', 'stop'] for cmd in state['commands']))
+
+    def test_invalid_explicit_cap_stops_before_locks_or_service_calls(self):
+        for maximum in (0, 25):
+            with self.subTest(maximum=maximum):
+                state = self.invoke(max_claims_per_24h=maximum)
+                self.assertIsInstance(state['error'], ValueError)
+                self.assertEqual(state['commands'], [])
+                self.assertEqual(state['locks'], [])
+                self.assertEqual(state['config'], state['original_config'])
+
     def test_schema_failure_restores_only_code_and_config_not_ledger(self):
-        state = self.invoke(schema_failure=True)
+        state = self.invoke(schema_failure=True, max_claims_per_24h=24)
         self.assertIsInstance(state['error'], RuntimeError)
         self.assertIn('root-private record', str(state['error']))
         self.assertEqual(state['core'], state['original_core'])
         self.assertEqual(state['server'], SERVER)
         self.assertEqual(state['config'], state['original_config'])
+        self.assertEqual(json.loads(state['config'])['recovery_max_claims_per_24h'], 12)
         self.assertEqual(state['ledger'], b'Never rewind authorization ledger')
         self.assertEqual(state['result']['rollback'], 'code_and_config_restored')
         self.assertFalse(state['result']['ledger_restored'])
@@ -278,14 +401,16 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(sum(cmd[:2] == ['systemctl', 'start'] for cmd in state['commands']), 1)
 
     def test_success_preserves_mail_configuration_and_checks_every_unit(self):
-        state = self.invoke()
+        state = self.invoke(max_claims_per_24h=24)
         self.assertIsNone(state['error'])
         self.assertTrue(state['result']['applied'])
         self.assertEqual(state['core'], state['candidate'])
         self.assertEqual(state['server'], deploy.patch_server(SERVER))
         after = json.loads(state['config']); before = json.loads(state['original_config'])
         self.assertEqual(after.pop('recovery_new_incident_cooldown_seconds'), 600)
-        self.assertEqual(after, before)
+        self.assertEqual(after['recovery_max_claims_per_24h'], 24)
+        expected = {**before, 'recovery_max_claims_per_24h': 24}
+        self.assertEqual(after, expected)
         self.assertEqual(state['ledger'], b'Never rewind authorization ledger')
         for unit in (*deploy.UNITS, 'caddy.service'):
             self.assertEqual(sum(cmd == ['systemctl', 'is-active', '--quiet', unit]
@@ -321,7 +446,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(state['ledger'], b'Never rewind authorization ledger')
 
     def test_new_claim_after_start_blocks_older_code_rollback_and_leaves_broker_stopped(self):
-        state = self.invoke(post_start_failure=True, new_claims_after_start=True)
+        state = self.invoke(post_start_failure=True, new_claims_after_start=True, max_claims_per_24h=24)
         self.assertIsInstance(state['error'], RuntimeError)
         self.assertEqual(state['result']['failed_phase'], 'verify')
         self.assertEqual(state['result']['rollback'], 'operator_attention')
@@ -331,6 +456,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(state['server'], deploy.patch_server(SERVER))
         cfg = json.loads(state['config'])
         self.assertEqual(cfg['recovery_new_incident_cooldown_seconds'], 600)
+        self.assertEqual(cfg['recovery_max_claims_per_24h'], 24)
         self.assertEqual(cfg['mail'], json.loads(state['original_config'])['mail'])
         self.assertEqual(state['ledger'], b'Never rewind authorization ledger')
         changes = [cmd[1] for cmd in state['commands'] if cmd[:1] == ['systemctl']
@@ -338,7 +464,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(changes, ['stop', 'start', 'stop'])
 
     def test_post_start_failure_without_new_claim_can_restore_previous_code(self):
-        state = self.invoke(post_start_failure=True)
+        state = self.invoke(post_start_failure=True, max_claims_per_24h=24)
         self.assertIsInstance(state['error'], RuntimeError)
         self.assertEqual(state['result']['failed_phase'], 'verify')
         self.assertEqual(state['result']['rollback'], 'code_and_config_restored')
