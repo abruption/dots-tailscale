@@ -247,6 +247,13 @@ class EventCore:
             rows = db.execute('SELECT subscription,state,attempts,http_status FROM outbox WHERE event=?', (event_id,)).fetchall()
         return {'eventId': event_id, 'deliveries': [dict(r) for r in rows], 'agentResponse': 'not_observed', 'recovery': 'not_attempted'}
 
+    def _delivery_decision(self, db, event_id, subscription_id):
+        """Subclass dispatch gate under the outbox writer transaction."""
+        return 'allow'
+
+    def _delivery_completed(self, db, event_id, subscription_id, state):
+        """Subclass receipt bookkeeping in the same result transaction."""
+
     def deliver(self, principal, event_id):
         self.receipt(principal, event_id)
         with self._db() as db:
@@ -258,6 +265,11 @@ class EventCore:
                 sub = db.execute('SELECT * FROM subscriptions WHERE id=?', (sid,)).fetchone()
                 if not sub or not sub['active'] or sub['expires'] <= self.clock():
                     db.execute("UPDATE outbox SET state='expired' WHERE event=? AND subscription=? AND state IN ('pending','retry')", (event_id,sid))
+                    continue
+                decision = self._delivery_decision(db, event_id, sid)
+                if decision != 'allow':
+                    if decision == 'cancel':
+                        db.execute("UPDATE outbox SET state='cancelled' WHERE event=? AND subscription=? AND state IN ('pending','retry')", (event_id,sid))
                     continue
                 claimed = db.execute("UPDATE outbox SET state='sending',attempts=attempts+1 WHERE event=? AND subscription=? AND state IN ('pending','retry') AND attempts<?", (event_id,sid,MAX_ATTEMPTS)).rowcount
                 if not claimed:
@@ -273,4 +285,5 @@ class EventCore:
                 attempts = db.execute('SELECT attempts FROM outbox WHERE event=? AND subscription=?', (event_id,sid)).fetchone()[0]
                 state = 'received' if status is not None and 200 <= status < 300 else ('terminal' if status in (410,413) or (status is not None and 300 <= status < 500 and status != 429) or attempts >= MAX_ATTEMPTS else 'retry')
                 db.execute('UPDATE outbox SET state=?,http_status=? WHERE event=? AND subscription=?', (state,status,event_id,sid))
+                self._delivery_completed(db, event_id, sid, state)
         return self.receipt(principal,event_id)

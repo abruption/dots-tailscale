@@ -91,3 +91,5 @@ sudo systemctl stop dots-events-recovery.service
 ```
 
 launchd 명령은 Mac에서, systemctl 명령은 외부 서버에서 실행합니다. 실제 plist 경로로 바꾸고 별도로 설치한 관측기·알림기도 각각 관리하세요. 이 조치로 Dots의 Tailscale이 중지되지는 않습니다. 비공개 장애 기록과 결과가 불명확한 시도는 보존합니다. IPv6 guard는 별도 보안 서비스이므로 복구 시험을 중지하면서 방화벽 보호까지 제거하지 마세요. 인프라 변경은 최신 기록 보존과 부분 실패를 다루는 [보안 원복 절차](../research/mcp-events/security-hardening.md)를 따릅니다.
+
+선택적인 [수신 후 미실행 재알림 정책](../research/mcp-events/recovery-followups.ko.md)으로 같은 장애의 재확인을 제한적으로 요청할 수 있습니다. 사전 점검 중단을 풀거나 실행 권한을 주지 않으며, 운영 활성화와 운영자 경고 소비 경로는 별도로 배포해야 합니다.

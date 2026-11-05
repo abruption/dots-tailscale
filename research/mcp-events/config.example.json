@@ -11,5 +11,8 @@
   "enable_recovery": false,
   "recovery_local_coordination": false,
   "monitor_token_sha256": null,
-  "recovery_new_incident_cooldown_seconds": null
+  "recovery_new_incident_cooldown_seconds": null,
+  "recovery_unclaimed_reminder_interval_seconds": null,
+  "recovery_unclaimed_reminder_maximum": 3,
+  "recovery_unclaimed_reminder_lifetime_seconds": 7200
 }
