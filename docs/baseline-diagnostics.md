@@ -1,10 +1,10 @@
 # Read the installed Tailscale baseline
 
-This guide covers features included in **v0.8.0**. Check the release page for
+This guide covers **v0.9.0**, including diagnostics first introduced in v0.8.0. Check the release page for
 published artifacts. Installing the package does not enable automatic updates or
 register a recovery task.
 
-The combined `-t…-g…` suffix correction described below is a source change after v0.8.0, prepared for a later release. The original published v0.8.0 artifacts do not include this fix.
+The combined `-t…-g…` suffix correction described below is included in the v0.9.0 release candidate. The original published v0.8.0 artifacts do not include this fix.
 
 `dots-ts version` and `dots-ts doctor` compare the Tailscale versions visible in the current execution context with the `TS_VERSION` declaration in the installation's `setup.sh`. They do not update anything, restart a process, change authentication or fetch security advisories.
 

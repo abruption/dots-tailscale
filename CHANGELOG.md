@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.0
+
+- Add opt-in bounded follow-ups when a recovery event is acknowledged but remains unclaimed, with durable receipt evidence, eligibility checks and operator-attention states (#79, #84).
+- Add aggregate rolling recovery-budget diagnostics and separately opt-in operator warnings, with bounded freshness and durable notification cooldowns (#80, #85).
+- Recognize official stable combined `-t…-g…` backend version suffixes without changing health decisions or command exit codes (#82, #83).
+- Add an explicit operating claim-cap override while retaining the default of three claims per rolling 24 hours; preserve existing cooldowns and claim history (#80, #81).
+- Improve English, Korean, Japanese and Simplified Chinese documentation following a full translation audit (#77, #78).
+
+Tailscale remains pinned to **1.104.4**. Follow-ups and operator warnings are disabled by default and require separate research-server/monitor deployment and configuration. Publishing does not deploy these features or change an existing operating policy. See the [release preparation and verification notes](docs/releases/v0.9.0.md).
+
 ## v0.8.0
 
 - Require authenticated original-manifest provenance before v0.8.0+ package updates; retain explicit manual handling for older unsigned targets and document the first-upgrade bootstrap (#67).

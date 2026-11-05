@@ -6,13 +6,15 @@
 
 내 기기에서 Tailscale과 SSH로 Dots 클라우드 컴퓨터에 접속할 수 있게 해주는 도구입니다. root 권한이나 systemd 없이 설치할 수 있으며, 설치 파일과 Tailscale 기기 정보, SSH 키를 `/workspace`에 보관합니다. 실행 환경이 바뀌어도 이 경로가 남아 있다면 기존 정보를 다시 사용할 수 있습니다.
 
-**이 안내는 [v0.8.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.8.0) 기준입니다. 설치 전에 릴리스 페이지에서 발행된 파일을 확인하세요.** 인증서 생성 전에 CONNECT 대상 호스트를 검증하는 v0.7.1 보안 수정을 포함합니다([GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)). v0.7.0 이하 버전이 영향을 받습니다. 신규 설치의 Tailscale은 1.104.4입니다. OpenAI나 Tailscale의 공식 도구가 아닌 독립 프로젝트입니다.
+**이 안내는 [v0.9.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.9.0) 기준입니다. 설치 전에 릴리스 페이지에서 발행된 파일을 확인하세요.** 인증서 생성 전에 CONNECT 대상 호스트를 검증하는 v0.7.1 보안 수정을 포함합니다([GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)). v0.7.0 이하 버전이 영향을 받습니다. 신규 설치의 Tailscale은 1.104.4입니다. OpenAI나 Tailscale의 공식 도구가 아닌 독립 프로젝트입니다.
+
+**아래 고정 버전 예시는 v0.9.0 배포 파일이 공개되고 출처를 독립적으로 검증한 뒤 실행하세요. 태그만으로는 릴리스 공개를 뜻하지 않습니다.**
 
 **v0.6.0 등 이전 기본 버전에서 업데이트한다면:** Tailscale 기본값이 1.102.4인 패키지는 실행 파일을 먼저 갱신한 뒤 [명시적 보안 기본 버전 전환](docs/security-baseline.ko.md)을 거쳐야 합니다. 일반 `update apply`의 기본 버전 변경 제한은 유지됩니다.
 
-## v0.8.0 기능
+## v0.9.0 기능
 
-아래 설치 예시는 **v0.8.0**으로 고정합니다. 자동 업데이트와 복구 실행기는 직접 켜야 하며, 일반 설치는 자동 시작이나 복구 작업을 등록하지 않습니다.
+아래 설치 예시는 **v0.9.0**으로 고정합니다. 자동 업데이트와 복구 실행기는 직접 켜야 하며, 일반 설치는 자동 시작이나 복구 작업을 등록하지 않습니다.
 
 | 기능 | 알아둘 점 |
 |---|---|
@@ -24,7 +26,9 @@
 
 공통 로컬 복구 원장은 기존 watchdog을 중지하고 내부·외부 실행 주체가 **모두** 새 복구 진입점을 사용할 때만 적용됩니다. 운영 중인 작업이 `start.sh`를 직접 호출한다면 여전히 기존 경로를 사용합니다. MCP 방식은 고급 사용자용 미리보기로 남겨 둡니다. 다른 실제 계정에서 설정과 복구를 재현한 시험은 **아직 완료하지 않았으며**, 일반적인 자동 복구 지원을 뜻하지 않습니다.
 
-활성화하기 전에 [v0.8.0 사용 안내](docs/usage.ko.md#development-v080), [자동 업데이트](docs/automatic-updates.ko.md), [릴리스 출처 검증](docs/release-provenance.ko.md), [내부·외부 복구 조정](docs/recovery-lifecycle.ko.md), [실험 지원 준비 상태](docs/recovery-support-readiness.ko.md)를 확인하세요.
+활성화하기 전에 [v0.9.0 사용 안내](docs/usage.ko.md#development-v090), [자동 업데이트](docs/automatic-updates.ko.md), [릴리스 출처 검증](docs/release-provenance.ko.md), [내부·외부 복구 조정](docs/recovery-lifecycle.ko.md), [실험 지원 준비 상태](docs/recovery-support-readiness.ko.md)를 확인하세요.
+
+v0.9.0의 실험용 서버에는 [접수됐지만 claim이 생성되지 않은 이벤트의 후속 알림](research/mcp-events/recovery-followups.ko.md)과 [복구 예산 진단·운영자 경고](research/mcp-events/recovery-budget-observability.ko.md)가 추가됩니다. 후속 알림과 운영자 경고는 기본적으로 꺼져 있으며 서버·감시 도구의 별도 배포와 설정이 필요합니다. 패키지 설치만으로 켜지지 않습니다. 기준 버전 진단에서는 공식 안정판의 `-t…-g…` 백엔드 버전 표기도 인식합니다. 후속 알림은 실행 허가가 아니며 VM 교체 후 복구를 보장하지 않습니다.
 
 ## 할 수 있는 일
 
@@ -45,7 +49,7 @@
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.8.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.9.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -75,12 +79,12 @@ bash /workspace/.dots-tailscale/start.sh
 
 ```bash
 /workspace/.dots-tailscale/dots-ts version
-/workspace/.dots-tailscale/dots-ts update check --tag v0.8.0 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.9.0 --proxy http://browser-proxy:8889 --json
 ```
 
 v0.8.0 이전 updater에서 처음 전환할 때는 [독립 검증을 거치는 첫 전환 절차](docs/release-provenance.ko.md)를 따르세요. 후보 도구를 실행하기 전에 원본 manifest와 소스 네 파일의 출처를 확인해야 합니다. 해시 일치만으로 배포자를 인증할 수는 없습니다.
 
-v0.7.0 패키지는 같은 Tailscale 기본 버전을 선언하므로 일반 [패키지 업데이트](docs/usage.ko.md#update-management)로 v0.7.1로 올릴 수 있으며, 적용하면 수정된 shim이 다시 시작됩니다. 기본 Tailscale을 1.102.4로 선언하는 v0.6.0 등 기존 패키지는 [보안 기본 버전 전환](docs/security-baseline.ko.md)에 따라 v0.7.1로 이동하세요. 설치된 도구가 v0.6.0보다 오래됐다면 [패키지 업데이트 안내](docs/usage.ko.md#update-management)로 같은 기본 버전의 v0.6.0 도구를 먼저 준비하세요. 신뢰할 수 있는 메타데이터가 없는 이전 설치는 수동 확인이 필요합니다. 이 이전 버전 절차로 기본 버전을 맞춘 뒤, v0.8.0으로 전환할 때는 위의 독립 검증 절차를 따르세요.
+v0.7.0 패키지는 같은 Tailscale 기본 버전을 선언하므로 일반 [패키지 업데이트](docs/usage.ko.md#update-management)로 v0.7.1로 올릴 수 있으며, 적용하면 수정된 shim이 다시 시작됩니다. 기본 Tailscale을 1.102.4로 선언하는 v0.6.0 등 기존 패키지는 [보안 기본 버전 전환](docs/security-baseline.ko.md)에 따라 v0.7.1로 이동하세요. 설치된 도구가 v0.6.0보다 오래됐다면 [패키지 업데이트 안내](docs/usage.ko.md#update-management)로 같은 기본 버전의 v0.6.0 도구를 먼저 준비하세요. 신뢰할 수 있는 메타데이터가 없는 이전 설치는 수동 확인이 필요합니다. 이 이전 버전 절차로 기본 버전을 맞춘 뒤, v0.9.0으로 전환할 때는 위의 독립 검증 절차를 따르세요.
 
 v0.6.0 이상 도구가 설치됐다면 공식 Tailscale 안정 버전을 확인할 수 있습니다.
 
@@ -88,7 +92,7 @@ v0.6.0 이상 도구가 설치됐다면 공식 Tailscale 안정 버전을 확인
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-**v0.8.0으로 새로 설치하면 Tailscale은 1.104.4로 시작합니다.** 패키지 업데이트나 `install`이 기존 실행 파일을 조용히 바꾸지는 않습니다. 실행 파일을 갱신하려면 조회된 버전과 공식 공지를 검토한 뒤 [수동 업데이트 가이드](docs/runtime-updates.ko.md)를 따르세요. 기본 버전 전환은 설치된 두 실행 파일과 실행 중인 백엔드가 모두 정확히 1.104.4인 것을 확인한 뒤 소스를 바꿉니다.
+**v0.9.0으로 새로 설치하면 Tailscale은 1.104.4로 시작합니다.** 패키지 업데이트나 `install`이 기존 실행 파일을 조용히 바꾸지는 않습니다. 실행 파일을 갱신하려면 조회된 버전과 공식 공지를 검토한 뒤 [수동 업데이트 가이드](docs/runtime-updates.ko.md)를 따르세요. 기본 버전 전환은 설치된 두 실행 파일과 실행 중인 백엔드가 모두 정확히 1.104.4인 것을 확인한 뒤 소스를 바꿉니다.
 
 업데이트를 적용하기 전에 Tailscale SSH가 끊겨도 사용할 수 있는 별도의 클라우드 복구 터미널을 확인하세요. Tailscale 자체를 업데이트할 때는 외부 복구 작업을 잠시 중지하고, 새 SSH 연결과 ping이 정상인지 확인한 뒤 다시 켜세요. 새 데몬의 실행을 시도한 뒤에는 시작에 실패했더라도 자동으로 이전 버전으로 되돌리지 않습니다. 실패 원인이 불확실하면 가이드의 수동 복구 절차가 필요합니다. 패키지 코드의 원복과 Tailscale 상태 정보의 하위 버전 호환성은 별개입니다.
 
@@ -129,7 +133,7 @@ v0.6.0 이상 도구가 설치됐다면 공식 Tailscale 안정 버전을 확인
 
 - [사용법과 문제 해결](docs/usage.ko.md) · [Tailscale 수동 업데이트](docs/runtime-updates.ko.md)
 - [비공개 HTTPS API 연결 예시](docs/private-http-api.ko.md) · [외부 복구 실험](docs/experimental-recovery.ko.md)
-- [릴리스 노트](docs/releases/v0.8.0.md) · [변경 이력](CHANGELOG.md) · [MIT 라이선스](LICENSE)
+- [릴리스 노트](docs/releases/v0.9.0.md) · [변경 이력](CHANGELOG.md) · [MIT 라이선스](LICENSE)
 
 | 경로 | 역할 |
 |---|---|
