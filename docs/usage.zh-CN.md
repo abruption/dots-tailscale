@@ -6,15 +6,18 @@
 
 ## 发布文件
 
-本指南适用于 **v0.8.0**。安装前，请在[发布页面](https://github.com/abruption/dots-tailscale/releases/tag/v0.8.0)确认已发布的 ZIP/tar.gz、四个源文件（`tailscale-setup.sh`、`shim.py`、`dots-ts`、`dots_proxy.py`）、`source-manifest.json`、校验和及来源证明。示例固定为 `v0.8.0`，新安装使用 Tailscale `1.104.4`。首次公开时的 clone/raw 下载检查是历史记录，并不验证此次发布文件。
+本指南适用于 **v0.9.0**。安装前，请在[发布页面](https://github.com/abruption/dots-tailscale/releases/tag/v0.9.0)确认已发布的 ZIP/tar.gz、四个源文件（`tailscale-setup.sh`、`shim.py`、`dots-ts`、`dots_proxy.py`）、`source-manifest.json`、校验和及来源证明。示例固定为 `v0.9.0`，新安装使用 Tailscale `1.104.4`。首次公开时的 clone/raw 下载检查是历史记录，并不验证此次发布文件。
+
+**请在 v0.9.0 发布文件公开、且独立验证其来源后，再运行下方固定版本的示例。仅有标签不代表正式发布。**
 
 **默认基线为 1.102.4 的现有软件包（包括 v0.6.0）：** 更新到 v0.7.1 时，请使用[先更新运行时、再迁移基线的流程（英文）](security-baseline.md)。下方普通 apply 示例仅适用于已经声明 1.104.4 的软件包；`TS_VERSION` 变更仍会被拒绝，请勿编辑声明或重新生成清单来绕过检查。
 
 <a id="development-v080"></a>
+<a id="development-v090"></a>
 
-## v0.8.0 功能
+## v0.9.0 功能
 
-下方安装示例固定为 **v0.8.0**。自动更新和恢复执行器需要明确启用，普通安装不会注册自动启动或恢复任务。
+下方安装示例固定为 **v0.9.0**。自动更新和恢复执行器需要明确启用，普通安装不会注册自动启动或恢复任务。
 
 - **查看实际观测到的版本。** `version` 不会查询运行中的守护进程，只比较本地 CLI、守护进程二进制与声明的基线。`doctor` 还会通过有时间限制的套接字响应读取后端版本。缺失、非稳定版本和不一致都会明确保留，现有退出码和连接健康判定不变。`healthy` 或达到基线不等于安全结论。请参阅[基线诊断（英文）](baseline-diagnostics.md)。
 - **比较与信任判断要分开。** `update check --bundle` 不连接 GitHub、不更改安装，只读取原始清单和四个源文件。这是本地证据，不是重新验证最新发布状态或发布者身份。API 超额仍是错误；有界的重试时间提示和本地退避，不会把缓存的错误变成成功。请参阅[请求限制与离线检查（英文）](update-check-resilience.md)。
@@ -22,6 +25,8 @@
 - **可选执行器需要明确启用。** 软件包自动更新默认关闭，启用前必须已安装源文件完整性匹配的 v0.8.0 或以上稳定软件包；尚未发布的开发构建不符合条件。它重用现有手动源码更新流程，不更新 Tailscale 二进制文件。操作人员需要另行安排调用 `tick` 的执行方，或亲自运行有时间限制的前台 `watch`。本功能不会安装 cron、systemd 或 ChatGPT 任务，VM 消失后的执行进程也无法自行重启。请参阅[自动更新（英文）](automatic-updates.md)。
 - **两条恢复路径要一起切换。** 请先停止旧 watchdog。只有软件包 watchdog 和外部任务都改用 `dots-ts recovery`，才会共用本地恢复记录与尝试预算。仍直接执行 `start.sh` 的旧任务不会经过该记录，安装软件包也不会自动切换生产任务。持久停止设置和结果不明时的执行阻止机制仍然生效。请参阅[恢复协调（英文）](recovery-lifecycle.md)。
 - **限制新建 shim 连接数量。** 默认上限是 **64个活动连接**。运维人员管理的启动方式可通过 `SHIM_MAX_CONNECTIONS` 选择 **1–256个**，这并非软件包自动修改的设置。超出的连接会立即关闭，但正常 control/DERP 连接的存活时间不受限制。userspace networking 下，仅绑定回环地址并不能排除 tailnet 访问，因此仍需检查 ACL。请参阅[shim 连接限制（英文）](shim-admission.md)。
+
+v0.9.0 修正了把稳定版后端长版本号误判为开发版的问题。研究用 MCP 配置还新增了[事件已接收但尚未创建 claim 时的有界后续提醒（英文）](../research/mcp-events/recovery-followups.md)，以及[恢复预算汇总与运维告警（英文）](../research/mcp-events/recovery-budget-observability.md)。后续提醒和告警默认都关闭；broker 和 Mac 端监控工具需要单独部署、配置，普通软件包更新不会启用它们。提醒本身不是执行许可，执行前仍需检查最新条件并取得新的 claim，也不保证立即执行或在 VM 替换后自动恢复。
 
 以下命令仅检查状态，不应用更新：
 
@@ -73,12 +78,12 @@ done
 
 将仓库从 `https://github.com/abruption/dots-tailscale` 克隆到 `/workspace`，以便安装脚本和 `shim.py` 位于一起。克隆需要 Git，以及云计算机通过代理访问 GitHub HTTPS 的能力。安装程序需要 Linux x86_64、Python 3、`timeout`、`flock`、OpenSSL、`ssh-keygen` 和 `/usr/sbin/sshd`。此外，安装还需要 curl、tar 和 sha256sum。当前用户必须获准绑定端口 22；无需 root 或 systemd。
 
-对于 v0.8.0，请将以下四个源文件和 `source-manifest.json` 放在一起：`tailscale-setup.sh`、`shim.py`、`dots-ts` 和 `dots_proxy.py`。较旧的 v0.2.0 安装只使用原来的两个文件，不包含这些辅助工具。
+对于 v0.9.0，请将以下四个源文件和 `source-manifest.json` 放在一起：`tailscale-setup.sh`、`shim.py`、`dots-ts` 和 `dots_proxy.py`。较旧的 v0.2.0 安装只使用原来的两个文件，不包含这些辅助工具。
 
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.8.0 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
+  git clone --branch v0.9.0 --depth 1 'https://github.com/abruption/dots-tailscale' dots-tailscale
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -196,7 +201,7 @@ JSON 将 `package.declared_version`、`package.source_revision`、`package.integ
 
 ```bash
 /workspace/.dots-tailscale/dots-ts update check --json
-/workspace/.dots-tailscale/dots-ts update check --tag v0.8.0 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.9.0 --proxy http://browser-proxy:8889 --json
 ```
 
 第二个示例会选择指定的稳定版本；只有该版本发布后才能使用。未指定 `--proxy` 时，检查会直接通过 HTTPS 连接，不会继承 shell 中的代理凭据。需要时请显式指定平台下载代理。这与 shim 代理以及应用 SOCKS/HTTP 代理相互独立。HTTPS 证书验证始终保持启用。无需 GitHub token。
@@ -224,7 +229,7 @@ JSON 将 `package.declared_version`、`package.source_revision`、`package.integ
 这个普通 apply 示例仅适用于已安装软件包已经声明 Tailscale 1.104.4 的情况。声明为 1.102.4 时，请使用[基线迁移（英文）](security-baseline.md)。
 
 ```bash
-/workspace/.dots-tailscale/dots-ts update apply --tag v0.8.0 --proxy http://browser-proxy:8889 --provenance-root /workspace/trusted-tools/dots-ts/trusted-root.jsonl --confirm-recovery-terminal --json
+/workspace/.dots-tailscale/dots-ts update apply --tag v0.9.0 --proxy http://browser-proxy:8889 --provenance-root /workspace/trusted-tools/dots-ts/trusted-root.jsonl --confirm-recovery-terminal --json
 /workspace/.dots-tailscale/dots-ts update status --id TRANSACTION_ID --json
 ```
 
@@ -234,7 +239,7 @@ JSON 将 `package.declared_version`、`package.source_revision`、`package.integ
 /workspace/.dots-tailscale/dots-ts update apply --bundle /workspace/reviewed-bundle --provenance-root /workspace/trusted-tools/dots-ts/trusted-root.jsonl --confirm-recovery-terminal --json
 ```
 
-v0.8.0 文件包必须包含四个源文件、相匹配的原始清单、`release-provenance.json` 和 `source-manifest.sigstore.json`。v0.8.0 实施更严格的规则：即使从本地选择，目标为 v0.8.0 及以上时也需要来源证明，未签名的开发文件包不是例外。v0.8.0 以下的未签名目标需要人工指定 `--allow-unsigned-legacy`。哈希一致本身不能认证发布者。请查看[来源验证与首次迁移说明（英文）](release-provenance.md)。
+v0.9.0 文件包必须包含四个源文件、相匹配的原始清单、`release-provenance.json` 和 `source-manifest.sigstore.json`。v0.8.0 实施更严格的规则：即使从本地选择，目标为 v0.8.0 及以上时也需要来源证明，未签名的开发文件包不是例外。v0.8.0 以下的未签名目标需要人工指定 `--allow-unsigned-legacy`。哈希一致本身不能认证发布者。请查看[来源验证与首次迁移说明（英文）](release-provenance.md)。
 
 `started` 表示已脱离会话运行的工作进程接受了操作，不表示更新成功。重新连接后，请轮询 `update status`。最终状态包括 `applied`、`failed_rolled_back` 和 `rollback_failed_manual_required`。本地就绪状态和版本验证不能证明外部 SSH 可用：更新成功或成功回滚后，请使用严格主机密钥验证新建 SSH 连接，并单独测试所需连接。
 
@@ -258,7 +263,7 @@ v0.8.0 文件包必须包含四个源文件、相匹配的原始清单、`releas
 
 ## Tailscale 二进制更新
 
-v0.8.0 包含独立于软件包更新的 `dots-ts runtime check/apply/status`。请先安装配套的完整源码，并准备独立的恢复终端。v0.8.0 新安装使用 1.104.4。默认基线为 1.102.4 的现有软件包需要[明确迁移（英文）](security-baseline.md)。二进制更新需要单独执行，不会开启自动更新。更新后请另行检查外部 SSH 和 ping。尝试执行候选 daemon 后，即使启动失败，也不会自动降级；恢复步骤和限制详见[更新指南（英文）](runtime-updates.md)。
+v0.9.0 包含独立于软件包更新的 `dots-ts runtime check/apply/status`。请先安装配套的完整源码，并准备独立的恢复终端。v0.9.0 新安装使用 1.104.4。默认基线为 1.102.4 的现有软件包需要[明确迁移（英文）](security-baseline.md)。二进制更新需要单独执行，不会开启自动更新。更新后请另行检查外部 SSH 和 ping。尝试执行候选 daemon 后，即使启动失败，也不会自动降级；恢复步骤和限制详见[更新指南（英文）](runtime-updates.md)。
 
 <a id="development-helpers"></a>
 
@@ -304,16 +309,16 @@ v0.8.0 包含独立于软件包更新的 `dots-ts runtime check/apply/status`。
 
 应用代理会在 loopback 上监听，供显式配置的本地客户端使用。它们与守护进程的 TLS/WebSocket shim（位于 `127.0.0.1:18089`）不同。不要把该 shim 当作应用 HTTP 代理。请在单次 curl 请求或子进程上设置代理；代理设置不会传递到全局环境、浏览器、MCP 或 ChatGPT 连接器。能够访问 loopback 代理的本地进程都可以尝试使用它，因此仍需设置网络策略并进行 API 身份验证。
 
-### 不使用 Git 安装 v0.8.0
+### 不使用 Git 安装 v0.9.0
 
 将四个源文件和 `source-manifest.json` 下载到单独的源文件目录中。如果任一请求失败，请停止；安装前请检查文件和哈希：
 
 ```bash
 (
   set -euo pipefail
-  mkdir -p /workspace/dots-tailscale-v0.8.0
-  cd /workspace/dots-tailscale-v0.8.0
-  DOTS_TS_REF=v0.8.0
+  mkdir -p /workspace/dots-tailscale-v0.9.0
+  cd /workspace/dots-tailscale-v0.9.0
+  DOTS_TS_REF=v0.9.0
   for file in tailscale-setup.sh shim.py dots-ts dots_proxy.py source-manifest.json; do
     curl -fsSL --proxy http://browser-proxy:8889 --connect-timeout 5 --max-time 60 \
       "https://github.com/abruption/dots-tailscale/releases/download/${DOTS_TS_REF}/${file}" \
@@ -326,13 +331,13 @@ v0.8.0 包含独立于软件包更新的 `dots-ts runtime check/apply/status`。
 所有文件下载成功且检查完毕后，对于全新安装，请运行以下命令：
 
 ```bash
-cd /workspace/dots-tailscale-v0.8.0
+cd /workspace/dots-tailscale-v0.9.0
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
 bash /workspace/.dots-tailscale/start.sh login
 ```
 
-运行安装程序前，请将四个源文件和 `source-manifest.json` 保存在同一目录中。如果发布资源主机不可用，请从 `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.8.0/` 下载相同标签和文件名的文件，或从另一台可信设备传输已检查的文件。现有 v0.4.0 及以上版本的安装请使用[更新管理](#update-management)，旧安装请先检查[旧版手动步骤](#restart-update)。`install` 不会覆盖内容不同的已安装源文件。
+运行安装程序前，请将四个源文件和 `source-manifest.json` 保存在同一目录中。如果发布资源主机不可用，请从 `https://raw.githubusercontent.com/abruption/dots-tailscale/v0.9.0/` 下载相同标签和文件名的文件，或从另一台可信设备传输已检查的文件。现有 v0.4.0 及以上版本的安装请使用[更新管理](#update-management)，旧安装请先检查[旧版手动步骤](#restart-update)。`install` 不会覆盖内容不同的已安装源文件。
 
 ### 可选的非交互式身份验证
 
