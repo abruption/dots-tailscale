@@ -153,7 +153,7 @@ def tailscale_version(directory):
 
 
 def runtime_release(version):
-    """Return a release identity without mistaking Tailscale's -t<git> for an RC.
+    """Return a release identity for Tailscale's documented backend build suffixes.
 
     Build identifiers remain in the displayed version. Unrecognized prerelease
     forms are never ordered against a stable installation declaration.
@@ -165,9 +165,15 @@ def runtime_release(version):
     if match is None:
         return None
     suffix = match.group(2)
-    kind = ("stable" if suffix is None else "release_build" if re.fullmatch(r"-t[0-9a-f]{7,64}", suffix)
-            else "prerelease")
-    return tuple(int(part) for part in match.group(1).split(".")), kind
+    release = tuple(int(part) for part in match.group(1).split("."))
+    # Retain the existing single-hash grammar. Supplemental-repository hashes
+    # follow the official nine-hex release form; odd minor tracks are unstable.
+    release_build = bool(suffix and (
+        re.fullmatch(r"-t[0-9a-f]{7,64}", suffix)
+        or (release[1] % 2 == 0 and "+" not in version
+            and re.fullmatch(r"-t[0-9a-f]{9}-g[0-9a-f]{9}", suffix))))
+    kind = "stable" if suffix is None else "release_build" if release_build else "prerelease"
+    return release, kind
 
 
 def installed_baseline(directory):

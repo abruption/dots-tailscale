@@ -4,6 +4,8 @@
 
 이 문서는 v0.8.0의 추가 진단을 설명합니다. 배포 파일은 릴리스 페이지에서 확인하세요. 패키지를 설치해도 자동 업데이트가 켜지거나 복구 작업이 등록되지는 않습니다.
 
+아래의 `-t…-g…` 접미사 인식 수정은 v0.8.0 이후 소스 변경이며 다음 릴리스를 위한 내용입니다. 이미 발행된 v0.8.0 배포 파일에는 이 수정이 포함되지 않습니다.
+
 `dots-ts version`과 `dots-ts doctor`는 현재 실행 환경에서 보이는 Tailscale 버전을 설치의 `setup.sh`에 선언된 `TS_VERSION`과 비교합니다. 업데이트·프로세스 재시작·인증 변경·보안 권고 조회는 하지 않습니다.
 
 선언의 `sha256`과 `source_integrity`는 실제로 읽은 setup 파일이 소스 명세로 검증한 바이트와 같은지 보여줍니다. 조회 도중 파일이 바뀌면 예전 패키지 검사 결과로 새 선언을 검증했다고 처리하지 않습니다.
@@ -34,7 +36,7 @@
 | `cli`, `daemon_binary`, `backend` | 각각 별도의 관측 결과이며 `version`, `status`, `release_kind`, `comparison`을 담습니다. 잘못된 응답 원문은 출력하지 않습니다. |
 | 관측 `status` | `available`, `timeout`, `unavailable`, `invalid_response`, `missing`, `skipped`, `not_queried`입니다. 응답한 백엔드에 `Version`이 없으면 `missing`입니다. |
 | 관측 `comparison` | 선언된 안정 버전과 비교한 `below`, `equal`, `above`입니다. 비교할 수 없으면 `unknown` 또는 `not_comparable`입니다. |
-| 관측 `release_kind` | `stable`, `release_build`, `prerelease`, `unknown`입니다. 일반적인 백엔드 빌드 접미사인 `1.104.4-t27047635f` 등은 관측한 전체 문자열을 보존하면서 릴리스 `1.104.4`로 비교합니다. 다른 prerelease 접미사는 안정 버전의 순서로 비교하지 않습니다. |
+| 관측 `release_kind` | `stable`, `release_build`, `prerelease`, `unknown`입니다. 일반적인 백엔드 빌드 접미사인 `1.104.4-t27047635f`와 배포 빌드 형식인 `1.104.4-t938213198-gd38c96d6a`는 관측한 전체 문자열을 보존하면서 릴리스 `1.104.4`로 비교합니다. `-t…-g…` 형식은 부 버전(minor)이 짝수이고 각각 9자리 소문자 16진수 해시여야 하며, 뒤에 `+` 빌드 메타데이터가 붙으면 안 됩니다. 결합 형식에 변경 횟수·개발·dirty 표시나 알 수 없는 접미사가 있으면 정식 릴리스로 비교하지 않습니다. 접미사가 없거나 단일 해시만 있는 버전의 `+` 메타데이터 처리는 기존 호환 동작을 유지합니다. 다른 prerelease 접미사는 안정 버전의 순서로 비교하지 않습니다. |
 | `consistency` | 관측한 릴리스 번호가 다르면 `mismatch`, 적어도 두 관측값이 같으면 `match`, 그 외에는 `unknown`입니다. 릴리스 식별자를 비교하며 바이너리의 실제 바이트나 빌드 출처를 비교하는 것은 아닙니다. 두 값이 같아도 누락된 다른 관측값은 계속 표시합니다. |
 | `scope` | `version`은 `local_binary_pair_only`, `doctor`는 소켓 관측을 못 했거나 건너뛰었더라도 `binary_pair_and_backend`입니다. |
 | `assessment` | `local_binaries_meet_baseline`, `meets_declared_baseline`, `version_mismatch`, `below_baseline`, `nonstable_version`, `unknown_baseline`, `unverified_declaration`, `unknown` 중 하나입니다. 개별 결과도 함께 확인하세요. 예를 들어 버전 불일치 안에 기준보다 낮은 백엔드가 포함될 수 있습니다. |
