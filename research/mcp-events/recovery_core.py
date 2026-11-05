@@ -52,6 +52,7 @@ class RecoveryCore(RecoveryFollowups, EventCore):
             db.executescript('''
             CREATE TABLE IF NOT EXISTS recovery_observation(singleton INTEGER PRIMARY KEY CHECK(singleton=1),stamp REAL,ssh TEXT,ping TEXT,streak INTEGER);
             CREATE TABLE IF NOT EXISTS recovery_incidents(id TEXT PRIMARY KEY,event_id TEXT,created REAL,closed REAL,claim_id TEXT,claimed REAL,outcome TEXT);
+            CREATE INDEX IF NOT EXISTS recovery_incidents_claimed ON recovery_incidents(claimed);
             CREATE TABLE IF NOT EXISTS recovery_eligibility(incident_id TEXT PRIMARY KEY,policy_blocked INTEGER NOT NULL,notification_count INTEGER NOT NULL,latest_event_id TEXT);
             CREATE TABLE IF NOT EXISTS recovery_confirmations(incident_id TEXT PRIMARY KEY,since REAL,last REAL,streak INTEGER NOT NULL CHECK(streak BETWEEN 0 AND 3),confirmed_at REAL);
             CREATE TABLE IF NOT EXISTS recovery_reports(incident_id TEXT PRIMARY KEY,outcome TEXT NOT NULL,reported_at REAL NOT NULL);
@@ -218,8 +219,8 @@ class RecoveryCore(RecoveryFollowups, EventCore):
                 and proof['last']-proof['since'] >= HEALTHY_CONFIRMATION_SPAN_SECONDS
                 and proof['confirmed_at'] < current['created'])
 
-    def _state(self, db, incident_id=None):
-        now = self.clock()
+    def _state(self, db, incident_id=None, now=None):
+        now = self.clock() if now is None else now
         obs = db.execute('SELECT * FROM recovery_observation WHERE singleton=1').fetchone()
         row = db.execute('SELECT * FROM recovery_incidents WHERE id=?', (incident_id,)).fetchone() if incident_id else db.execute('SELECT * FROM recovery_incidents WHERE closed IS NULL').fetchone()
         recent = [r[0] for r in db.execute('SELECT claimed FROM recovery_incidents WHERE claimed>? ORDER BY claimed', (now-86400,))]
@@ -272,7 +273,7 @@ class RecoveryCore(RecoveryFollowups, EventCore):
             result['claimable'] = reason == 'eligible'
             if reason in ('daily_limit','cooldown'):
                 result['retry_at'] = policy_retry_at
-        result['unclaimed_followup'] = self._followup_status(db, result)
+        result['unclaimed_followup'] = self._followup_status(db, result, now=now)
         return result
 
     def _sync_eligibility(self, db, state):

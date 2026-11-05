@@ -71,7 +71,7 @@ class RecoveryFollowups:
             return 'cancel'
         return 'defer'
 
-    def _followup_gate(self, db, state, row=None):
+    def _followup_gate(self, db, state, row=None, now=None):
         if self.followup_interval is None:
             return 'disabled'
         incident = state['incident']
@@ -85,7 +85,7 @@ class RecoveryFollowups:
             return 'preflight_reported'
         if incident['first_report'] is not None or incident['execution_contract'] is not None:
             return 'execution_state_unknown'
-        now = self.clock()
+        now = self.clock() if now is None else now
         if row is not None:
             if row['stopped_reason'] in ('expired', 'exhausted'):
                 return row['stopped_reason']
@@ -117,12 +117,13 @@ class RecoveryFollowups:
             db.execute("UPDATE outbox SET state='cancelled' WHERE event=? AND state IN ('pending','retry')",
                        (event['id'],))
 
-    def _delivery_evidence(self, db, event_id):
+    def _delivery_evidence(self, db, event_id, now=None):
+        now = self.clock() if now is None else now
         rows = db.execute('''SELECT o.state,o.http_status,r.received_at FROM outbox o
             JOIN subscriptions s ON s.id=o.subscription
             LEFT JOIN recovery_delivery_receipts r ON r.event_id=o.event AND r.subscription_id=o.subscription
             WHERE o.event=? AND s.owner=? AND s.active=1 AND s.expires>?''',
-                          (event_id, self.owner, self.clock())).fetchall()
+                          (event_id, self.owner, now)).fetchall()
         if not rows:
             return None, 'awaiting_delivery'
         if any(row['state'] in ('pending', 'retry', 'sending') for row in rows):
@@ -135,30 +136,32 @@ class RecoveryFollowups:
             return None, ('receipt_tracking_full' if db.execute('SELECT count(*) FROM recovery_delivery_receipts').fetchone()[0] >= MAX_RECEIPT_RECORDS else 'legacy_receipt_unavailable')
         return None, 'delivery_unconfirmed'
 
-    def _followup_status(self, db, state):
+    def _followup_status(self, db, state, now=None):
+        now = self.clock() if now is None else now
         incident = state['incident']
         row = (db.execute('SELECT * FROM recovery_followups WHERE incident_id=?',
                           (incident['incident_id'],)).fetchone() if incident else None)
-        reason = self._followup_gate(db, state, row)
+        reason = self._followup_gate(db, state, row, now=now)
         selected = self._selected_recovery_event(db, incident) if incident else None
-        receipt, delivery = self._delivery_evidence(db, selected) if selected else (None, 'not_observed')
+        receipt, delivery = (self._delivery_evidence(db, selected, now=now)
+                             if selected else (None, 'not_observed'))
         next_at = None
         response_deadline = None
         if reason == 'ready':
             if delivery != 'received':
                 reason = delivery
-            elif receipt < (row['anchor'] if row else incident['created_at']) or receipt > self.clock():
+            elif receipt < (row['anchor'] if row else incident['created_at']) or receipt > now:
                 reason = 'receipt_time_invalid'
             elif row is None and db.execute('SELECT count(*) FROM recovery_followups').fetchone()[0] >= MAX_FOLLOWUP_RECORDS:
                 reason = 'storage_full'
             else:
                 anchor = row['anchor'] if row else receipt
                 expiry = row['expires_at'] if row else anchor + self.followup_lifetime
-                if self.clock() >= expiry:
+                if now >= expiry:
                     reason = 'expired'
                 else:
                     next_at = receipt + self.followup_interval
-                    if self.clock() < next_at:
+                    if now < next_at:
                         if row and (row['count'] >= self.followup_maximum or next_at >= expiry):
                             reason = 'awaiting_response'
                             response_deadline = min(next_at, expiry)
@@ -173,7 +176,7 @@ class RecoveryFollowups:
         # for received_at, a follow-up anchor, or permission to resend.
         attention_deadline = (row['expires_at'] if row else
                               incident['created_at'] + self.followup_lifetime if incident else None)
-        if reason == 'awaiting_delivery' and self.clock() >= attention_deadline:
+        if reason == 'awaiting_delivery' and now >= attention_deadline:
             reason = 'delivery_unconfirmed'
         attention = reason in ('exhausted', 'expired', 'storage_full',
                                'legacy_receipt_unavailable', 'receipt_tracking_full', 'delivery_unconfirmed', 'receipt_time_invalid', 'clock_regressed', 'execution_state_unknown')

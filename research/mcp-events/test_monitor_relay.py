@@ -14,6 +14,7 @@ from bounded_network import bounded_call
 import http.client
 import io
 from contextlib import redirect_stderr
+from dataclasses import asdict
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -31,6 +32,23 @@ def sample(offset=0):
                     'remote': {'boot_id': 'PRIVATE'}},
             'peer_ping': {'responded': False, 'exit_code': 1, 'route': 'PRIVATE'},
             'alerts': ['PRIVATE']}
+
+
+def budget_summary(offset=0, *, claims=1, cap=24, followup=None, as_of=None):
+    timestamp = NOW+offset if as_of is None else as_of
+    return {'schema_version': 1,
+            'as_of': dt.datetime.fromtimestamp(timestamp, dt.timezone.utc).isoformat(),
+            'window_seconds': 86400, 'cap': cap, 'claims_issued': claims,
+            'budget_release_at': (dt.datetime.fromtimestamp(
+                timestamp + 60, dt.timezone.utc).isoformat() if claims >= cap else None),
+            'first_reports': {'success': 0, 'failed': 0, 'blocked': 0,
+                              'unknown': 0, 'missing': claims, 'other': 0},
+            'current_outcomes': {'success': 0, 'failed': 0, 'blocked': 0,
+                                 'unknown': claims, 'missing': 0, 'other': 0},
+            'externally_closed': 0, 'sustained_confirmed': 0,
+            'unclaimed_followup': followup or {
+                'available': False, 'operator_attention': None, 'reason_code': None,
+                'awaiting_response': None, 'response_deadline_at': None}}
 
 class RelayTest(unittest.TestCase):
     def setUp(self):
@@ -169,6 +187,48 @@ class RelayTest(unittest.TestCase):
                 self.assertFalse(result); self.assertEqual(result.failure_class,reason)
                 self.assertNotIn('SECRET', repr(result)); self.assertTrue(conn.closed)
 
+    def test_optional_recovery_diagnostics_are_validated_without_rejecting_base_ack(self):
+        config=self.https_config(); row=sanitize(sample(),NOW)
+        payload={'accepted':True,'observed_at':row['observed_at'],
+                 'recovery_diagnostics':budget_summary(as_of=time.time())}
+        conn,factory,row=self.connection(payload=json.dumps(payload).encode())
+        result=https_transmit(config,row,factory)
+        self.assertTrue(result)
+        self.assertEqual(result.recovery_diagnostics_status,'current')
+        self.assertEqual(result.recovery_diagnostics['claims_issued'],1)
+
+        payload['recovery_diagnostics']={'claim_id':'SECRET'}
+        conn,factory,row=self.connection(payload=json.dumps(payload).encode())
+        result=https_transmit(config,row,factory)
+        self.assertTrue(result)
+        self.assertEqual(result.failure_class,'ok')
+        self.assertEqual(result.recovery_diagnostics_status,'invalid')
+        self.assertIsNone(result.recovery_diagnostics)
+        self.assertNotIn('SECRET',repr(result))
+
+        payload.pop('recovery_diagnostics')
+        conn,factory,row=self.connection(payload=json.dumps(payload).encode())
+        result=https_transmit(config,row,factory)
+        self.assertTrue(result)
+        self.assertEqual(result.recovery_diagnostics_status,'missing')
+
+    def test_worker_result_validates_optional_summary_without_rejecting_ack(self):
+        config=self.https_config(); row=sanitize(sample(),NOW)
+        good=asdict(monitor_relay.TransportResult(
+            True, subscription_active=True, recovery_diagnostics=budget_summary(as_of=time.time()),
+            recovery_diagnostics_status='current'))
+        for value, expected in ((good, 'current'),
+                                ({**good, 'recovery_diagnostics': {'private_id': 'SECRET'}}, 'invalid')):
+            with self.subTest(expected=expected):
+                worker=SimpleNamespace(status='completed',value=value,error_kind=None,exit_code=0)
+                with patch.object(monitor_relay,'bounded_call',return_value=worker):
+                    result=https_transmit(config,row)
+                self.assertTrue(result)
+                self.assertEqual(result.recovery_diagnostics_status,expected)
+                if expected == 'invalid':
+                    self.assertIsNone(result.recovery_diagnostics)
+                    self.assertNotIn('SECRET',repr(result))
+
     def test_subscription_ack_optional_boolean_and_health_propagation(self):
         config=self.https_config()
         row=sanitize(sample(),NOW)
@@ -178,6 +238,8 @@ class RelayTest(unittest.TestCase):
             conn,factory,row=self.connection(payload=json.dumps(payload).encode())
             result=https_transmit(config,row,factory)
             self.assertTrue(result);self.assertIs(result.subscription_active,active)
+            if active is None:
+                self.assertEqual(result.recovery_diagnostics_status, 'missing')
             diagnostics={}
             state,outcome=step(self.config,{},NOW,lambda *_:result,diagnostics)
             health=update_health({},state,outcome,diagnostics,NOW)
@@ -185,6 +247,43 @@ class RelayTest(unittest.TestCase):
         payload={'accepted':True,'observed_at':row['observed_at'],'subscription_active':'yes'}
         conn,factory,row=self.connection(payload=json.dumps(payload).encode())
         self.assertEqual(https_transmit(config,row,factory).failure_class,'invalid_acknowledgement')
+
+    def test_diagnostics_cache_keeps_original_as_of_across_noop_and_missing_ack(self):
+        initial = sample()
+        self.path.write_text(json.dumps(initial))
+        transport_result = monitor_relay.TransportResult(
+            True, subscription_active=True, recovery_diagnostics=budget_summary(),
+            recovery_diagnostics_status='current')
+        diagnostics={}
+        state,outcome=step(self.config,{},NOW,lambda *_:transport_result,diagnostics)
+        health=update_health({},state,outcome,diagnostics,NOW)
+        original_as_of=health['recovery_diagnostics']['as_of']
+        self.assertEqual(health['recovery_diagnostics_status'],'current')
+
+        diagnostics=monitor_relay.cached_recovery_diagnostics(health)
+        state2,outcome2=step(self.config,state,NOW+15,
+                             lambda *_:self.fail('already-delivered poll must not send'),diagnostics)
+        health2=update_health(health,state2,outcome2,diagnostics,NOW+15)
+        self.assertEqual(outcome2,'already_delivered')
+        self.assertEqual(health2['recovery_diagnostics_status'],'current')
+        self.assertEqual(health2['recovery_diagnostics']['as_of'],original_as_of)
+
+        self.path.write_text(json.dumps(sample(60)))
+        missing=monitor_relay.TransportResult(True, subscription_active=None,
+                                              recovery_diagnostics_status='missing')
+        diagnostics={}
+        state3,outcome3=step(self.config,state,NOW+60,lambda *_:missing,diagnostics)
+        health3=update_health(health2,state3,outcome3,diagnostics,NOW+60)
+        self.assertEqual(health3['recovery_diagnostics_status'],'missing')
+        self.assertEqual(health3['recovery_diagnostics']['as_of'],original_as_of)
+
+        diagnostics=monitor_relay.cached_recovery_diagnostics(health3)
+        state4,outcome4=step(self.config,state3,NOW+75,
+                             lambda *_:self.fail('duplicate poll must not send'),diagnostics)
+        health4=update_health(health3,state4,outcome4,diagnostics,NOW+75)
+        self.assertEqual(outcome4,'already_delivered')
+        self.assertEqual(health4['recovery_diagnostics_status'],'missing')
+        self.assertEqual(health4['recovery_diagnostics']['as_of'],original_as_of)
 
     def test_https_tls_and_network_failures(self):
         config = self.https_config()
@@ -238,6 +337,40 @@ class RelayTest(unittest.TestCase):
         lines=output.getvalue().splitlines();self.assertEqual(len(lines),2)
         self.assertEqual(json.loads(lines[0])['failure_class'],'auth_required')
         self.assertEqual(json.loads(lines[1])['relay_health'],'restored')
+
+    def test_current_diagnostics_survive_noop_poll_with_original_as_of_then_stale(self):
+        state={'delivered_at':sample()['observed_at']}
+        summary=budget_summary()
+        health=update_health({},state,'delivered',
+            {'recovery_diagnostics':summary,'recovery_diagnostics_status':'current'},NOW)
+        as_of=summary['as_of']
+        # A normal 15-second poll can observe the already-delivered sample and
+        # must retain, not refresh, the acknowledged diagnostic timestamp.
+        no_op_health=update_health(health,state,'already_delivered',
+            monitor_relay.cached_recovery_diagnostics(health),NOW+15)
+        self.assertEqual(no_op_health['recovery_diagnostics_status'],'current')
+        self.assertEqual(no_op_health['recovery_diagnostics']['as_of'],as_of)
+        stale_health=update_health(no_op_health,state,'already_delivered',
+            monitor_relay.cached_recovery_diagnostics(no_op_health),NOW+151)
+        self.assertEqual(stale_health['recovery_diagnostics_status'],'current')
+        self.assertEqual(stale_health['recovery_diagnostics']['as_of'],as_of)
+        with self.assertRaises(ValueError):
+            monitor_relay.sanitize_recovery_diagnostics(
+                stale_health['recovery_diagnostics'],NOW+151)
+
+    def test_missing_new_ack_stays_unknown_across_later_noop_poll(self):
+        state={'delivered_at':sample()['observed_at']}
+        summary=budget_summary()
+        current=update_health({},state,'delivered',
+            {'recovery_diagnostics':summary,'recovery_diagnostics_status':'current'},NOW)
+        missing=update_health(current,{'delivered_at':sample(60)['observed_at']},'delivered',
+            {'recovery_diagnostics':None,'recovery_diagnostics_status':'missing'},NOW+60)
+        self.assertEqual(missing['recovery_diagnostics_status'],'missing')
+        self.assertEqual(missing['recovery_diagnostics']['as_of'],summary['as_of'])
+        again=update_health(missing,{'delivered_at':sample(60)['observed_at']},'already_delivered',
+            monitor_relay.cached_recovery_diagnostics(missing),NOW+75)
+        self.assertEqual(again['recovery_diagnostics_status'],'missing')
+        self.assertEqual(again['recovery_diagnostics']['as_of'],summary['as_of'])
 
     def test_runtime_paths_do_not_follow_a_repointed_installation_alias(self):
         root = Path(self.tmp.name)

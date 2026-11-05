@@ -9,6 +9,7 @@ from starlette.requests import Request
 from starlette.requests import ClientDisconnect
 from starlette.responses import JSONResponse
 from starlette.background import BackgroundTask
+from recovery_budget_diagnostics import build_recovery_diagnostics, recovery_read_snapshot
 
 MAX_BODY = 8192
 
@@ -94,10 +95,36 @@ class MonitorIngestMiddleware:
             # Callback latency cannot prevent fresh observations from being ingested.
             self.busy = False
             owns_busy = False
-            with self.recovery._db() as db:
-                subscribed = bool(db.execute('SELECT 1 FROM subscriptions WHERE owner=? AND active=1 AND expires>? LIMIT 1',
-                                             (self.recovery.owner, self.recovery.clock())).fetchone())
-            return await reply(200, {'accepted': True, 'observed_at': observation['observed_at'], 'subscription_active': subscribed},
+            subscribed = None
+            diagnostics = None
+            try:
+                def ack_diagnostics():
+                    # Read current eligibility and outcome counters from one fresh,
+                    # read-only snapshot after the observation transaction commits.
+                    with recovery_read_snapshot(self.recovery) as db:
+                        now = self.recovery.clock()
+                        has_subscription = bool(db.execute(
+                            'SELECT 1 FROM subscriptions WHERE owner=? AND active=1 AND expires>? LIMIT 1',
+                            (self.recovery.owner, now)).fetchone())
+                        try:
+                            summary = build_recovery_diagnostics(self.recovery, db=db, now=now)
+                        except Exception:
+                            # Preserve a known base subscription result even if
+                            # the optional diagnostic extension is unavailable.
+                            summary = None
+                    return has_subscription, summary
+                subscribed, diagnostics = await asyncio.to_thread(ack_diagnostics)
+            except Exception:
+                # Metrics are advisory. A bad/old ledger must not turn a
+                # committed observation into a delivery retry.
+                subscribed = None
+                diagnostics = None
+            acknowledgement = {'accepted': True, 'observed_at': observation['observed_at']}
+            if subscribed is not None:
+                acknowledgement['subscription_active'] = subscribed
+            if diagnostics is not None:
+                acknowledgement['recovery_diagnostics'] = diagnostics
+            return await reply(200, acknowledgement,
                                background=BackgroundTask(deliver))
         finally:
             if owns_busy:
