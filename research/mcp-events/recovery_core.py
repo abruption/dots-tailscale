@@ -4,6 +4,7 @@ import secrets
 import time
 from datetime import datetime, timezone
 from event_core import EventCore, encoded, identity
+from recovery_followups import RecoveryFollowups
 
 NAME = 'dots.recovery_requested'
 COMMAND = 'bash /workspace/.dots-tailscale/start.sh'
@@ -24,10 +25,13 @@ class RecoveryIneligible(ValueError):
 
 
 
-class RecoveryCore(EventCore):
+class RecoveryCore(RecoveryFollowups, EventCore):
     def __init__(self, db_path, allowed_origins, owner, transport=None, clock=time.time, *,
                  max_claims_per_24h=3, cooldown_seconds=3600, new_incident_cooldown_seconds=None,
-                 local_coordination=False):
+                 local_coordination=False, unclaimed_reminder_interval_seconds=None,
+                 unclaimed_reminder_maximum=3, unclaimed_reminder_lifetime_seconds=7200):
+        self._configure_followups(unclaimed_reminder_interval_seconds,
+                                  unclaimed_reminder_maximum, unclaimed_reminder_lifetime_seconds)
         if type(local_coordination) is not bool:
             raise ValueError('local_coordination must be a boolean')
         self.local_coordination = local_coordination
@@ -48,12 +52,14 @@ class RecoveryCore(EventCore):
             db.executescript('''
             CREATE TABLE IF NOT EXISTS recovery_observation(singleton INTEGER PRIMARY KEY CHECK(singleton=1),stamp REAL,ssh TEXT,ping TEXT,streak INTEGER);
             CREATE TABLE IF NOT EXISTS recovery_incidents(id TEXT PRIMARY KEY,event_id TEXT,created REAL,closed REAL,claim_id TEXT,claimed REAL,outcome TEXT);
+            CREATE INDEX IF NOT EXISTS recovery_incidents_claimed ON recovery_incidents(claimed);
             CREATE TABLE IF NOT EXISTS recovery_eligibility(incident_id TEXT PRIMARY KEY,policy_blocked INTEGER NOT NULL,notification_count INTEGER NOT NULL,latest_event_id TEXT);
             CREATE TABLE IF NOT EXISTS recovery_confirmations(incident_id TEXT PRIMARY KEY,since REAL,last REAL,streak INTEGER NOT NULL CHECK(streak BETWEEN 0 AND 3),confirmed_at REAL);
             CREATE TABLE IF NOT EXISTS recovery_reports(incident_id TEXT PRIMARY KEY,outcome TEXT NOT NULL,reported_at REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS recovery_execution_contracts(incident_id TEXT PRIMARY KEY,claim_id TEXT UNIQUE NOT NULL,mode TEXT NOT NULL,expires_at INTEGER NOT NULL,observation_time INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS preflight_reports(incident_id TEXT PRIMARY KEY,reason TEXT NOT NULL,reported_at REAL NOT NULL,report_count INTEGER NOT NULL);
             ''')
+            self._followup_schema(db)
 
     def _owner(self, principal):
         if identity(principal) != self.owner:
@@ -129,6 +135,12 @@ class RecoveryCore(EventCore):
             db.execute('INSERT OR REPLACE INTO recovery_observation VALUES(1,?,?,?,?)', (stamp, ssh, ping, streak))
             active = db.execute('SELECT * FROM recovery_incidents WHERE closed IS NULL').fetchone()
             if ssh == 'ok' and ping == 'ok':
+                # After closure there is no current incident for the background
+                # selector to revisit. Cancel its semantic queue atomically now.
+                for closing in db.execute('SELECT id FROM recovery_incidents WHERE closed IS NULL').fetchall():
+                    followup = db.execute('SELECT * FROM recovery_followups WHERE incident_id=?',
+                                          (closing['id'],)).fetchone()
+                    self._cancel_followup(db, followup)
                 db.execute('UPDATE recovery_incidents SET closed=? WHERE closed IS NULL', (stamp,))
             elif streak >= 3 and active is None:
                 iid, eid = 'inc_'+secrets.token_hex(16), 'evt_'+secrets.token_hex(16)
@@ -207,8 +219,8 @@ class RecoveryCore(EventCore):
                 and proof['last']-proof['since'] >= HEALTHY_CONFIRMATION_SPAN_SECONDS
                 and proof['confirmed_at'] < current['created'])
 
-    def _state(self, db, incident_id=None):
-        now = self.clock()
+    def _state(self, db, incident_id=None, now=None):
+        now = self.clock() if now is None else now
         obs = db.execute('SELECT * FROM recovery_observation WHERE singleton=1').fetchone()
         row = db.execute('SELECT * FROM recovery_incidents WHERE id=?', (incident_id,)).fetchone() if incident_id else db.execute('SELECT * FROM recovery_incidents WHERE closed IS NULL').fetchone()
         recent = [r[0] for r in db.execute('SELECT claimed FROM recovery_incidents WHERE claimed>? ORDER BY claimed', (now-86400,))]
@@ -261,6 +273,7 @@ class RecoveryCore(EventCore):
             result['claimable'] = reason == 'eligible'
             if reason in ('daily_limit','cooldown'):
                 result['retry_at'] = policy_retry_at
+        result['unclaimed_followup'] = self._followup_status(db, result, now=now)
         return result
 
     def _sync_eligibility(self, db, state):
@@ -377,14 +390,24 @@ class RecoveryCore(EventCore):
             db.execute('BEGIN IMMEDIATE')
             state = self._state(db)
             self._sync_eligibility(db, state)
+            self._sync_followups(db, state)
             incident = state['incident']
             if not incident or incident['state'] != 'pending' or not state['observation_fresh']:
                 return []
             obs = state['observation']
             if not self._failed(obs) or obs['failure_streak'] < 3:
                 return []
-            transition = db.execute('SELECT latest_event_id FROM recovery_eligibility WHERE incident_id=?', (incident['incident_id'],)).fetchone()
-            eid = transition['latest_event_id'] if transition and transition['latest_event_id'] else incident['event_id']
+            eid = self._selected_recovery_event(db, incident)
+            decision = self._delivery_decision(db, eid, None)
+            if decision == 'cancel':
+                # The optional semantic queue must not swallow the original
+                # late-subscription contract once that queue is stopped.
+                base = self._base_event(db, incident)
+                if base != eid:
+                    eid = base
+                    decision = self._delivery_decision(db, eid, None)
+            if decision != 'allow':
+                return []
             db.execute("INSERT OR IGNORE INTO outbox SELECT ?,id,'pending',0,NULL FROM subscriptions WHERE owner=? AND active=1 AND expires>?", (eid,principal,self.clock()))
             row = db.execute("SELECT 1 FROM outbox WHERE event=? AND state IN ('pending','retry') AND attempts<3",(eid,)).fetchone()
             return [eid] if row else []

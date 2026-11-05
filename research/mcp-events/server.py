@@ -326,7 +326,10 @@ def load_recovery(cfg):
                         max_claims_per_24h=cfg.get('recovery_max_claims_per_24h', 3),
                         cooldown_seconds=cfg.get('recovery_cooldown_seconds', 3600),
                         new_incident_cooldown_seconds=cfg.get('recovery_new_incident_cooldown_seconds'),
-                        local_coordination=cfg.get('recovery_local_coordination', False))
+                        local_coordination=cfg.get('recovery_local_coordination', False),
+                        unclaimed_reminder_interval_seconds=cfg.get('recovery_unclaimed_reminder_interval_seconds'),
+                        unclaimed_reminder_maximum=cfg.get('recovery_unclaimed_reminder_maximum', 3),
+                        unclaimed_reminder_lifetime_seconds=cfg.get('recovery_unclaimed_reminder_lifetime_seconds', 7200))
 
 
 def main():

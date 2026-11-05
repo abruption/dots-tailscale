@@ -16,6 +16,7 @@ import sys
 from dataclasses import dataclass, asdict
 from urllib.parse import urlsplit
 from bounded_network import bounded_call, ERROR_KINDS
+from recovery_budget_diagnostics import sanitize_recovery_diagnostics
 import os
 from pathlib import Path
 import re
@@ -134,6 +135,8 @@ class TransportResult:
     subscription_active: bool | None = None
     worker_error_kind: str | None = None
     worker_exit_code: int | None = None
+    recovery_diagnostics: dict | None = None
+    recovery_diagnostics_status: str = 'not_received'
 
     def __bool__(self):
         return self.accepted
@@ -253,7 +256,19 @@ def https_transmit_inline(config, observation, connection_factory=http.client.HT
         subscription_active = data.get('subscription_active')
         if 'subscription_active' in data and type(subscription_active) is not bool:
             return TransportResult(False, 'invalid_acknowledgement')
-        return TransportResult(True, subscription_active=subscription_active)
+        budget = None
+        budget_status = 'missing'
+        if 'recovery_diagnostics' in data:
+            try:
+                budget = sanitize_recovery_diagnostics(data['recovery_diagnostics'], time.time())
+                budget_status = 'current'
+            except (ValueError, TypeError, KeyError, OverflowError):
+                # Keep the authenticated observation ACK successful. A broken
+                # optional extension must not cause callback/recovery retries.
+                budget_status = 'invalid'
+        return TransportResult(True, subscription_active=subscription_active,
+                               recovery_diagnostics=budget,
+                               recovery_diagnostics_status=budget_status)
     except ssl.SSLError:
         return TransportResult(False, 'tls_failed')
     except (TimeoutError, subprocess.TimeoutExpired):
@@ -295,8 +310,19 @@ def https_transmit(config, observation, connection_factory=None):
     subscription_active = value.get('subscription_active')
     if subscription_active is not None and type(subscription_active) is not bool:
         return TransportResult(False, 'transport_failed', worker_error_kind='invalid_worker_result', worker_exit_code=exit_code)
+    budget = None
+    budget_status = value.get('recovery_diagnostics_status', 'missing')
+    if budget_status not in ('current', 'missing', 'invalid'):
+        budget_status = 'invalid'
+    if budget_status == 'current':
+        try:
+            budget = sanitize_recovery_diagnostics(value.get('recovery_diagnostics'), time.time())
+        except (ValueError, TypeError, KeyError, OverflowError):
+            budget_status = 'invalid'
     return TransportResult(value['accepted'], value['failure_class'], subscription_active,
-                           worker_exit_code=exit_code if not value['accepted'] else None)
+                           worker_exit_code=exit_code if not value['accepted'] else None,
+                           recovery_diagnostics=budget,
+                           recovery_diagnostics_status=budget_status)
 
 
 def ssh_failure(stderr):
@@ -360,13 +386,15 @@ def transmit(config, observation, runner=subprocess.run):
                         text=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                         timeout=20, check=False)
         return TransportResult(result.returncode == 0,
-                               'ok' if result.returncode == 0 else ssh_failure(getattr(result, 'stderr', '')))
+                               'ok' if result.returncode == 0 else ssh_failure(getattr(result, 'stderr', '')),
+                               recovery_diagnostics_status='unsupported')
     except subprocess.TimeoutExpired as exc:
         stderr = exc.stderr.decode(errors='replace') if isinstance(exc.stderr, bytes) else exc.stderr
         reason = ssh_failure(stderr)
-        return TransportResult(False, reason if reason != 'transport_failed' else 'timeout')
+        return TransportResult(False, reason if reason != 'transport_failed' else 'timeout',
+                               recovery_diagnostics_status='unsupported')
     except OSError:
-        return TransportResult(False, 'local_execution_failed')
+        return TransportResult(False, 'local_execution_failed', recovery_diagnostics_status='unsupported')
 
 
 def runtime_diagnostics():
@@ -403,6 +431,13 @@ def step(config, state, now=None, sender=transmit, diagnostics=None):
         diagnostics.update(last_attempt_at=dt.datetime.fromtimestamp(now, dt.timezone.utc).isoformat(),
                            failure_class=getattr(result, 'failure_class', 'ok' if result else 'transport_failed'),
                            subscription_active=getattr(result, 'subscription_active', None))
+        if result:
+            # Only a new accepted ACK replaces the optional diagnostic status.
+            # A transport failure supplies no newer information: retain the
+            # cached snapshot's original as_of and enforce freshness at use.
+            diagnostics.update(recovery_diagnostics=getattr(result, 'recovery_diagnostics', None),
+                               recovery_diagnostics_status=getattr(
+                                   result, 'recovery_diagnostics_status', 'not_received'))
         diagnostics.update(worker_diagnostics(
             getattr(result, 'worker_error_kind', None) if not result else None,
             getattr(result, 'worker_exit_code', None) if not result else None))
@@ -419,6 +454,18 @@ def update_health(previous, state, outcome, diagnostics, now):
         first = checked
     delivered = state.get('delivered_at')
     stale = delivered is None or now - timestamp(delivered) > 150
+    budget_status_present = 'recovery_diagnostics_status' in diagnostics
+    budget_status = (diagnostics.get('recovery_diagnostics_status') if budget_status_present
+                     else previous.get('recovery_diagnostics_status', 'missing'))
+    budget = diagnostics.get('recovery_diagnostics') if budget_status_present else None
+    if budget_status == 'current' and isinstance(budget, dict):
+        budget_snapshot = budget
+    else:
+        if budget_status_present and budget_status == 'current':
+            budget_status = 'invalid'
+        # Keep the old as_of with cached diagnostics. Consumers must still
+        # require current status and a fresh as_of before acting on it.
+        budget_snapshot = previous.get('recovery_diagnostics')
     return {'checked_at': checked, 'outcome': outcome,
             'consecutive_transport_failures': previous.get('consecutive_transport_failures', 0)+1
                 if outcome == 'transport_failed' else 0,
@@ -427,10 +474,22 @@ def update_health(previous, state, outcome, diagnostics, now):
             'failure_class': diagnostics.get('failure_class',
                 'observation_unavailable' if outcome == 'observation_unavailable' else 'ok'),
             'stale_delivery': stale,
-            'subscription_active': diagnostics.get('subscription_active', previous.get('subscription_active')),
+            'subscription_active': (diagnostics.get('subscription_active')
+                                    if diagnostics.get('subscription_active') is not None
+                                    else previous.get('subscription_active')),
+            'recovery_diagnostics_status': budget_status,
+            'recovery_diagnostics': budget_snapshot,
             **worker_diagnostics(diagnostics.get('worker_error_kind') if failed else None,
                                  diagnostics.get('worker_exit_code') if failed else None),
             **runtime_diagnostics()}
+
+
+def cached_recovery_diagnostics(health):
+    """Seed no-op polls from the prior status without refreshing its as_of."""
+    if not isinstance(health, dict):
+        health = {}
+    return {'recovery_diagnostics': health.get('recovery_diagnostics'),
+            'recovery_diagnostics_status': health.get('recovery_diagnostics_status', 'missing')}
 
 
 def emit_health_transition(previous, current):
@@ -487,7 +546,9 @@ def main():
             health = {}
         failures = 0
         while True:
-            diagnostics = {}
+            # Reuse the prior authenticated snapshot across a no-op poll, but
+            # keep its original as_of so downstream consumers still age it.
+            diagnostics = cached_recovery_diagnostics(health)
             checked_at = time.time()
             updated, outcome = step(config, state, checked_at, diagnostics=diagnostics)
             if updated != state:

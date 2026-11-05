@@ -150,3 +150,5 @@ new configuration key to `null` through a controlled operator change; leave all
 budgets and histories intact.
 
 For the later proposed operating increase from 12 to 24 claims, see the [recovery budget guide](recovery-budget.md). That proposal preserves both intervals and existing claim history; it does not change the defaults described here.
+
+For opt-in claim-outcome and follow-up operator notices, see [recovery-budget-observability.md](recovery-budget-observability.md). Missing or stale diagnostics remain unknown and do not clear an existing warning.

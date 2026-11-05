@@ -106,6 +106,32 @@ class PatchTests(unittest.TestCase):
                 self.assertIs(value, local_coordination)
 
 
+class FollowupConstructorTests(unittest.TestCase):
+    def modern_server(self):
+        return deploy.patch_server(SERVER).replace(
+            b"new_incident_cooldown_seconds=cfg.get('recovery_new_incident_cooldown_seconds'))",
+            b"new_incident_cooldown_seconds=cfg.get('recovery_new_incident_cooldown_seconds'),\n"
+            b"                        local_coordination=cfg.get('recovery_local_coordination', False),\n"
+            b"                        unclaimed_reminder_interval_seconds=cfg.get('recovery_unclaimed_reminder_interval_seconds'),\n"
+            b"                        unclaimed_reminder_maximum=cfg.get('recovery_unclaimed_reminder_maximum', 3),\n"
+            b"                        unclaimed_reminder_lifetime_seconds=cfg.get('recovery_unclaimed_reminder_lifetime_seconds', 7200))")
+
+    def test_installed_followup_constructor_is_byte_preserved(self):
+        body = self.modern_server()
+        self.assertEqual(deploy.patch_server(body), body)
+        self.assertIn(b'def load_mail(cfg)', body)
+
+    def test_unknown_or_changed_followup_wiring_is_rejected(self):
+        body = self.modern_server()
+        for old, new in [
+            (b"cfg.get('recovery_unclaimed_reminder_interval_seconds')", b'600'),
+            (b"cfg.get('recovery_unclaimed_reminder_maximum', 3)", b"cfg.get('recovery_unclaimed_reminder_maximum', 4)"),
+            (b"cfg.get('recovery_unclaimed_reminder_lifetime_seconds', 7200)", b"cfg.get('recovery_unclaimed_reminder_lifetime_seconds', 86400)"),
+        ]:
+            with self.subTest(expression=new), self.assertRaises(ValueError):
+                deploy.patch_server(body.replace(old, new))
+
+
 class ConfigTests(unittest.TestCase):
     def config(self):
         return {'enable_recovery': True, 'runtime_dir': str(deploy.DATA), 'recovery_max_claims_per_24h': 12,
