@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from health_notifier import (assess, run_once, read_file, read_telegram, telegram_send,
-                             validate_config, notification_text)
+                             validate_config, notification_text, recovery_warning_text)
 from monitor_relay import save_private
 
 NOW = 1800000000.0
@@ -56,6 +56,143 @@ class NotifierTests(unittest.TestCase):
         state=read_file(self.config['state_file'],private=True)
         self.assertFalse(state['degraded']);self.assertNotIn('first_failure_at',state)
         self.assertEqual(self.sent,[])
+
+    def test_exhaustion_notice_uses_budget_release_as_reference_not_permission(self):
+        release = stamp(NOW + 600)
+        warnings = {'claims_issued': 24, 'cap': 24, 'warning_threshold': 20,
+                    'first_reports': {'success': 0, 'failed': 0, 'blocked': 0,
+                                      'unknown': 5, 'missing': 17, 'other': 2},
+                    'current_outcomes': {'success': 0, 'failed': 0, 'blocked': 0,
+                                         'unknown': 16, 'missing': 5, 'other': 3},
+                    'externally_closed': 3, 'sustained_confirmed': 1,
+                    'budget_release_at': release, 'as_of': stamp(NOW),
+                    'followup_reason': None}
+        message = recovery_warning_text(warnings, ['claim_budget_exhausted'])
+        self.assertIn('claim_grants_issued_in_rolling_24h: 24/24', message)
+        self.assertIn('earliest_budget_release_reference_utc: ' + release, message)
+        self.assertIn('time alone is not authorization', message)
+        self.assertIn('first_report_outcomes', message)
+        self.assertIn('first_report_outcomes_success_failed_blocked_unknown_missing_other: 0/0/0/5/17/2', message)
+        self.assertIn('current_outcome_labels_success_failed_blocked_unknown_missing_other: 0/0/0/16/5/3', message)
+        self.assertIn('externally_closed_vs_sustained_confirmed: 3/1', message)
+
+    def test_awaiting_response_with_deadline_does_not_trigger_operator_warning(self):
+        self.config['operator_recovery_warnings'] = True
+        now = NOW + 30
+        followup = {'available': True, 'operator_attention': False,
+                    'reason_code': None, 'awaiting_response': True,
+                    'response_deadline_at': stamp(now + 300)}
+        summary = {'schema_version': 1, 'as_of': stamp(now), 'window_seconds': 86400,
+                   'cap': 24, 'claims_issued': 1, 'budget_release_at': None,
+                   'first_reports': {'success': 0, 'failed': 0, 'blocked': 0,
+                                     'unknown': 1, 'missing': 0, 'other': 0},
+                   'current_outcomes': {'success': 0, 'failed': 0, 'blocked': 0,
+                                        'unknown': 1, 'missing': 0, 'other': 0},
+                   'externally_closed': 0, 'sustained_confirmed': 0,
+                   'unclaimed_followup': followup}
+        health = {'checked_at': stamp(now), 'delivered_at': stamp(now),
+                  'failure_class': 'ok', 'recovery_diagnostics_status': 'current',
+                  'recovery_diagnostics': summary}
+        save_private(self.config['relay_health_file'], health)
+        save_private(self.config['observation_file'], {'observed_at': stamp(now)})
+        self.assertEqual(run_once(self.config, now, self.send), 'healthy')
+        self.assertEqual(self.sent, [])
+
+    def test_ssh_transport_with_opted_in_warnings_is_an_unsupported_monitor_fault(self):
+        self.config['operator_recovery_warnings'] = True
+        now = NOW + 200
+        save_private(self.config['relay_health_file'], {
+            'checked_at': stamp(now), 'delivered_at': stamp(now),
+            'failure_class': 'ok', 'recovery_diagnostics_status': 'unsupported'})
+        save_private(self.config['observation_file'], {'observed_at': stamp(now)})
+        report = assess(self.config, now)
+        self.assertIn('recovery_diagnostics_unsupported', report['reasons'])
+        self.assertEqual(run_once(self.config, now, self.send), 'recovery_diagnostics_unknown')
+        self.assertEqual(self.sent, [])
+        self.assertEqual(run_once(self.config, now + 180, self.send), 'sent')
+        self.assertIn('recovery_diagnostics_unsupported', self.sent[-1])
+
+    def test_corrupt_or_future_warning_state_survives_and_uses_monitor_grace_notice(self):
+        self.config['operator_recovery_warnings'] = True
+        future_state = {
+            'claim_budget_near_limit': {'active': True, 'last_attempt_at': stamp(NOW + 3600),
+                                        'last_outcome': 'sent', 'reason_code': None},
+            'claim_budget_exhausted': {'active': False, 'last_attempt_at': None,
+                                       'last_outcome': None, 'reason_code': None},
+            'followup_operator_attention': {'active': False, 'last_attempt_at': None,
+                                           'last_outcome': None, 'reason_code': None},
+        }
+        corrupt = {'operator_warning_state': {'unrecognized': 'preserve this raw value'}}
+        for suffix, prior in (('corrupt', corrupt), ('future', {'operator_warning_state': future_state})):
+            with self.subTest(state=suffix):
+                state_path = Path(self.config['state_file'])
+                local_config = dict(self.config, state_file=str(state_path.with_name(suffix + '.json')))
+                save_private(local_config['state_file'], prior)
+                self.assertEqual(run_once(local_config, NOW, self.send), 'grace_period')
+                saved = read_file(local_config['state_file'], private=True)
+                self.assertEqual(saved['operator_warning_state'], prior['operator_warning_state'])
+                self.assertIn('operator_warning_state_unavailable', saved['reasons'])
+                self.assertEqual(run_once(local_config, NOW + 180, self.send), 'sent')
+                saved = read_file(local_config['state_file'], private=True)
+                self.assertEqual(saved['operator_warning_state'], prior['operator_warning_state'])
+                self.assertIn('operator_warning_state_unavailable', self.sent[-1])
+
+    def test_base_notification_failure_is_not_overwritten_by_warning_result(self):
+        self.config['operator_recovery_warnings'] = True
+        now = NOW + 200
+        warning = {'available': True, 'operator_attention': False, 'reason_code': None,
+                   'awaiting_response': False, 'response_deadline_at': None}
+        summary = {'schema_version': 1, 'as_of': stamp(now), 'window_seconds': 86400,
+                   'cap': 24, 'claims_issued': 20, 'budget_release_at': None,
+                   'first_reports': {'success': 0, 'failed': 0, 'blocked': 0,
+                                     'unknown': 5, 'missing': 15, 'other': 0},
+                   'current_outcomes': {'success': 0, 'failed': 0, 'blocked': 0,
+                                        'unknown': 20, 'missing': 0, 'other': 0},
+                   'externally_closed': 0, 'sustained_confirmed': 0,
+                   'unclaimed_followup': warning}
+        save_private(self.config['relay_health_file'], {
+            'checked_at': stamp(now), 'delivered_at': stamp(now), 'failure_class': 'ok',
+            'recovery_diagnostics_status': 'current', 'recovery_diagnostics': summary})
+        save_private(self.config['observation_file'], {'observed_at': stamp(NOW - 200)})
+        outcomes = iter(('notification_timeout', 'sent'))
+        calls = []
+        def sender(config, text):
+            calls.append(text)
+            return next(outcomes)
+        self.assertEqual(run_once(self.config, now, sender), 'notification_timeout')
+        self.assertEqual(len(calls), 2)
+        state = read_file(self.config['state_file'], private=True)
+        self.assertEqual(state['last_notification_outcome'], 'notification_timeout')
+        self.assertEqual(state['operator_warning_state']['claim_budget_near_limit']['last_outcome'], 'sent')
+
+    def test_base_notification_failure_is_not_overwritten_by_warning_cooldown(self):
+        self.config['operator_recovery_warnings'] = True
+        warning = {'available': True, 'operator_attention': False, 'reason_code': None,
+                   'awaiting_response': False, 'response_deadline_at': None}
+        def install_health(now, count):
+            summary = {'schema_version': 1, 'as_of': stamp(now), 'window_seconds': 86400,
+                       'cap': 24, 'claims_issued': count, 'budget_release_at': None,
+                       'first_reports': {'success': 0, 'failed': 0, 'blocked': 0,
+                                         'unknown': count, 'missing': 0, 'other': 0},
+                       'current_outcomes': {'success': 0, 'failed': 0, 'blocked': 0,
+                                            'unknown': count, 'missing': 0, 'other': 0},
+                       'externally_closed': 0, 'sustained_confirmed': 0,
+                       'unclaimed_followup': warning}
+            save_private(self.config['relay_health_file'], {
+                'checked_at': stamp(now), 'delivered_at': stamp(now), 'failure_class': 'ok',
+                'recovery_diagnostics_status': 'current', 'recovery_diagnostics': summary})
+        install_health(NOW, 20)
+        self.assertEqual(run_once(self.config, NOW, self.send), 'sent')
+        self.assertEqual(len(self.sent), 1)
+        install_health(NOW + 180, 20)
+        save_private(self.config['observation_file'], {'observed_at': stamp(NOW - 200)})
+        calls=[]
+        def fail_base(config, text):
+            calls.append(text)
+            return 'notification_timeout'
+        self.assertEqual(run_once(self.config, NOW + 180, fail_base), 'notification_timeout')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.sent[-1].count('claim_grants_issued_in_rolling_24h'), 1)
 
     def test_dead_relay_source_staleness_and_grace(self):
         self.assertEqual(self.run_at(NOW+151),'grace_period')
