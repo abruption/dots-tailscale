@@ -164,6 +164,68 @@ class BaselineDiagnosticTests(unittest.TestCase):
         self.assertEqual(report["assessment"], "meets_declared_baseline")
         self.assertEqual(report["backend"]["version"], "1.104.4-t27047635f")
 
+    def test_official_supplemental_backend_build_preserves_raw_version_and_health_exit(self):
+        version = "1.104.4-t938213198-gd38c96d6a"
+        report, code, run = self.doctor({"BackendState": "Running", "Version": version})
+        run.assert_called_once_with(self.directory, self.runtime, ["status", "--json"])
+        self.assertEqual(code, 0)
+        self.assertTrue(report["healthy"])
+        baseline = report["checks"]["runtime_baseline"]
+        self.assertEqual(baseline["backend"]["version"], version)
+        self.assertEqual(baseline["backend"]["release_kind"], "release_build")
+        self.assertEqual(baseline["backend"]["comparison"], "equal")
+        self.assertEqual(baseline["consistency"], "match")
+        self.assertEqual(baseline["assessment"], "meets_declared_baseline")
+        self.assertEqual(baseline["advisory_policy"], "not_evaluated")
+        stream = io.StringIO()
+        with mock.patch.object(tool, "directories", return_value=(self.directory, self.runtime)), \
+                mock.patch.object(tool, "doctor", return_value=(report, code)), contextlib.redirect_stdout(stream):
+            self.assertEqual(tool.main(["doctor", "--json"]), 0)
+        output = json.loads(stream.getvalue())
+        self.assertEqual(output["checks"]["runtime_baseline"]["backend"]["version"], version)
+        self.assertEqual(output["checks"]["runtime_baseline"]["assessment"], "meets_declared_baseline")
+
+    def test_unstable_supplemental_build_is_not_promoted_to_release(self):
+        version = "1.105.123-t938213198-gd38c96d6a"
+        report = self.report(backend={"version": version, "status": "available"})
+        self.assertEqual(report["backend"]["release_kind"], "prerelease")
+        self.assertEqual(report["backend"]["comparison"], "not_comparable")
+        # Existing version disagreement takes precedence over nonstable_version.
+        self.assertEqual(report["assessment"], "version_mismatch")
+        report = self.report(version, backend={"version": version, "status": "available"})
+        self.assertEqual(report["assessment"], "nonstable_version")
+
+    def test_nonrelease_or_malformed_supplemental_suffixes_remain_nonstable(self):
+        for version in ("1.104.4-1-t938213198-gd38c96d6a",
+                        "1.104.4-dev20261030-t938213198",
+                        "1.104.4-t938213198-gd38c96d6a-dirty",
+                        "1.104.4-t938213198-gd38c96d6a-rc.1",
+                        "1.104.4-t938213198-gd38c96d6a+dirty",
+                        "1.104.4-t938213198-gd38c96d6a+dev",
+                        "1.104.4-t938213198-gd38c96d6a+arbitrary",
+                        "1.104.4-t938213198-gd38c96d6",
+                        "1.104.4-t938213198-gd38c96d6ab",
+                        "1.104.4-t93821319-gd38c96d6a",
+                        "1.104.4-t9382131980-gd38c96d6a",
+                        "1.104.4-t938213198-gNOTHEX123",
+                        "1.104.4-gd38c96d6a",
+                        "1.104.4-t938213198-gd38c96d6a-gabcdef123"):
+            with self.subTest(version=version):
+                report = self.report(backend={"version": version, "status": "available"})
+                self.assertEqual(report["backend"]["version"], version)
+                self.assertEqual(report["backend"]["release_kind"], "prerelease")
+                self.assertEqual(report["backend"]["comparison"], "not_comparable")
+                self.assertEqual(report["assessment"], "nonstable_version")
+
+    def test_legacy_metadata_forms_retain_diagnostic_compatibility(self):
+        for version, kind in (("1.104.4+meta", "stable"),
+                              ("1.104.4-t27047635f+dirty", "release_build")):
+            with self.subTest(version=version):
+                report = self.report(backend={"version": version, "status": "available"})
+                self.assertEqual(report["backend"]["version"], version)
+                self.assertEqual(report["backend"]["release_kind"], kind)
+                self.assertEqual(report["backend"]["comparison"], "equal")
+
     def test_prerelease_is_explicit_and_not_ordered_as_stable(self):
         for version in ("1.104.4-rc.1", "1.106.0-dev", "1.104.4-tNOTHEX"):
             report = self.report(version)

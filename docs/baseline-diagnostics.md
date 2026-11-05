@@ -4,6 +4,8 @@ This guide covers features included in **v0.8.0**. Check the release page for
 published artifacts. Installing the package does not enable automatic updates or
 register a recovery task.
 
+The combined `-t…-g…` suffix correction described below is a source change after v0.8.0, prepared for a later release. The original published v0.8.0 artifacts do not include this fix.
+
 `dots-ts version` and `dots-ts doctor` compare the Tailscale versions visible in the current execution context with the `TS_VERSION` declaration in the installation's `setup.sh`. They do not update anything, restart a process, change authentication or fetch security advisories.
 
 The declaration's `sha256` and `source_integrity` bind it to the exact setup
@@ -36,7 +38,7 @@ The JSON keeps the existing `package` and `tailscale` fields for `version`. It a
 | `cli`, `daemon_binary`, `backend` | Separate observations, each with `version`, `status`, `release_kind` and `comparison`. Invalid response text is not echoed. |
 | Observation `status` | `available`, `timeout`, `unavailable`, `invalid_response`, `missing`, `skipped` or `not_queried`. `missing` is used when a responding backend omits `Version`. |
 | Observation `comparison` | `below`, `equal` or `above` the declared stable baseline; otherwise `unknown` or `not_comparable`. |
-| Observation `release_kind` | `stable`, `release_build`, `prerelease` or `unknown`. A normal Tailscale backend build suffix such as `1.104.4-t27047635f` retains the full observed text and compares as release `1.104.4`. Other prerelease suffixes are not ordered as stable releases. |
+| Observation `release_kind` | `stable`, `release_build`, `prerelease` or `unknown`. A normal Tailscale backend build suffix such as `1.104.4-t27047635f` or the distributed build form `1.104.4-t938213198-gd38c96d6a` retains the full observed text and compares as release `1.104.4`. The combined `-t…-g…` form requires an even minor release number and two nine-character lowercase hexadecimal hashes, without trailing `+` build metadata. Combined forms with change-count, development, dirty or unrecognized suffixes remain nonstable. The existing bare/single-hash handling of `+` metadata remains unchanged for compatibility. Other prerelease suffixes are not ordered as stable releases. |
 | `consistency` | `mismatch` if observed release numbers disagree, `match` if at least two observations agree, otherwise `unknown`. This compares release identities, not the bytes or build provenance of the binaries. Missing observations remain visible even when the other two match. |
 | `scope` | `local_binary_pair_only` for `version`; `binary_pair_and_backend` for `doctor`, even if the socket observation was unavailable or skipped. |
 | `assessment` | `local_binaries_meet_baseline`, `meets_declared_baseline`, `version_mismatch`, `below_baseline`, `nonstable_version`, `unknown_baseline`, `unverified_declaration` or `unknown`. Inspect the individual observations as well: for example, a version mismatch can include a below-baseline backend. |
