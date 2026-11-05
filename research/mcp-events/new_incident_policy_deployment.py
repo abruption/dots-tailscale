@@ -142,14 +142,14 @@ def patch_server(body):
         'cooldown_seconds': "cfg.get('recovery_cooldown_seconds', 3600)",
         'new_incident_cooldown_seconds': "cfg.get('recovery_new_incident_cooldown_seconds')",
         'local_coordination': "cfg.get('recovery_local_coordination', False)",
+        'unclaimed_reminder_interval_seconds': "cfg.get('recovery_unclaimed_reminder_interval_seconds')",
+        'unclaimed_reminder_maximum': "cfg.get('recovery_unclaimed_reminder_maximum', 3)",
+        'unclaimed_reminder_lifetime_seconds': "cfg.get('recovery_unclaimed_reminder_lifetime_seconds', 7200)",
     }
     required = {'max_claims_per_24h', 'cooldown_seconds'}
-    supported_shapes = {
-        frozenset(required | optional)
-        for optional in (set(), {'new_incident_cooldown_seconds'}, {'local_coordination'},
-                         {'new_incident_cooldown_seconds', 'local_coordination'})
-    }
-    if frozenset(names) not in supported_shapes:
+    # Known optional constructor wiring may already be installed. Preserve its
+    # exact cfg.get expressions; this helper does not deploy feature modules.
+    if not required.issubset(names) or not set(names).issubset(expected):
         raise ValueError('unexpected recovery policy call shape')
     for keyword in call.keywords:
         if _expression(keyword.value) != _expression(ast.parse(expected[keyword.arg], mode='eval').body):

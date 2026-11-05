@@ -103,3 +103,5 @@ sudo systemctl stop dots-events-recovery.service
 ```
 
 Run the launchd command on the Mac and systemctl commands on the broker host. Substitute the actual plist; manage separately installed observers/notifiers individually. These actions do not stop Tailscale in Dots. Retain private incident records and unknown results. The IPv6 guard is a separate security service: stopping recovery must not remove firewall protection. Follow the reviewed [security rollback procedure](../research/mcp-events/security-hardening.md) for infrastructure changes, including partial failures and preserved latest ledgers.
+
+An opt-in [received-but-unclaimed follow-up policy](../research/mcp-events/recovery-followups.md) can request bounded reevaluation of the same incident. It does not clear preflight stops or grant execution; operating activation and the operator warning consumer require separate deployment.
