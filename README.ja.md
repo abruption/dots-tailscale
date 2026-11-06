@@ -28,7 +28,7 @@ Tailscale と SSH を使って、自分の端末から Dots のクラウドコ�
 
 有効にする前に、[v0.9.0 の使い方](docs/usage.ja.md#development-v090)、[自動更新（英語）](docs/automatic-updates.md)、[来歴検証（英語）](docs/release-provenance.md)、[復旧の連携（英語）](docs/recovery-lifecycle.md)、[プレビューの準備状況（英語）](docs/recovery-support-readiness.md)を確認してください。
 
-v0.9.0 では、正式版の長いバックエンドバージョン表記を正しく診断するよう修正しています。研究用の MCP 構成には、イベント受領後に claim が作られない場合の[回数・期間を制限した再通知（英語）](research/mcp-events/recovery-followups.md)と、[復旧予算の集計・運用者向け警告（英語）](research/mcp-events/recovery-budget-observability.md)も加わります。再通知と警告はどちらも既定で無効で、別途デプロイと設定が必要です。通常のインストールでは有効にならず、即時の復旧を保証するものでもありません。
+v0.9.0 では、正式版の長いバックエンドバージョン表記を正しく診断するよう修正しています。研究用の MCP 構成には、イベント受領後に claim が作られない場合の[回数・期間を制限した再通知（英語）](research/mcp-events/recovery-followups.md)と、[復旧予算の集計・運用者向け警告（英語）](research/mcp-events/recovery-budget-observability.md)も加わります。再通知と警告はどちらも既定で無効で、別途デプロイと設定が必要です。通常のインストールでは有効になりません。再通知自体は実行許可ではなく、VM 交換後の復旧を保証するものでもありません。
 
 ## できること
 

@@ -384,7 +384,7 @@ sha256sum tailscale-setup.sh shim.py dots-ts dots_proxy.py
 | `/workspace/.dots-tailscale/sshd` | SSH 설정·호스트 키·`authorized_keys` |
 | `/tmp/dots-tailscale-$(id -u)` | 사용자별 소켓·PID·실행 로그 |
 
-이전에 인증한 설치에서 state가 사라지면 스크립트는 다른 장치 신원을 자동 생성하지 않고 중단합니다. 같은 Tailscale state를 동시에 실행 중인 여러 VM에 복제하지 마세요. `/workspace`는 자동으로 비공개 처리되는 위치가 아니므로 접근을 통제할 수 있는 디렉터리만 사용하세요. SSH 설정은 `/workspace` 상위 디렉터리 권한 때문에 OpenSSH가 공개키 인증을 거부하지 않도록 `StrictModes no`를 사용합니다. 보관 디렉터리는 `700`, SSH 키·`authorized_keys`·CA 개인키는 `600` 권한으로 제한합니다. 기동 시에는 Tailscale CLI와 로컬 SSH 배너까지만 확인하며, 외부 공개키 로그인을 매번 시험하지 않습니다. 재기동 시 1 MiB가 넘는 로그는 한 세대만 남기고 회전하지만, 프로세스가 계속 실행 중일 때 로그 크기에는 상한이 없습니다.
+이전에 인증한 설치에서 state가 사라지면 스크립트는 다른 장치 신원을 자동 생성하지 않고 중단합니다. Tailscale 인증 state, 호스트·클라이언트 개인키, shim CA 개인키, Auth Key 파일, 생성된 백업, 실행 로그는 Git에 넣지 마세요. 같은 Tailscale state를 동시에 실행 중인 여러 VM에 복제하지 마세요. `/workspace`는 자동으로 비공개 처리되는 위치가 아니므로 접근을 통제할 수 있는 디렉터리만 사용하세요. SSH 설정은 `/workspace` 상위 디렉터리 권한 때문에 OpenSSH가 공개키 인증을 거부하지 않도록 `StrictModes no`를 사용합니다. 보관 디렉터리는 `700`, SSH 키·`authorized_keys`·CA 개인키는 `600` 권한으로 제한합니다. 기동 시에는 Tailscale CLI와 로컬 SSH 배너까지만 확인하며, 외부 공개키 로그인을 매번 시험하지 않습니다. 재기동 시 1 MiB가 넘는 로그는 한 세대만 남기고 회전하지만, 프로세스가 계속 실행 중일 때 로그 크기에는 상한이 없습니다.
 
 `/proc`의 일부 프로세스에 접근할 수 없어도 탐색을 계속하며, CLI가 응답하는 기존 tailscaled는 재사용합니다. 식별되지 않는 데몬의 소켓은 자동 삭제하지 않습니다.
 

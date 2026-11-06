@@ -28,7 +28,7 @@
 
 启用前，请阅读[v0.9.0 使用说明](docs/usage.zh-CN.md#development-v090)、[自动更新（英文）](docs/automatic-updates.md)、[来源验证（英文）](docs/release-provenance.md)、[恢复协调（英文）](docs/recovery-lifecycle.md)和[预览准备情况（英文）](docs/recovery-support-readiness.md)。
 
-v0.9.0 修正了对稳定版后端长版本号的诊断。研究用 MCP 配置还新增了[事件已接收但尚未创建 claim 时的有界后续提醒（英文）](research/mcp-events/recovery-followups.md)，以及[恢复预算汇总与运维告警（英文）](research/mcp-events/recovery-budget-observability.md)。后续提醒和告警默认都关闭，需要单独部署和配置；普通安装不会启用，也不保证立即恢复连接。
+v0.9.0 修正了对稳定版后端长版本号的诊断。研究用 MCP 配置还新增了[事件已接收但尚未创建 claim 时的有界后续提醒（英文）](research/mcp-events/recovery-followups.md)，以及[恢复预算汇总与运维告警（英文）](research/mcp-events/recovery-budget-observability.md)。后续提醒和告警默认都关闭，需要单独部署和配置；普通安装不会启用。提醒本身不授予执行权限，也不保证 VM 替换后的恢复。
 
 ## 可以做什么
 
