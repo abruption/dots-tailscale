@@ -37,7 +37,8 @@ synthetic ELF/state data and mocked lifecycle operations.
 - Full offline core suite: **550 tests passed** on Dots Linux.
 - After adding the explicit runtime rollback-environment assertions, its **73 tests passed** again.
 - A follow-up worker-level test confirms that an actual proxy guard rejection is
-  recorded as terminal `rejected`, with no signal, binary replacement or update fence.
+  recorded as terminal `rejected` / `baseline_unavailable`, with no signal, binary
+  replacement or update fence.
   The expanded runtime suite passed **74 tests** locally.
 - Original source manifest check passed after the negative control was restored.
 

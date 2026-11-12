@@ -663,14 +663,24 @@ class RuntimeApplyWorkerTests(unittest.TestCase):
                'https_proxy':'http://platform.invalid:8889',
                'SSL_CERT_FILE':str(self.directory/'shim/bundle.crt')}
         raw = b'\0'.join((k+'='+v).encode() for k,v in env.items()) + b'\0'
+        guard_errors = []
         def read_environment(process, directory):
             with mock.patch.object(Path, 'read_bytes', return_value=raw):
-                return actual_proxy._environment({'pid':123}, directory)
+                try:
+                    return actual_proxy._environment({'pid':123}, directory)
+                except actual_proxy.ProxyError as error:
+                    guard_errors.append(str(error))
+                    raise
         self.proxy._environment.side_effect = read_environment
         self.assertEqual(tool.runtime_worker(self.directory, self.runtime, tx), 0)
         journal = json.loads((tx/'journal.json').read_text())
+        self.proxy._environment.assert_called_once()
+        self.assertEqual(guard_errors, ['unexpected daemon transport proxy; inspect before restarting'])
         self.assertEqual(journal['state'], 'rejected')
-        self.assertEqual(tool.runtime_status(self.directory, tx.name)['state'], 'rejected')
+        self.assertEqual(journal['error'], 'baseline_unavailable')
+        status = tool.runtime_status(self.directory, tx.name)
+        self.assertEqual(status['state'], 'rejected')
+        self.assertEqual(status['error'], 'baseline_unavailable')
         self.stop.assert_not_called()
         self.proxy._launch.assert_not_called()
         self.assertFalse((self.directory/tool.RUNTIME_FENCE).exists())
