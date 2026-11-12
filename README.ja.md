@@ -4,17 +4,19 @@
 
 <p align="center"><a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · 日本語</p>
 
+**プロキシ互換性の修正:** v0.9.1 では、デーモンの大文字・小文字のプロキシ変数をローカル shim に統一します。競合した環境で動作中のデーモンには別途、安全な再起動が必要です。パッケージ更新だけでは実行中の環境は変わりません。[診断と復旧手順（英語）](docs/proxy-environment.md)を確認し、v0.9.1 の配布ファイルが公開・検証された後に例を実行してください。
+
 Tailscale と SSH を使って、自分の端末から Dots のクラウドコンピューターに接続できます。dots-tailscale は root 権限や systemd を使わずに必要なツールをインストールし、インストール一式、Tailscale のノード状態、SSH の識別情報を `/workspace` に保存します。環境が変わってもこのディレクトリが残っていれば、そのまま再利用できます。
 
-**このガイドは [v0.9.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.9.0) を対象としています。インストール前にリリースページで公開済みのファイルを確認してください。** 証明書生成前に CONNECT 先ホストを検証する v0.7.1 のセキュリティ修正を含みます（[GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)）。v0.7.0 以前が影響を受けます。新規インストールの Tailscale は 1.104.4 です。OpenAI や Tailscale の公式ツールではない独立プロジェクトです。
+**このガイドは [v0.9.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.9.1) を対象としています。インストール前にリリースページで公開済みのファイルを確認してください。** 証明書生成前に CONNECT 先ホストを検証する v0.7.1 のセキュリティ修正を含みます（[GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)）。v0.7.0 以前が影響を受けます。新規インストールの Tailscale は 1.104.4 です。OpenAI や Tailscale の公式ツールではない独立プロジェクトです。
 
-**以下の固定バージョンの例は、v0.9.0 の配布ファイルが公開され、その来歴を独立して検証した後に実行してください。タグだけではリリースの公開を意味しません。**
+**以下の固定バージョンの例は、v0.9.1 の配布ファイルが公開され、その来歴を独立して検証した後に実行してください。タグだけではリリースの公開を意味しません。**
 
 **v0.6.0 など旧基準からの更新:** Tailscale の既定値が 1.102.4 のパッケージでは、先にランタイムを更新してから[明示的な基準バージョン移行（英語）](docs/security-baseline.md)を行ってください。通常の `update apply` では、基準バージョンをまたぐ変更は引き続き拒否されます。
 
-## v0.9.0 の機能
+## v0.9.1 の機能
 
-以下のインストール例は **v0.9.0** に固定しています。自動更新と復旧の実行機能は明示的な有効化が必要で、通常のインストールでは自動起動や復旧タスクを登録しません。
+以下のインストール例は **v0.9.1** に固定しています。自動更新と復旧の実行機能は明示的な有効化が必要で、通常のインストールでは自動起動や復旧タスクを登録しません。
 
 | 機能 | 確認しておきたいこと |
 |---|---|
@@ -26,7 +28,7 @@ Tailscale と SSH を使って、自分の端末から Dots のクラウドコ�
 
 ローカルの復旧履歴と試行予算が共通になるのは、旧 watchdog を停止し、内部・外部の実行主体が**両方とも**共通の復旧入口を使うように切り替えた後だけです。稼働中のタスクが `start.sh` を直接呼んでいる場合は、従来の経路のままです。MCP 方式は上級者向けのプレビューです。別の実アカウントでの設定・復旧の再現試験は**まだ完了しておらず**、一般向けの自動復旧サポートを意味しません。
 
-有効にする前に、[v0.9.0 の使い方](docs/usage.ja.md#development-v090)、[自動更新（英語）](docs/automatic-updates.md)、[来歴検証（英語）](docs/release-provenance.md)、[復旧の連携（英語）](docs/recovery-lifecycle.md)、[プレビューの準備状況（英語）](docs/recovery-support-readiness.md)を確認してください。
+有効にする前に、[v0.9.1 の使い方](docs/usage.ja.md#development-v091)、[自動更新（英語）](docs/automatic-updates.md)、[来歴検証（英語）](docs/release-provenance.md)、[復旧の連携（英語）](docs/recovery-lifecycle.md)、[プレビューの準備状況（英語）](docs/recovery-support-readiness.md)を確認してください。
 
 v0.9.0 では、正式版の長いバックエンドバージョン表記を正しく診断するよう修正しています。研究用の MCP 構成には、イベント受領後に claim が作られない場合の[回数・期間を制限した再通知（英語）](research/mcp-events/recovery-followups.md)と、[復旧予算の集計・運用者向け警告（英語）](research/mcp-events/recovery-budget-observability.md)も加わります。再通知と警告はどちらも既定で無効で、別途デプロイと設定が必要です。通常のインストールでは有効になりません。再通知自体は実行許可ではなく、VM 交換後の復旧を保証するものでもありません。
 
@@ -49,7 +51,7 @@ v0.9.0 では、正式版の長いバックエンドバージョン表記を正�
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.9.0 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.9.1 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -79,12 +81,12 @@ bash /workspace/.dots-tailscale/start.sh
 
 ```bash
 /workspace/.dots-tailscale/dots-ts version
-/workspace/.dots-tailscale/dots-ts update check --tag v0.9.0 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.9.1 --proxy http://browser-proxy:8889 --json
 ```
 
 v0.8.0 より前の更新ツールから初めて移行する場合は、[独立した検証による初回移行手順（英語）](docs/release-provenance.md)に従ってください。候補のツールを実行する前に、元のマニフェストと4つのソースを認証します。ハッシュの一致だけでは配布元を認証できません。
 
-v0.7.0 のパッケージは同じ Tailscale 基準を宣言しているため、通常の[パッケージ更新](docs/usage.ja.md#update-management)で v0.7.1 に更新できます。適用すると修正済みの shim が再起動します。Tailscale の基準を 1.102.4 と宣言する v0.6.0 などの既存パッケージは、[基準バージョンの移行手順（英語）](docs/security-baseline.md)で v0.7.1 に更新してください。v0.6.0 より古いツールを使っている場合は、先に[パッケージ更新手順](docs/usage.ja.md#update-management)で同じ基準の v0.6.0 を導入します。信頼できるメタデータがない旧版は手動確認が必要です。これらは旧版で基準を整えるための手順です。v0.9.0 への移行には、上記の独立した検証による初回移行手順を使ってください。
+v0.7.0 のパッケージは同じ Tailscale 基準を宣言しているため、通常の[パッケージ更新](docs/usage.ja.md#update-management)で v0.7.1 に更新できます。適用すると修正済みの shim が再起動します。Tailscale の基準を 1.102.4 と宣言する v0.6.0 などの既存パッケージは、[基準バージョンの移行手順（英語）](docs/security-baseline.md)で v0.7.1 に更新してください。v0.6.0 より古いツールを使っている場合は、先に[パッケージ更新手順](docs/usage.ja.md#update-management)で同じ基準の v0.6.0 を導入します。信頼できるメタデータがない旧版は手動確認が必要です。これらは旧版で基準を整えるための手順です。v0.9.1 への移行には、上記の独立した検証による初回移行手順を使ってください。
 
 v0.6.0 以降のツールを導入したら、Tailscale の公式安定版を確認できます。
 
@@ -92,7 +94,7 @@ v0.6.0 以降のツールを導入したら、Tailscale の公式安定版を確
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-**v0.9.0 の新規インストールでは Tailscale 1.104.4 を使います。** パッケージ更新や `install` が既存バイナリを暗黙に置き換えることはありません。バイナリを更新する場合は、表示されたバージョンと公式アドバイザリを確認し、[手動更新ガイド（英語）](docs/runtime-updates.md)に従ってください。基準移行では、インストール済みの両バイナリと実行中のバックエンドがすべて正確に 1.104.4 であることを確認してからソースを変更します。
+**v0.9.1 の新規インストールでは Tailscale 1.104.4 を使います。** パッケージ更新や `install` が既存バイナリを暗黙に置き換えることはありません。バイナリを更新する場合は、表示されたバージョンと公式アドバイザリを確認し、[手動更新ガイド（英語）](docs/runtime-updates.md)に従ってください。基準移行では、インストール済みの両バイナリと実行中のバックエンドがすべて正確に 1.104.4 であることを確認してからソースを変更します。
 
 更新を適用する前に、Tailscale 接続とは独立した復旧用クラウドターミナルを操作できることを確認してください。Tailscale バイナリの更新時は外部の復旧タスクを一時停止し、新しい SSH 接続と ping を確認してから再開します。更新候補のデーモンの実行を一度でも試みた後は、起動に失敗しても自動ダウングレードは行いません。失敗時の状態が不明なら、ガイドの手動復旧手順が必要です。パッケージのコードを戻せることと、Tailscale の状態データに互換性があることは別です。
 
@@ -133,7 +135,7 @@ v0.6.0 以降のツールを導入したら、Tailscale の公式安定版を確
 
 - [使い方とトラブルシューティング](docs/usage.ja.md) · [Tailscale の手動更新（英語）](docs/runtime-updates.md)
 - [プライベート HTTPS API の利用例](docs/private-http-api.ja.md) · [復旧実験（英語）](docs/experimental-recovery.md)
-- [リリースノート（英語）](docs/releases/v0.9.0.md) · [変更履歴](CHANGELOG.md) · [MIT ライセンス](LICENSE)
+- [リリースノート（英語）](docs/releases/v0.9.1.md) · [変更履歴](CHANGELOG.md) · [MIT ライセンス](LICENSE)
 
 | パス | 用途 |
 |---|---|

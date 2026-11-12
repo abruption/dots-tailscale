@@ -483,10 +483,60 @@ class OutboundProxyTests(unittest.TestCase):
                        "SSL_CERT_FILE": str(self.d / "shim/bundle.crt"), "OTHER_SETTING": "retained"}
         raw = b"\0".join((key + "=" + value).encode() for key, value in environment.items()) + b"\0"
         with mock.patch.object(Path, "read_bytes", return_value=raw):
-            self.assertEqual(proxy._environment(self.old(), self.d), environment)
+            self.assertEqual(proxy._environment(self.old(), self.d),
+                             dict(environment, http_proxy=environment["HTTP_PROXY"],
+                                  https_proxy=environment["HTTPS_PROXY"]))
         with mock.patch.object(Path, "read_bytes", return_value=b"HTTP_PROXY=http://127.0.0.1:1080\0"):
             with self.assertRaisesRegex(proxy.ProxyError, "transport proxy"):
                 proxy._environment(self.old(), self.d)
+
+    def transport_environment(self, **aliases):
+        environment = {"HTTP_PROXY": "http://127.0.0.1:18089", "HTTPS_PROXY": "http://127.0.0.1:18089",
+                       "SSL_CERT_FILE": str(self.d / "shim/bundle.crt"), "RETAIN": "unchanged"}
+        environment.update(aliases)
+        return environment
+
+    def read_transport_environment(self, reader, process, directory, environment):
+        raw = b"\0".join((key + "=" + value).encode() for key, value in environment.items()) + b"\0"
+        with mock.patch.object(Path, "read_bytes", return_value=raw):
+            return reader(process, directory)
+
+    def test_conflicting_lowercase_proxy_refused_before_apply_signal(self):
+        reader = proxy._environment
+        for key in ("http_proxy", "https_proxy"):
+            (self.r / "tailscaled.sock").unlink(missing_ok=True)
+            with self.subTest(key=key), self.application() as (_, _, stop, launch, _):
+                env = self.transport_environment(**{key: "http://platform.invalid:8889"})
+                proxy._environment.side_effect = lambda process, d: self.read_transport_environment(reader, process, d, env)
+                with self.assertRaisesRegex(proxy.ProxyError, "transport proxy"):
+                    proxy.apply(self.d, self.r)
+                stop.assert_not_called()
+                launch.assert_not_called()
+
+    def test_legacy_aliases_normalized_for_apply_and_rollback(self):
+        reader = proxy._environment
+        for rollback in (False, True):
+            (self.r / "tailscaled.sock").unlink(missing_ok=True)
+            with self.subTest(rollback=rollback), self.application() as (old, _, _, launch, ready):
+                env = self.transport_environment(http_proxy="")
+                proxy._environment.side_effect = lambda process, d: self.read_transport_environment(reader, process, d, env)
+                if rollback:
+                    child = mock.Mock(pid=5678)
+                    child.poll.return_value = 1
+                    launch.side_effect = [child, mock.Mock()]
+                    ready.side_effect = [proxy.ProxyError("candidate failed"), None]
+                    self.daemon.side_effect = [old, None, None]
+                    with self.assertRaisesRegex(proxy.ProxyError, "previous daemon restored"):
+                        proxy.apply(self.d, self.r)
+                else:
+                    proxy.apply(self.d, self.r)
+                self.assertEqual(launch.call_count, 2 if rollback else 1)
+                for call in launch.call_args_list:
+                    actual = call.args[1]
+                    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                        self.assertEqual(actual[key], "http://127.0.0.1:18089")
+                    self.assertEqual(actual["RETAIN"], "unchanged")
+                self.daemon.side_effect = None
 
     def test_validate_does_not_probe_or_lock_ports(self):
         self.write(json.dumps({"socks_port": 1080, "http_port": None}))

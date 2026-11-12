@@ -334,7 +334,10 @@ PY
     sleep 1
   fi
   running "$D/shim/shim.py" || fail 'shim did not start'
-  export HTTPS_PROXY=http://127.0.0.1:18089 HTTP_PROXY=http://127.0.0.1:18089 SSL_CERT_FILE="$D/shim/bundle.crt"
+  # Resolver precedence differs between runtimes; neither spelling may bypass the shim.
+  export HTTPS_PROXY=http://127.0.0.1:18089 HTTP_PROXY=http://127.0.0.1:18089
+  export https_proxy=http://127.0.0.1:18089 http_proxy=http://127.0.0.1:18089
+  export SSL_CERT_FILE="$D/shim/bundle.crt"
   if launch_needed "$D/tailscaled" && ! timeout 3 "$D/tailscale" --socket="$SOCK" status --json >/dev/null 2>&1; then
     [[ ! -L "$SOCK" ]] || fail 'socket symlink refused'
     if [[ -e "$SOCK" ]]; then

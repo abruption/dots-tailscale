@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.9.1
+
+- Set both uppercase and lowercase HTTP/HTTPS proxy variables to the local shim before daemon startup, preventing inherited lowercase platform proxies from bypassing the control-protocol bridge (#89).
+- Reject conflicting lowercase proxy aliases before proxy apply or runtime update; normalize absent/empty legacy aliases for candidate and rollback launches.
+- Document separate recovery of an already-running affected daemon; package updates retain their existing health guards and do not rewrite process environments.
+- Restore omitted safety guidance in Korean, Japanese and Simplified Chinese documentation (#88).
+
+Tailscale remains pinned to **1.104.4**; existing runtime binaries, node state and SSH identity are not replaced by this package fix. See the [v0.9.1 release notes](docs/releases/v0.9.1.md).
+
 ## v0.9.0
 
 - Add opt-in bounded follow-ups when a recovery event is acknowledged but remains unclaimed, with durable receipt evidence, eligibility checks and operator-attention states (#79, #84).

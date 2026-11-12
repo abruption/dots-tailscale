@@ -328,8 +328,14 @@ def _environment(process, d):
     for key in ("HTTP_PROXY", "HTTPS_PROXY"):
         if environment.get(key) != "http://127.0.0.1:18089":
             raise ProxyError("unexpected daemon transport proxy; inspect before restarting")
+    for key in ("http_proxy", "https_proxy"):
+        if environment.get(key) not in (None, "", "http://127.0.0.1:18089"):
+            raise ProxyError("unexpected daemon transport proxy; inspect before restarting")
     if environment.get("SSL_CERT_FILE") != str(Path(d) / "shim/bundle.crt"):
         raise ProxyError("unexpected daemon CA bundle; inspect before restarting")
+    # Accept legacy absent/empty aliases, then make all subsequent launches explicit.
+    environment["http_proxy"] = environment["HTTP_PROXY"]
+    environment["https_proxy"] = environment["HTTPS_PROXY"]
     return environment
 
 
