@@ -4,7 +4,7 @@
 
 <p align="center"><a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · 简体中文 · <a href="README.ja.md">日本語</a></p>
 
-**代理兼容性修复：**v0.9.1 将守护进程的大写和小写代理变量统一指向本地 shim。已经在冲突环境中运行的守护进程需要另外安全重启；软件包更新不会改变运行中进程的环境。请查看[诊断与恢复说明（英文）](docs/proxy-environment.md)，并在 v0.9.1 发布文件公开且验证完成后再执行示例。
+**代理兼容性修复**：v0.9.1 将守护进程的大写和小写代理变量统一指向本地 shim。已经在冲突环境中运行的守护进程需要另外安全重启；软件包更新不会改变运行中进程的环境。请查看[诊断与恢复说明（英文）](docs/proxy-environment.md)，并在 v0.9.1 发布文件公开且验证完成后再执行示例。
 
 通过 Tailscale 和 SSH，你可以从自己的设备连接 Dots 云电脑。dots-tailscale 不需要 root 权限或 systemd，会将安装文件、Tailscale 节点状态和 SSH 身份信息保存在 `/workspace` 中。环境变化后，只要这个目录还在，就可以继续使用原来的安装和身份。
 

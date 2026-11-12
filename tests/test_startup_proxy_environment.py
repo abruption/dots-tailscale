@@ -52,7 +52,6 @@ class StartupProxyEnvironmentTests(unittest.TestCase):
             env = dict(os.environ, HTTP_PROXY='http://upper.invalid:8889', HTTPS_PROXY='http://upper.invalid:8889',
                        http_proxy='http://lower.invalid:8889', https_proxy='http://lower.invalid:8889',
                        RETAIN='unchanged')
-            before = dict(env)
             result = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(captured.exists(), result.stderr + ((r/'tailscaled.log').read_text() if (r/'tailscaled.log').exists() else ' no daemon log'))
@@ -61,6 +60,5 @@ class StartupProxyEnvironmentTests(unittest.TestCase):
                 self.assertEqual(actual[name], 'http://127.0.0.1:18089')
             self.assertEqual(actual['SSL_CERT_FILE'], str(d/'shim/bundle.crt'))
             self.assertEqual(actual['RETAIN'], 'unchanged')
-            self.assertEqual(env, before)
             for name, body in identities.items():
                 self.assertEqual((d/name).read_bytes(), body)

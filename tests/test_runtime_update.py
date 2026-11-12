@@ -653,6 +653,30 @@ class RuntimeApplyWorkerTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(tool,'__file__',str(tx/'supervisor'/'dots-ts')))
         return tx
 
+    def test_conflicting_proxy_guard_is_terminal_rejection_in_worker(self):
+        tx = self.worker_fixture()
+        loader = importlib.machinery.SourceFileLoader('runtime_proxy_guard_fixture', str(ROOT/'dots_proxy.py'))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        actual_proxy = importlib.util.module_from_spec(spec)
+        loader.exec_module(actual_proxy)
+        env = {'HTTP_PROXY':'http://127.0.0.1:18089', 'HTTPS_PROXY':'http://127.0.0.1:18089',
+               'https_proxy':'http://platform.invalid:8889',
+               'SSL_CERT_FILE':str(self.directory/'shim/bundle.crt')}
+        raw = b'\0'.join((k+'='+v).encode() for k,v in env.items()) + b'\0'
+        def read_environment(process, directory):
+            with mock.patch.object(Path, 'read_bytes', return_value=raw):
+                return actual_proxy._environment({'pid':123}, directory)
+        self.proxy._environment.side_effect = read_environment
+        self.assertEqual(tool.runtime_worker(self.directory, self.runtime, tx), 0)
+        journal = json.loads((tx/'journal.json').read_text())
+        self.assertEqual(journal['state'], 'rejected')
+        self.assertEqual(tool.runtime_status(self.directory, tx.name)['state'], 'rejected')
+        self.stop.assert_not_called()
+        self.proxy._launch.assert_not_called()
+        self.assertFalse((self.directory/tool.RUNTIME_FENCE).exists())
+        self.assertEqual(RuntimeTransactionTests.pair(self), self.old)
+        RuntimeTransactionTests.assert_preserved(self)
+
     def test_worker_ack_timeout_never_enters_transaction(self):
         tx=self.worker_fixture(ack=False)
         with mock.patch.object(tool.time,'monotonic',side_effect=[0,31]),mock.patch.object(tool,'runtime_transaction') as execute:

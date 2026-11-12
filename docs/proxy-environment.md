@@ -32,6 +32,8 @@ cannot diagnose every outage or prove lost authentication.
   uppercase and CA checks remain mandatory. Values are not echoed in the error.
 - Absent/empty legacy lowercase aliases are accepted and normalized for the new
   process. Candidate and rollback launches use the same verified environment.
+  A conflicting environment also rejects a no-change `proxy apply` before its
+  no-op return; it is not a repair command for an affected running daemon.
 - Application SOCKS/HTTP listeners, update-download proxies, state, keys, update
   budgets and recovery permissions are unchanged. Proxy exclusions such as
   `NO_PROXY` are not redesigned by this patch.
