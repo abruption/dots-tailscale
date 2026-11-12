@@ -298,6 +298,7 @@ class RuntimeTransactionTests(unittest.TestCase):
         self.assertEqual(self.journal['state_compatibility'],'current_version_only')
 
     def test_preexec_failure_rolls_back_exact_pair_and_preserves_state(self):
+        self.use_actual_transport_environment()
         original=tool.apply_write;fired=[]
         def fail(path,data,mode=0o600):
             original(path,data,mode)
@@ -306,12 +307,47 @@ class RuntimeTransactionTests(unittest.TestCase):
         self.assertEqual(self.journal['state'],'failed_rolled_back');self.assertEqual(self.pair(),self.old)
         self.assertFalse((self.directory/tool.RUNTIME_FENCE).exists());self.assert_preserved()
         self.proxy._launch.assert_called_once()  # Only restored old daemon, mocked.
+        env = self.proxy._launch.call_args.args[1]
+        for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):
+            self.assertEqual(env[key], 'http://127.0.0.1:18089')
 
     def test_postexec_readiness_failure_never_relaunches_old_daemon(self):
         self.proxy._ready.side_effect=RuntimeError('fixture readiness failure')
         self.run_transaction();self.assertEqual(self.journal['state'],'manual_recovery_required')
         self.assertEqual(self.pair(),self.new);self.assertTrue((self.directory/tool.RUNTIME_FENCE).exists())
         self.assertEqual(self.proxy._launch.call_count,1);self.stop_child.assert_called_once_with(self.child);self.assert_preserved()
+
+    def use_actual_transport_environment(self, **aliases):
+        import dots_proxy
+        env = {'HTTP_PROXY':'http://127.0.0.1:18089', 'HTTPS_PROXY':'http://127.0.0.1:18089',
+               'SSL_CERT_FILE':str(self.directory/'shim/bundle.crt'), 'RETAIN':'unchanged'}
+        env.update(aliases)
+        raw = b'\0'.join((k+'='+v).encode() for k,v in env.items()) + b'\0'
+        def read_environment(process, directory):
+            with mock.patch.object(Path, 'read_bytes', return_value=raw):
+                return dots_proxy._environment({'pid':123}, directory)
+        self.proxy._environment.side_effect = read_environment
+
+    def test_runtime_launch_normalizes_legacy_lowercase_aliases(self):
+        self.use_actual_transport_environment(http_proxy='')
+        self.run_transaction()
+        self.assertEqual(self.journal['state'], 'applied')
+        env = self.proxy._launch.call_args.args[1]
+        for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):
+            self.assertEqual(env[key], 'http://127.0.0.1:18089')
+        self.assertEqual(env['RETAIN'], 'unchanged')
+        self.assert_preserved()
+
+    def test_runtime_conflicting_lowercase_refused_before_binary_or_signal(self):
+        import dots_proxy
+        self.use_actual_transport_environment(https_proxy='http://platform.invalid:8889')
+        with self.assertRaisesRegex(dots_proxy.ProxyError, 'transport proxy'):
+            self.run_transaction()
+        self.stop.assert_not_called()
+        self.proxy._launch.assert_not_called()
+        self.assertEqual(self.pair(), self.old)
+        self.assertFalse((self.directory/tool.RUNTIME_FENCE).exists())
+        self.assert_preserved()
 
     def test_launch_exception_is_uncertain_execution_and_never_rolls_back(self):
         self.proxy._launch.side_effect=OSError('fixture launch uncertainty')
