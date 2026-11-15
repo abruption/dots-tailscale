@@ -76,7 +76,7 @@ The commands corresponding to the offline suite in `checks.yml` were run with
 CPython 3.11.17 and 3.13.17 on the local **Darwin** host, not a Linux CI runner.
 Each run executes 578 tests with **4 failures, 9 errors and 23 skips**. The same
 failure/error IDs were independently reproduced using unmodified v0.9.1 source;
-there are no additional failure IDs in the working implementation. These runs
+there were no additional failure IDs in that initial local revision. These runs
 are **not reported as green suites**.
 
 The pre-existing environment failures involve `/var` symlink ancestry in temporary
@@ -187,3 +187,16 @@ source updates have 62 tests (one Linux-only skip on Darwin); runtime updates ha
 76 tests. Bash syntax, ShellCheck, manifest consistency, the pinned static checker
 (90 Python sources), and whitespace checks passed. The initial Darwin full-matrix
 failures above remain disclosed; Linux CI results must be recorded independently.
+
+
+## Linux CI confirmation
+
+[Checks run 43694574303](https://github.com/abruption/dots-tailscale/actions/runs/43694574303)
+completed successfully for implementation commit
+`045f083223502f6f0e90daf10ac68ea96957543d` on 2026-11-15 UTC.
+Ubuntu Python 3.11 and 3.13 each ran **601 tests, all passed with no skips**
+(60.046 s and 53.240 s respectively). Shell syntax/ShellCheck and Python static
+checks also succeeded, including manifest validation in both test jobs.
+This is the actual Linux gate, distinct from the historical Darwin environment
+comparison above. The subsequent report-only commit changes no implementation or
+test source. CI is still fixture evidence, not a deployed SSH/Tailnet trial.
