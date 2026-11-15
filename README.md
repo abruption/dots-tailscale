@@ -4,13 +4,13 @@
 
 <p align="center">English · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a></p>
 
-**Proxy compatibility fix:** v0.9.1 makes both uppercase and lowercase daemon proxy variables use the local shim. Existing conflicting daemons need a separate controlled restart; a package update alone does not change their environment. See [diagnosis and recovery](docs/proxy-environment.md). Run v0.10.0 examples only after its artifacts are published and verified.
+**v0.10.0:** New installations can choose an SSH port such as 2222 with `DOTS_TS_SSH_PORT`. The default stays 22; existing installations are not migrated. See the [release notes](docs/releases/v0.10.0.md) and [port-selection guide](docs/usage.md#new-install-ssh-port).
 
 Use Tailscale and SSH to reach your Dots cloud computer from your own devices. dots-tailscale installs the tools without root or systemd and keeps the installation, Tailscale node state and SSH identity under `/workspace` so you can reuse them when that directory survives an environment change.
 
 **This guide covers [v0.10.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.10.0); check the release page for published artifacts before installing.** It includes the v0.7.1 security fix that validates CONNECT hosts before certificate generation ([GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)); v0.7.0 and earlier are affected. New installations use Tailscale 1.104.4. This is an independent project, not an official OpenAI or Tailscale tool.
 
-**Run the pinned examples only after the v0.10.0 release artifacts are published and independently verified. A tag alone is not a published release.**
+**v0.10.0 is published. Independently verify the release artifacts and their provenance before installing or updating; a tag or matching checksums alone do not authenticate the publisher.**
 
 **Upgrading from v0.6.0 or an older baseline:** packages declaring Tailscale 1.102.4 need the [explicit security-baseline migration](docs/security-baseline.md), after a separate runtime upgrade. Ordinary `update apply` keeps its cross-baseline guard.
 
@@ -49,7 +49,9 @@ Automatic startup and automatic updates are not enabled. The external recovery e
 
 ## Quick start
 
-For a **new installation**, use the Dots cloud terminal. You need Linux x86_64, Python 3, Git, OpenSSH and permission to bind local port 22; see the [full dependencies and SSH setup](docs/usage.md). Existing users should follow the next section instead of reinstalling.
+For a **new installation**, use the Dots cloud terminal. You need Linux x86_64, Python 3, Git, OpenSSH and permission to bind the selected local SSH port (22 by default); see the [full dependencies and SSH setup](docs/usage.md). Existing users should follow the next section instead of reinstalling.
+
+Choose the port before installing. For 2222, replace the `bash tailscale-setup.sh install` line below with `DOTS_TS_SSH_PORT=2222 bash tailscale-setup.sh install`. Normal start/login commands use the saved port without this option. This does not change the port of an existing installation.
 
 ```bash
 cd /workspace
@@ -87,6 +89,8 @@ First check the installed package and available package release:
 /workspace/.dots-tailscale/dots-ts update check --tag v0.10.0 --proxy http://browser-proxy:8889 --json
 ```
 
+The v0.9.1 proxy-environment fix is retained: uppercase and lowercase daemon proxy variables use the local shim. An already-running conflicting daemon needs a separate controlled restart; a source-package update does not rewrite its environment. See [diagnosis and recovery](docs/proxy-environment.md).
+
 For the first upgrade from a pre-v0.8.0 updater, follow the [independently verified bootstrap](docs/release-provenance.md): authenticate the original manifest and all four sources before executing a candidate helper. Matching hashes alone do not authenticate the publisher.
 
 v0.7.0 packages declare the same Tailscale baseline and reach v0.7.1 through the ordinary [package update](docs/usage.md#update-management); applying it restarts the shim with the fix. Existing packages declaring Tailscale 1.102.4, including v0.6.0, must follow the [security-baseline migration](docs/security-baseline.md) to reach v0.7.1. If your installed tools predate v0.6.0, first use the [package update instructions](docs/usage.md#update-management) to obtain v0.6.0 on the same baseline. Older installations without trusted metadata need the manual review procedure. These legacy steps establish the baseline; use the verified bootstrap above for the transition to v0.10.0.
@@ -118,6 +122,7 @@ Local SOCKS5/HTTP proxies are off by default. Enabling them requires an explicit
 
 ## What has been checked
 
+- The [v0.10.0 exact-tag CI](https://github.com/abruption/dots-tailscale/actions/runs/43715115507) passed 601 tests each on Linux Python 3.11 and 3.13. The [dated report](docs/validation/ssh-port-new-install-20261115.md) covers isolated install/start/doctor/update checks for ports 22 and 2222, failure handling and identity preservation. These are fixture checks, not a live Tailnet trial or evidence of external reachability on a selected port.
 - A [live Dots trial](docs/validation/runtime-update-trial-20261026.md) upgraded Tailscale 1.102.4 to 1.104.2 with the reviewed development package, preserved node/SSH identity and confirmed fresh external SSH and relay ping afterward.
 - The [v0.6.0 release](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0) records core and research tests run against the final commit and isolated official-binary checks. These do not establish compatibility with all future versions, live failure recovery or state downgrade safety.
 - The [v0.7.0 release](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0) adds isolated new-install and source-migration tests. A later [2026-10-28 live source-migration trial](docs/validation/v0.7.0-migration-trial-20261028.md) moved one existing installation from package 0.6.0 to 0.7.0, preserving the already-installed Tailscale 1.104.4 runtime and node/SSH identities; a fresh strict-host-key SSH connection and relay ping succeeded afterward. This does not validate a fresh installation, another account, live failure injection, interrupted-transaction repair, VM replacement, runtime state downgrade or all future versions. The [pre-publication baseline and TLS review](docs/validation/security-baseline-20261028.md) remains a separate historical record.
