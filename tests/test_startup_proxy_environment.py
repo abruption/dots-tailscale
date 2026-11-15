@@ -42,11 +42,11 @@ class StartupProxyEnvironmentTests(unittest.TestCase):
             # The real service syntax check is outside this isolated launch fixture.
             start = start.replace('/usr/sbin/sshd -t -f "$S/sshd_config"', ':')
             script = 'set -euo pipefail\nD=' + shlex.quote(str(d)) + '\nR=' + shlex.quote(str(r)) + '\n'
-            script += 'S="$D/sshd"\nSOCK="$R/tailscaled.sock"\nUPSTREAM_PROXY=http://platform.invalid:8889\n'
+            script += 'S="$D/sshd"\nSSH_PORT=22\nSOURCE="$D"\nSOCK="$R/tailscaled.sock"\nUPSTREAM_PROXY=http://platform.invalid:8889\n'
             script += 'fail() { echo "$*" >&2; exit 1; }\nprivate_dir() { :; }\nrunning() { return 0; }\n'
             script += 'launch_needed() { [[ "$1" == "$D/tailscaled" ]]; }\ntimeout() { return 1; }\nrotate() { :; }\nnohup() { "$@"; }\n'
-            script += 'python3() { if [[ "$1" == "$D/dots_proxy.py" ]]; then return 0; fi; '
-            script += 'if [[ "$#" == 1 && "$1" == - ]]; then cat >/dev/null; return 0; fi; '
+            script += 'python3() { if [[ "$1" == "$D/dots_proxy.py" ]]; then if [[ "$2" == ssh-port ]]; then echo 22; fi; return 0; fi; '
+            script += 'if [[ "$1" == - && "$#" == 2 && "$2" == "$SSH_PORT" ]]; then cat >/dev/null; return 0; fi; '
             script += shlex.quote(sys.executable) + ' "$@"; }\n'
             script += start + '\nstart_all\nwait\n'
             env = dict(os.environ, HTTP_PROXY='http://upper.invalid:8889', HTTPS_PROXY='http://upper.invalid:8889',

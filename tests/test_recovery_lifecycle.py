@@ -559,7 +559,8 @@ class RecoveryLifecycleTests(unittest.TestCase):
             processes.return_value = dict(healthy, sshd='unknown')
             self.assertEqual(tool.recovery_probe(self.directory, self.runtime)['state'], 'unknown')
             processes.return_value = healthy
-            with mock.patch.object(tool.socket, 'create_connection') as connect:
+            with mock.patch.object(tool.socket, 'create_connection') as connect, \
+                    mock.patch.object(tool, 'ssh_contract', return_value={'port': 22}):
                 connect.return_value.__enter__.return_value.recv.return_value = b'SSH-2.0-fixture\r\n'
                 report = tool.recovery_probe(self.directory, self.runtime)
                 self.assertEqual(report['state'], 'healthy')

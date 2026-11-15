@@ -54,9 +54,11 @@ class ApplyTests(unittest.TestCase):
         self.journal = {'schema': 1, 'state': 'running'}
         self.baseline = {name: {'pid': pid, 'ticks': str(pid), 'exe': '/python', 'uid': os.getuid()}
                          for name, pid in (('shim', 101), ('tailscaled', 102), ('sshd', 103))}
+        self.baseline['_ssh'] = {'port': 22}
         self.candidate = dict(self.baseline['shim'], pid=201, ticks='201')
         self.restored = dict(self.baseline['shim'], pid=301, ticks='301')
         self.proxy = mock.Mock()
+        self.proxy.ssh_port_info.return_value = {'port': 22}
         self.proxy.inspect_config.return_value = {'restart_required': False, 'daemon_running': True}
 
     def lifecycle(self, ready=None):
@@ -119,6 +121,64 @@ class ApplyTests(unittest.TestCase):
     def migration_guard(self):
         return tool.apply_baseline_guard(self.old, self.new, self.directory,
                                          self.root / 'runtime', self.proxy, True)
+
+    def ssh_candidate(self, port=2222):
+        self.baseline['_ssh'] = {'port': port}
+        self.proxy.ssh_port_info.return_value = {'port': port}
+        for name in ('tailscale-setup.sh', 'dots-ts', 'dots_proxy.py'):
+            self.new[name] = b'SSH_PORT_CONFIG_SCHEMA=1\n' + self.new[name]
+        metadata = json.loads(self.new[tool.MANIFEST])
+        metadata['files'] = {name:hashlib.sha256(self.new[name]).hexdigest() for name in tool.CORE_FILES}
+        self.new[tool.MANIFEST] = json.dumps(metadata).encode()
+        for name,body in self.new.items():(self.transaction/'stage'/name).write_bytes(body)
+
+    def test_nondefault_ssh_refuses_old_candidate_before_any_code_write(self):
+        self.baseline['_ssh'] = {'port': 2222}
+        self.proxy.ssh_port_info.return_value = {'port': 2222}
+        with self.lifecycle(), mock.patch.object(tool,'apply_write') as write:
+            with self.assertRaisesRegex(tool.ApplyError,'candidate_ssh_port_unsupported'):
+                self.run_transaction()
+            write.assert_not_called()
+            self.stop.assert_not_called()
+            self.launch.assert_not_called()
+        self.assert_protected()
+        self.assertEqual(tool.apply_bundle(self.directory,'installed'),self.old)
+
+    def test_nondefault_ssh_supported_update_preserves_ssh_identity_and_settings(self):
+        self.ssh_candidate()
+        setting=self.directory/'ssh-port.json'
+        setting.write_text('{"schema_version":1,"port":2222}')
+        original=(setting.stat().st_ino,setting.read_bytes())
+        with self.lifecycle():self.run_transaction()
+        self.assertEqual(self.journal['state'],'applied')
+        self.assertEqual((setting.stat().st_ino,setting.read_bytes()),original)
+        self.assertEqual(self.ready.call_args.args[3]['_ssh']['port'],2222)
+        self.stop.assert_called_once_with(self.baseline['shim'])
+        self.assert_protected()
+
+    def test_drift_after_shim_stop_keeps_source_and_requires_configuration_review(self):
+        self.ssh_candidate()
+        self.proxy.ssh_port_info.side_effect=[{'port':2222},{'port':2222},{'port':2223},{'port':2223}]
+        before={n:((self.directory/tool.CORE_FILES.get(n,n)).stat().st_ino,(self.directory/tool.CORE_FILES.get(n,n)).read_bytes()) for n in self.old}
+        with self.lifecycle(),mock.patch.object(tool,'apply_replace') as replace:
+            self.ready.side_effect=lambda d,r,p,b,*a:tool.ssh_unchanged(d,r,p,b)
+            self.run_transaction()
+            replace.assert_not_called()
+            self.stop.assert_called_once_with(self.baseline['shim'])
+            self.launch.assert_called_once()
+        self.assertEqual(self.journal['state'],'rollback_failed_manual_required')
+        self.assertEqual(before,{n:((self.directory/tool.CORE_FILES.get(n,n)).stat().st_ino,(self.directory/tool.CORE_FILES.get(n,n)).read_bytes()) for n in self.old})
+        self.assert_protected()
+
+    def test_ssh_snapshot_change_rejects_before_stopping_or_replacing_sources(self):
+        self.ssh_candidate()
+        self.proxy.ssh_port_info.side_effect=[{'port':2222},{'port':2223}]
+        with self.lifecycle():
+            with self.assertRaisesRegex(tool.ApplyError,'ssh_configuration_changed'):
+                self.run_transaction()
+            self.stop.assert_not_called()
+        self.assertEqual(tool.apply_bundle(self.directory,'installed'),self.old)
+        self.assert_protected()
 
     def test_baseline_migration_changes_sources_only(self):
         self.migration_fixture()
@@ -491,7 +551,7 @@ class ApplyTests(unittest.TestCase):
         def transaction_failure(directory, runtime, folder, record, proxy):
             record['destructive'] = True
             raise OSError('simulated journal fsync failure')
-        proxy = mock.Mock(); proxy._operation.return_value = contextlib.nullcontext()
+        proxy = mock.Mock(); proxy.ssh_port_info.return_value = {'port': 22}; proxy._operation.return_value = contextlib.nullcontext()
         with mock.patch.dict(sys.modules, {'dots_proxy': proxy}), \
              mock.patch.object(tool, 'apply_boot', return_value='boot'), \
              mock.patch.object(tool, 'apply_identity', return_value=self.candidate), \
@@ -612,7 +672,7 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue()), {'error': 'filesystem_or_process_error'})
 
     def test_terminal_worker_ack_overrides_worker_identity(self):
-        proxy = mock.Mock(); proxy._operation.return_value = contextlib.nullcontext()
+        proxy = mock.Mock(); proxy.ssh_port_info.return_value = {'port': 22}; proxy._operation.return_value = contextlib.nullcontext()
         def spawn(argv, **kwargs):
             transaction = Path(argv[-1]); record = tool.apply_read_journal(transaction)
             tool.apply_journal(transaction, record, state='rejected', worker=self.candidate)
@@ -649,7 +709,7 @@ class ApplyTests(unittest.TestCase):
         root = self.directory / tool.APPLY_DIRECTORY; root.mkdir(mode=0o700)
         transaction = root / ('a' * 32); transaction.mkdir(mode=0o700)
         tool.apply_journal(transaction, {'schema': 1, 'state': 'prepared'})
-        proxy = mock.Mock(); proxy._operation.return_value = contextlib.nullcontext()
+        proxy = mock.Mock(); proxy.ssh_port_info.return_value = {'port': 22}; proxy._operation.return_value = contextlib.nullcontext()
         with mock.patch.dict(sys.modules, {'dots_proxy': proxy}), \
              mock.patch.object(tool.sys, 'platform', 'linux'), \
              mock.patch.object(tool.os, 'pidfd_open', create=True), \
@@ -665,8 +725,8 @@ class ApplyTests(unittest.TestCase):
             tool.update_apply(self.directory, self.root, bundle=self.root)
 
     def test_readiness_waits_through_transient_backend(self):
-        proxy = mock.Mock(); proxy.inspect_config.return_value = {}; proxy._listener_owned.return_value = True
-        identities = {item['pid']: item for item in list(self.baseline.values()) + [self.candidate]}
+        proxy = mock.Mock(); proxy.ssh_port_info.return_value = {'port': 22}; proxy.inspect_config.return_value = {}; proxy._listener_owned.return_value = True
+        identities = {item['pid']: item for item in list(self.baseline.values()) + [self.candidate] if 'pid' in item}
         connection = mock.MagicMock(); connection.__enter__.return_value.recv.return_value = b'SSH-2.0-fixture'
         with mock.patch.object(tool, 'apply_identity', side_effect=lambda pid: identities[pid]), \
              mock.patch.object(tool, 'apply_public_identity', side_effect=[tool.ApplyError('backend_not_running'), 'same']), \
@@ -679,11 +739,13 @@ class ApplyTests(unittest.TestCase):
                 tool.apply_ready(self.directory, self.root, self.proxy, self.baseline, self.candidate, 'same', {}, b'public-key', timeout=1)
 
     def test_expired_readiness_cannot_report_success(self):
-        identities = {item['pid']: item for item in list(self.baseline.values()) + [self.candidate]}
+        identities = {item['pid']: item for item in list(self.baseline.values()) + [self.candidate] if 'pid' in item}
         def slow_backend(*args):
             time.sleep(.02)
             return 'same'
         self.proxy.inspect_config.return_value = {}
+        self.proxy.ssh_port_info.return_value = {'port': 22}
+        self.baseline['_ssh'] = {'port': 22}
         self.proxy._listener_owned.return_value = True
         with mock.patch.object(tool, 'apply_identity', side_effect=lambda pid: identities[pid]), \
              mock.patch.object(tool, 'apply_public_identity', side_effect=slow_backend), \

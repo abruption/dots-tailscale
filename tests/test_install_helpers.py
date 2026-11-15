@@ -41,7 +41,7 @@ class InstallHelpersTests(unittest.TestCase):
         for name in ("private_dir", "place", "install_all"):
             functions.append(re.search(r"^" + name + r"\(\) \{\n.*?^}\n", SOURCE, re.M | re.S).group())
         self.entry = self.source / "tailscale-setup.sh"
-        self.entry.write_text("set -euo pipefail\numask 077\nTS_VERSION=1.104.4\nUPSTREAM_PROXY=http://fixture.invalid:8889\n"
+        self.entry.write_text("set -euo pipefail\numask 077\nTS_VERSION=1.104.4\nSSH_PORT=22\nUPSTREAM_PROXY=http://fixture.invalid:8889\n"
                               "fail() { printf '%s\\n' \"$*\" >&2; exit 1; }\n"
                               "require() { command -v \"$1\" >/dev/null; }\n" +
                               "\n".join(functions) + "\n" +
@@ -56,6 +56,40 @@ class InstallHelpersTests(unittest.TestCase):
 
     def install(self):
         return subprocess.run(["bash", str(self.entry)], text=True, capture_output=True, timeout=10)
+
+    def select_ssh_port(self, port):
+        self.entry.write_text(self.entry.read_text().replace('SSH_PORT=22\n', 'SSH_PORT='+str(port)+'\n'))
+        path=self.source/'source-manifest.json'
+        metadata=json.loads(path.read_text())
+        metadata['files']['tailscale-setup.sh']=hashlib.sha256(self.entry.read_bytes()).hexdigest()
+        path.write_text(json.dumps(metadata))
+
+    def test_selected_2222_is_generated_from_saved_intent_without_identity_changes(self):
+        setting=self.d/'ssh-port.json'
+        setting.write_text('{"schema_version":1,"port":2222}\n');setting.chmod(0o600)
+        before={n:((self.d/n).stat().st_ino,(self.d/n).read_bytes()) for n in self.identity}
+        intent=(setting.stat().st_ino,setting.read_bytes())
+        self.select_ssh_port(2222)
+        result=self.install()
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((setting.stat().st_ino,setting.read_bytes()),intent)
+        config=(self.d/'sshd/sshd_config').read_text()
+        self.assertTrue(config.startswith('Port 2222\nListenAddress 127.0.0.1\n'))
+        self.assertIn('PasswordAuthentication no\n',config)
+        self.assertIn('PubkeyAuthentication yes\n',config)
+        self.assertEqual(before,{n:((self.d/n).stat().st_ino,(self.d/n).read_bytes()) for n in self.identity})
+
+    def test_conflicting_saved_port_stops_before_identity_or_source_placement(self):
+        setting=self.d/'ssh-port.json'
+        setting.write_text('{"schema_version":1,"port":2222}\n');setting.chmod(0o600)
+        before={n:((self.d/n).stat().st_ino,(self.d/n).read_bytes()) for n in self.identity}
+        self.select_ssh_port(2223)
+        result=self.install()
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('SSH port intent changed',result.stderr)
+        self.assertFalse((self.d/'installed').exists())
+        self.assertFalse((self.d/'setup.sh').exists())
+        self.assertEqual(before,{n:((self.d/n).stat().st_ino,(self.d/n).read_bytes()) for n in self.identity})
 
     def assert_identity_preserved(self):
         for n, value in self.before.items():
@@ -267,3 +301,28 @@ class InstallHelpersTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PortableInstallerPortFixtures(unittest.TestCase):
+    """Placement regression without a daemon; adapt unused platform prerequisites."""
+    setUp = InstallHelpersTests.setUp
+    install = InstallHelpersTests.install
+    select_ssh_port = InstallHelpersTests.select_ssh_port
+    assert_identity_preserved = InstallHelpersTests.assert_identity_preserved
+
+    def adapt_fixture(self):
+        text=self.entry.read_text().replace('require() { command -v "$1" >/dev/null; }',
+             'require() { :; }\nchmod() { if [[ "${2:-}" == -- ]]; then command chmod "$1" "${@:3}"; else command chmod "$@"; fi; }')
+        self.entry.write_text(text);self.select_ssh_port(22)
+
+    def test_default_placement_never_needs_installed_helper_before_copy(self):
+        self.adapt_fixture()
+        InstallHelpersTests.test_install_places_executable_helpers_and_wrapper(self)
+
+    def test_2222_placement_never_needs_installed_helper_before_copy(self):
+        self.adapt_fixture()
+        InstallHelpersTests.test_selected_2222_is_generated_from_saved_intent_without_identity_changes(self)
+
+    def test_conflicting_intent_stops_without_placing_source_or_identity(self):
+        self.adapt_fixture()
+        InstallHelpersTests.test_conflicting_saved_port_stops_before_identity_or_source_placement(self)

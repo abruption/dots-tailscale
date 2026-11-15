@@ -97,7 +97,7 @@ class CliDoctorTests(unittest.TestCase):
             result = types.SimpleNamespace(returncode=0, stdout=json.dumps({"BackendState": state,
                      "AuthURL": "https://private-login/?secret=AUTH", "Health": ["PRIVATE-HEALTH"],
                      "Self": {"HostName": "PRIVATE-HOST", "TailscaleIPs": ["100.1.2.3"]}}).encode())
-        proxy = types.SimpleNamespace(inspect_config=lambda d, r: {"desired": {"socks_port": 0, "http_port": 0},
+        proxy = types.SimpleNamespace(ssh_port_info=lambda d, r: {"port": 22}, inspect_config=lambda d, r: {"desired": {"socks_port": 0, "http_port": 0},
                 "running": {"socks_port": 0, "http_port": 0}, "restart_required": False, "daemon_running": True})
         with mock.patch.object(tool, "process_checks", return_value=processes or self.processes), \
                 mock.patch.object(tool, "socket_status", return_value="present"), \
@@ -176,6 +176,7 @@ class CliDoctorTests(unittest.TestCase):
 
     def test_ambiguous_proxy_inspection_does_not_claim_no_restart_needed(self):
         with mock.patch.dict(sys.modules, {"dots_proxy": types.SimpleNamespace(
+                ssh_port_info=lambda d, r: {"port": 22},
                 inspect_config=mock.Mock(side_effect=RuntimeError("PRIVATE-CONFIG-SECRET")))}):
             # diagnose supplies its own benign proxy; exercise the actual doctor
             # once using the complete fixture and a failing optional inspection.
@@ -279,7 +280,7 @@ class CliDoctorTests(unittest.TestCase):
                     mock.patch.object(tool, "socket_status", return_value=visibility), \
                     mock.patch.object(tool, "socket_connection", side_effect=AssertionError("no connect")), \
                     mock.patch.object(tool, "run_cli", side_effect=AssertionError("no CLI")), \
-                    mock.patch.dict(sys.modules, {"dots_proxy": types.SimpleNamespace(inspect_config=lambda d, r: {})}):
+                    mock.patch.dict(sys.modules, {"dots_proxy": types.SimpleNamespace(ssh_port_info=lambda d, r: {"port": 22}, inspect_config=lambda d, r: {})}):
                 report, code = tool.doctor(self.directory, self.runtime)
             self.assertEqual(report["checks"]["socket"], visibility)
             self.assertEqual(report["checks"]["backend"], "skipped")
@@ -298,7 +299,7 @@ class CliDoctorTests(unittest.TestCase):
                     mock.patch.object(tool, "socket_status", return_value="present"), \
                     mock.patch.object(tool, "socket_connection", return_value=result), \
                     mock.patch.object(tool, "run_cli", side_effect=AssertionError("no CLI")), \
-                    mock.patch.dict(sys.modules, {"dots_proxy": types.SimpleNamespace(inspect_config=lambda d, r: {})}), \
+                    mock.patch.dict(sys.modules, {"dots_proxy": types.SimpleNamespace(ssh_port_info=lambda d, r: {"port": 22}, inspect_config=lambda d, r: {})}), \
                     contextlib.redirect_stdout(stream):
                 code = tool.main(["doctor"])
             self.assertEqual(code, 1)

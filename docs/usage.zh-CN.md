@@ -79,7 +79,7 @@ done
 
 ## 安装并启动
 
-将仓库从 `https://github.com/abruption/dots-tailscale` 克隆到 `/workspace`，以便安装脚本和 `shim.py` 位于一起。克隆需要 Git，以及云计算机通过代理访问 GitHub HTTPS 的能力。安装程序需要 Linux x86_64、Python 3、`timeout`、`flock`、OpenSSL、`ssh-keygen` 和 `/usr/sbin/sshd`。此外，安装还需要 curl、tar 和 sha256sum。当前用户必须获准绑定端口 22；无需 root 或 systemd。
+将仓库从 `https://github.com/abruption/dots-tailscale` 克隆到 `/workspace`，以便安装脚本和 `shim.py` 位于一起。克隆需要 Git，以及云计算机通过代理访问 GitHub HTTPS 的能力。安装程序需要 Linux x86_64、Python 3、`timeout`、`flock`、OpenSSL、`ssh-keygen` 和 `/usr/sbin/sshd`。此外，安装还需要 curl、tar 和 sha256sum。当前用户必须获准绑定所选 SSH 端口（默认 22）；无需 root 或 systemd。
 
 对于 v0.9.1，请将以下四个源文件和 `source-manifest.json` 放在一起：`tailscale-setup.sh`、`shim.py`、`dots-ts` 和 `dots_proxy.py`。较旧的 v0.2.0 安装只使用原来的两个文件，不包含这些辅助工具。
 
@@ -114,12 +114,54 @@ bash /workspace/.dots-tailscale/start.sh
 | `DOTS_TS_DIR` | `/workspace/.dots-tailscale` |
 | `UPSTREAM_PROXY` | `http://browser-proxy:8889` |
 | `NODE_HOSTNAME` | `dots-sandbox` |
+| `DOTS_TS_SSH_PORT` | `22`（仅全新安装，开发中） |
 
-备用的 `DOTS_TS_DIR` 必须是绝对路径，且不能包含空白字符。`UPSTREAM_PROXY` 必须使用不含身份验证信息的 HTTP 代理 URL。安装和之后每次启动都应使用一致的设置。当前 shim 监听端口 18089，SSH 监听端口 22；此配置仅支持单个安装实例。
+备用的 `DOTS_TS_DIR` 必须是绝对路径，且不能包含空白字符。`UPSTREAM_PROXY` 必须使用不含身份验证信息的 HTTP 代理 URL。安装和之后每次启动都应使用一致的设置。当前 shim 监听端口 18089，SSH 默认监听端口 22；此配置仅支持单个安装实例。
+
+<a id="new-install-ssh-port"></a>
+
+### 开发中：新安装时选择 SSH 端口
+
+这是尚未发布的开发功能。上方 v0.9.1 示例仍使用端口 22。请先独立验证包含此功能的完整源码包，再将下方示例用于全新安装。现有安装不会自动迁移。
+
+```bash
+DOTS_TS_SSH_PORT=2222 bash tailscale-setup.sh install
+bash /workspace/.dots-tailscale/start.sh login
+```
+
+与 v0.9.1 相同，预检仍要求读取内核阈值文件，不新增 capability 或 root 权限绕过。路径允许重复斜杠，但拒绝点或父目录跳转、控制字符及 Unicode 空白语法。新设置的链接发布中断后，安装重试只会在创建身份前清理指向同一有效设置 inode 的已验证临时链接，不删除未知链接或改动现有身份。
+
+值必须是 1–65535 的十进整数，不能带前导零或空白。不能使用 shim 的 18089、已配置的应用代理端口或其他进程占用的端口。所选值必须大于或等于内核当前的 `ip_unprivileged_port_start`；等于该值时允许使用。安装器不会修改 sysctl、获取 root 权限或自动换用其他端口。不指定时仍为 22。
+
+全新安装会把模式版本 1 和所选端口保存到当前用户所有、权限为 600 的 `ssh-port.json`。重试未完成的安装时必须使用相同值。安装完成后，即使指定相同值也会拒绝此选项，因此正常 start/login 时不要再指定。它不是启动时的环境变量覆盖功能，也不支持通过手改 JSON 或 sshd 配置迁移现有安装。
+
+没有该文件的旧安装只支持生成的端口 22 配置。保存值、唯一的 `Port`、仅回环绑定的 `ListenAddress`、密钥与认证路径以及生成配置必须一致。配置损坏、Include/Match、重复指令或不支持的自定义配置会中止操作。`doctor` 显示验证后的 `ssh.port`，启动和更新准备检查使用同一本地目标。本地成功不代表外部 SSH 可达。
+
+选择 2222 后，首次核对主机密钥和后续连接都要指定该端口：
+
+```bash
+ssh -p 2222 -o StrictHostKeyChecking=ask -i /path/to/client_private_key 'agent@<tailscale-ip>'
+```
+
+首次连接时，按下文步骤与独立云端终端中确认的指纹核对后再接受。非默认端口的 `known_hosts` 条目对应 `[host]:2222`，登记后使用 `StrictHostKeyChecking=yes`。公钥认证、保存的节点与 SSH 身份、默认关闭 Tailscale SSH 的行为保持不变。所选端口的 tailnet 策略需要单独审核；选择端口不会开放网络权限，也不保证可达。
+
+更新时请使用安装中配套的新 CLI。非默认端口安装会在替换源码前拒绝三个源码未全部声明支持模式 1 的候选包。v0.9.1 updater 本身也会在固定端口 22 的所有权检查中安全拒绝，但无法管理这种安装或帮助其升级新 CLI。默认或旧版端口 22 安装仍使用原有更新流程。受支持的更新保留配置与 SSH 进程，仍只重启 shim。不包含现有安装的端口迁移或真实 tailnet 测试。
+
+即使是旧版端口 22，兼容性检查也会有意收紧：额外或自定义 sshd 指令、非 600 权限、硬链接以及包含 SSH 引号、转义、注释或展开语法的路径都会被拒绝。启动仍会把当前用户所有的安装目录恢复为 700，但不会擅自重写自定义配置或修复文件属性。请执行下方认证候选包后的预检；旧版能够运行不代表新严格检查也支持。本开发工作并未改动实际运行的服务。
+
+#### 使用 v0.9.1 或更早 updater 首次升级
+
+旧 updater 无法在替换源码前强制执行新的 SSH 配置检查。即使使用默认端口 22，不受支持的自定义配置也可能导致更新成功、下次启动却失败。先用可信验证工具和独立获取的信任根认证新候选包的原始清单及四个源码文件，再于运行旧 updater 前执行以下**只读**检查：
+
+```bash
+python3 -I /path/to/verified-candidate/dots_proxy.py ssh-port /workspace/.dots-tailscale /tmp/dots-tailscale-$(id -u)
+```
+
+旧默认端口安装应输出 `22`，路径需按实际安装位置调整。检查失败时先核对配置及仅所有者可用的权限，不要覆盖 SSH 配置、状态或密钥来强行升级。首次转换期间应暂停已经启用的旧自动源码 updater。此项外部检查与旧 worker 并非原子操作，完成前不要改动配置。转换后由新安装的 CLI 强制检查。无法给已发布的旧 CLI 追补这项保护，也不代表支持自动迁移自定义配置或现有端口。
 
 ### SSH 密钥与就绪状态
 
-SSH 监听 `127.0.0.1:22`，并使用公钥身份验证。Tailscale SSH 已禁用；shell 会话由本地 OpenSSH 服务器处理。如果 HOME 中已有 `.ssh/authorized_keys`，安装程序会将其复制到持久化安装目录中。否则，请将客户端公钥添加到：
+SSH 默认监听 `127.0.0.1:22`，并使用公钥身份验证。Tailscale SSH 已禁用；shell 会话由本地 OpenSSH 服务器处理。如果 HOME 中已有 `.ssh/authorized_keys`，安装程序会将其复制到持久化安装目录中。否则，请将客户端公钥添加到：
 
 ```text
 /workspace/.dots-tailscale/sshd/authorized_keys

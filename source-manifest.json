@@ -1,9 +1,9 @@
 {
   "files": {
-    "dots-ts": "cb4503517686c124c6bcf3e79701750d3508f736bab0e3e0a88b140057963b64",
-    "dots_proxy.py": "963ef632d318288c07ea55afb13fd293eb407095de073a9f21b02993384e056e",
+    "dots-ts": "d0d23d4850e489405284ac08418e87e67f1197bb0f0a33b34da0188a65361cc8",
+    "dots_proxy.py": "86845c7991d8d31d21c8ad3122b98a977c10f9ee401a7f27c6dc166ea8fa6b8e",
     "shim.py": "f0d98b55089a0095c4a14c6a21e2a8874cdb5df6675ad475b271500ac9effac3",
-    "tailscale-setup.sh": "492a82b0d27cccfe0a9d221f46c45c4cbfe69c1f709731c1dd25380c98f9e7bb"
+    "tailscale-setup.sh": "5b12b545971c11a5e9c1686dbf2d9e9fe72dc687bf9f45f61524cdadef91ac47"
   },
   "package_version": "0.9.1",
   "schema_version": 1

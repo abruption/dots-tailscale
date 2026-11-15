@@ -79,7 +79,7 @@ The local shim does not configure a global proxy or route unrelated applications
 
 ## Install and start
 
-Clone the repository from `https://github.com/abruption/dots-tailscale` into `/workspace` so the setup script and `shim.py` are available together. Cloning requires Git and GitHub HTTPS access through the cloud computer's proxy. The setup requires Linux x86_64, Python 3, `timeout`, `flock`, OpenSSL, `ssh-keygen`, and `/usr/sbin/sshd`. Installation additionally requires curl, tar, and sha256sum. Binding port 22 must be allowed for the current user; root or systemd is not required.
+Clone the repository from `https://github.com/abruption/dots-tailscale` into `/workspace` so the setup script and `shim.py` are available together. Cloning requires Git and GitHub HTTPS access through the cloud computer's proxy. The setup requires Linux x86_64, Python 3, `timeout`, `flock`, OpenSSL, `ssh-keygen`, and `/usr/sbin/sshd`. Installation additionally requires curl, tar, and sha256sum. Binding the selected SSH port (22 by default) must be allowed for the current user; root or systemd is not required.
 
 For v0.9.1, keep all four source files together with `source-manifest.json`: `tailscale-setup.sh`, `shim.py`, `dots-ts`, and `dots_proxy.py`. The older v0.2.0 installation uses only the original two files and does not include these helpers.
 
@@ -114,12 +114,54 @@ For inspection or explicit authentication, pass `check` or `login` to that insta
 | `DOTS_TS_DIR` | `/workspace/.dots-tailscale` |
 | `UPSTREAM_PROXY` | `http://browser-proxy:8889` |
 | `NODE_HOSTNAME` | `dots-sandbox` |
+| `DOTS_TS_SSH_PORT` | `22` (new installs only; unreleased development) |
 
-An alternate `DOTS_TS_DIR` must be an absolute path without whitespace. `UPSTREAM_PROXY` must be an unauthenticated HTTP proxy URL. Use consistent settings for installation and subsequent starts. The shim currently listens on port 18089 and SSH on port 22; this is a single-installation setup.
+An alternate `DOTS_TS_DIR` must be an absolute path without whitespace. `UPSTREAM_PROXY` must be an unauthenticated HTTP proxy URL. Use consistent settings for installation and subsequent starts. The shim currently listens on port 18089 and SSH on port 22 by default; this is a single-installation setup.
+
+<a id="new-install-ssh-port"></a>
+
+### Development: SSH port choice for a new installation
+
+This option is unreleased development work; the published v0.9.1 examples above still use port 22. Use a complete, independently verified source package that includes this feature before trying the following new-install example. Existing installations are not migrated.
+
+```bash
+DOTS_TS_SSH_PORT=2222 bash tailscale-setup.sh install
+bash /workspace/.dots-tailscale/start.sh login
+```
+
+The kernel threshold file remains a required preflight input, as in v0.9.1; this feature does not introduce a capability/root bypass. Setting paths may contain repeated slash separators, but dot/parent traversal segments and control/Unicode whitespace syntax are rejected. Interrupted new intent publication can be retried: install removes only verified sibling links to the same valid intent before identity creation, never unknown links or existing identity.
+
+The option must be a canonical decimal integer 1–65535, excluding shim port 18089, configured application-proxy ports and an unrelated occupied listener. It must be at least the kernel's current `ip_unprivileged_port_start` value; equality is allowed. The installer does not change that sysctl, require root or choose a different port silently. Without the option the port remains 22.
+
+A new installation saves one owned mode-600 `ssh-port.json` with schema version 1 and the selected port. Retry of an incomplete installation must use the same saved intent. A completed installation rejects the selection option even when the requested value is unchanged; omit it for normal start/login. The environment variable is not a startup override. Do not edit the JSON or sshd configuration to migrate an existing installation.
+
+Legacy installations without this file are supported only with the generated port-22 configuration. The stored value, single `Port`, loopback-only `ListenAddress`, key/authentication paths and generated settings must agree; malformed metadata, includes, match blocks, duplicate directives and unsupported custom configurations stop the operation. `doctor` reports the validated `ssh.port`; startup and update readiness use that same local endpoint. A successful local check is not an external SSH test.
+
+For port 2222, use the selected port during host-key onboarding and every client connection:
+
+```bash
+ssh -p 2222 -o StrictHostKeyChecking=ask -i /path/to/client_private_key 'agent@<tailscale-ip>'
+```
+
+Compare the host-key fingerprint through the independent cloud terminal before accepting the first connection, as described below. The nondefault `known_hosts` entry is associated with `[host]:2222`; after enrollment use `StrictHostKeyChecking=yes`. Public-key authentication, saved node/SSH identity and Tailscale SSH disabled by default are unchanged. Separately review tailnet policy for the chosen port; this option does not open network access or prove reachability.
+
+Use the matching installed CLI for updates. Nondefault installations refuse candidates without the complete schema-1 SSH-port capability declarations before source replacement. The v0.9.1 updater itself safely refuses a generated high-port installation at its hardcoded port-22 ownership check; it cannot manage or bootstrap that installation. New default/legacy port-22 installations retain the ordinary update path. Supported updates preserve the setting and SSH process and still restart only the shim. No existing-install port migration or live tailnet trial is included.
+
+This is a deliberate compatibility tightening even on legacy port 22: extra/custom sshd directives, mode other than 600, hardlinks and paths containing SSH quoting/escape/comment/expansion syntax now fail closed. Startup still restores owned installation directories to mode 700, but does not rewrite a custom configuration or silently repair file metadata. Use the authenticated pre-upgrade check below; a previous version accepting a configuration is not evidence that the new strict reader supports it. No operating service has been changed by this development work.
+
+#### First upgrade using a v0.9.1 or older updater
+
+The old updater cannot enforce this new SSH-configuration check before replacing source. In particular, an old default-port installation with unsupported custom configuration may update successfully but fail a later start. After independently authenticating the complete new candidate's original manifest and all four source files with the trusted verifier/root, run this **read-only** check before invoking the old updater:
+
+```bash
+python3 -I /path/to/verified-candidate/dots_proxy.py ssh-port /workspace/.dots-tailscale /tmp/dots-tailscale-$(id -u)
+```
+
+For an old default-port installation it must print `22`. Replace paths for your installation. If it fails, stop and review configuration/private permissions; do not overwrite SSH settings, state or keys to force an upgrade. Hold any already-enabled old automatic source updater during this first transition. The external check is not atomic with the old worker: keep configuration unchanged until the upgrade completes. Afterward the new installed updater enforces the contract itself. This limitation cannot be retrofitted into the published old CLI. Only generated settings are supported; no custom-configuration or port migration is implied.
 
 ### SSH keys and readiness
 
-SSH listens on `127.0.0.1:22` and uses public-key authentication. Tailscale SSH is disabled; the local OpenSSH server handles shell sessions. If HOME already contains `.ssh/authorized_keys`, installation copies it into the persistent installation. Otherwise, add your client public key to:
+SSH listens on `127.0.0.1:22` by default and uses public-key authentication. Tailscale SSH is disabled; the local OpenSSH server handles shell sessions. If HOME already contains `.ssh/authorized_keys`, installation copies it into the persistent installation. Otherwise, add your client public key to:
 
 ```text
 /workspace/.dots-tailscale/sshd/authorized_keys
