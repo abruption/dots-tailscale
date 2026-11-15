@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.10.0
+
+- Allow explicit SSH port selection for new installations with `DOTS_TS_SSH_PORT`, retaining default/legacy port 22 and loopback-only public-key OpenSSH (#63, #91).
+- Persist one validated setting shared by install/start/doctor/source updates/runtime updates; reject reserved/conflicting ports, incompatible candidates and configuration drift before replacement.
+- Compatibility: reject unsupported custom sshd directives, unsafe file modes/hardlinks and ambiguous paths even on legacy port 22. A first upgrade with v0.9.1 or older tools requires the independently verified read-only precheck. Existing port migration is unsupported.
+- Keep English, Korean, Japanese and Simplified Chinese installation examples and port-selection guidance aligned.
+
+The Tailscale baseline remains **1.104.4**. Package updates retain node state, SSH identity and runtime binaries and restart only the shim. No operating deployment or port change is implied by publication. See the [release notes](docs/releases/v0.10.0.md).
+
 ## v0.9.1
 
 - Set both uppercase and lowercase HTTP/HTTPS proxy variables to the local shim before daemon startup, preventing inherited lowercase platform proxies from bypassing the control-protocol bridge (#89).
