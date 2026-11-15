@@ -4,13 +4,13 @@
 
 <p align="center"><a href="README.md">English</a> · 한국어 · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a></p>
 
-**프록시 호환성 수정:** v0.9.1은 데몬의 대·소문자 프록시 변수를 모두 로컬 shim으로 맞춥니다. 충돌하는 환경으로 이미 실행 중인 데몬은 별도로 안전하게 재시작해야 하며, 패키지 업데이트만으로 환경이 바뀌지는 않습니다. [진단·복구 안내](docs/proxy-environment.ko.md)를 확인하세요. v0.10.0 예시는 배포 파일이 공개되고 검증된 뒤 실행하세요.
+**v0.10.0:** 새로 설치할 때 `DOTS_TS_SSH_PORT`로 2222 같은 SSH 포트를 선택할 수 있습니다. 기본값은 22이며 기존 설치의 포트는 바뀌지 않습니다. [릴리스 노트](docs/releases/v0.10.0.md)와 [포트 선택 안내](docs/usage.ko.md#new-install-ssh-port)를 확인하세요.
 
 내 기기에서 Tailscale과 SSH로 Dots 클라우드 컴퓨터에 접속할 수 있게 해주는 도구입니다. root 권한이나 systemd 없이 설치할 수 있으며, 설치 파일과 Tailscale 기기 정보, SSH 키를 `/workspace`에 보관합니다. 실행 환경이 바뀌어도 이 경로가 남아 있다면 기존 정보를 다시 사용할 수 있습니다.
 
 **이 안내는 [v0.10.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.10.0) 기준입니다. 설치 전에 릴리스 페이지에서 발행된 파일을 확인하세요.** 인증서 생성 전에 CONNECT 대상 호스트를 검증하는 v0.7.1 보안 수정을 포함합니다([GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)). v0.7.0 이하 버전이 영향을 받습니다. 신규 설치의 Tailscale은 1.104.4입니다. OpenAI나 Tailscale의 공식 도구가 아닌 독립 프로젝트입니다.
 
-**아래 고정 버전 예시는 v0.10.0 배포 파일이 공개되고 출처를 독립적으로 검증한 뒤 실행하세요. 태그만으로는 릴리스 공개를 뜻하지 않습니다.**
+**v0.10.0은 정식 공개됐습니다. 설치하거나 업데이트하기 전에 배포 파일과 출처 증명을 독립적으로 검증하세요. 태그나 체크섬 일치만으로 배포자를 인증할 수는 없습니다.**
 
 **v0.6.0 등 이전 기본 버전에서 업데이트한다면:** Tailscale 기본값이 1.102.4인 패키지는 실행 파일을 먼저 갱신한 뒤 [명시적 보안 기본 버전 전환](docs/security-baseline.ko.md)을 거쳐야 합니다. 일반 `update apply`의 기본 버전 변경 제한은 유지됩니다.
 
@@ -49,7 +49,9 @@ v0.9.0의 실험용 서버에는 [접수됐지만 claim이 생성되지 않은 �
 
 ## 빠른 시작
 
-**처음 설치한다면** Dots 클라우드 터미널에서 진행하세요. Linux x86_64, Python 3, Git, OpenSSH와 로컬 22번 포트를 사용할 권한이 필요합니다. [전체 필요 도구와 SSH 설정](docs/usage.ko.md)을 먼저 확인하세요. 기존 사용자는 다시 설치하지 말고 다음 업데이트 절차를 따라주세요.
+**처음 설치한다면** Dots 클라우드 터미널에서 진행하세요. Linux x86_64, Python 3, Git, OpenSSH와 선택한 로컬 SSH 포트(기본 22)를 사용할 권한이 필요합니다. [전체 필요 도구와 SSH 설정](docs/usage.ko.md)을 먼저 확인하세요. 기존 사용자는 다시 설치하지 말고 다음 업데이트 절차를 따라주세요.
+
+포트는 설치 전에 선택하세요. 2222를 쓰려면 아래의 `bash tailscale-setup.sh install` 줄을 `DOTS_TS_SSH_PORT=2222 bash tailscale-setup.sh install`로 바꾸면 됩니다. 이후 일반 start/login은 이 옵션 없이 저장된 포트를 사용합니다. 기존 설치의 포트를 바꾸는 기능은 아닙니다.
 
 ```bash
 cd /workspace
@@ -87,6 +89,8 @@ bash /workspace/.dots-tailscale/start.sh
 /workspace/.dots-tailscale/dots-ts update check --tag v0.10.0 --proxy http://browser-proxy:8889 --json
 ```
 
+v0.9.1의 프록시 환경 수정 사항도 그대로 유지돼 데몬의 대·소문자 프록시 변수는 로컬 shim을 사용합니다. 충돌하는 환경으로 이미 실행 중인 데몬은 별도로 안전하게 재시작해야 하며, 패키지 업데이트만으로 실행 중인 환경이 바뀌지는 않습니다. [진단·복구 안내](docs/proxy-environment.ko.md)를 확인하세요.
+
 v0.8.0 이전 updater에서 처음 전환할 때는 [독립 검증을 거치는 첫 전환 절차](docs/release-provenance.ko.md)를 따르세요. 후보 도구를 실행하기 전에 원본 manifest와 소스 네 파일의 출처를 확인해야 합니다. 해시 일치만으로 배포자를 인증할 수는 없습니다.
 
 v0.7.0 패키지는 같은 Tailscale 기본 버전을 선언하므로 일반 [패키지 업데이트](docs/usage.ko.md#update-management)로 v0.7.1로 올릴 수 있으며, 적용하면 수정된 shim이 다시 시작됩니다. 기본 Tailscale을 1.102.4로 선언하는 v0.6.0 등 기존 패키지는 [보안 기본 버전 전환](docs/security-baseline.ko.md)에 따라 v0.7.1로 이동하세요. 설치된 도구가 v0.6.0보다 오래됐다면 [패키지 업데이트 안내](docs/usage.ko.md#update-management)로 같은 기본 버전의 v0.6.0 도구를 먼저 준비하세요. 신뢰할 수 있는 메타데이터가 없는 이전 설치는 수동 확인이 필요합니다. 이 이전 버전 절차로 기본 버전을 맞춘 뒤, v0.10.0으로 전환할 때는 위의 독립 검증 절차를 따르세요.
@@ -118,6 +122,7 @@ v0.6.0 이상 도구가 설치됐다면 공식 Tailscale 안정 버전을 확인
 
 ## 검증한 범위
 
+- [v0.10.0 태그 커밋의 CI](https://github.com/abruption/dots-tailscale/actions/runs/43715115507)에서 Linux Python 3.11·3.13 각각 601개 테스트를 통과했습니다. [2026-11-15 검증 기록](docs/validation/ssh-port-new-install-20261115.md)은 22·2222번 포트의 설치·시작·doctor·업데이트, 실패 처리와 기기·SSH 정보 유지을 격리 환경에서 확인한 결과입니다. 실제 tailnet 시험이 아니며, 선택한 포트로 외부에서 접속할 수 있음을 입증하지도 않습니다.
 - [실제 Dots 시험](docs/validation/runtime-update-trial-20261026.md)에서 검토한 개발 패키지로 Tailscale 1.102.4를 1.104.2로 업데이트했습니다. 기존 기기 정보와 SSH 키를 유지했고, 이후 새 외부 SSH 연결과 릴레이 ping도 확인했습니다.
 - [v0.6.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)에는 최종 커밋의 기본·연구 테스트와 격리된 환경에서 수행한 공식 실행 파일 검증 기록이 있습니다. 앞으로 나올 모든 버전과의 호환성이나 실환경 장애 복구, 이전 버전으로 되돌릴 때의 상태 호환성을 입증한 것은 아닙니다.
 - [v0.7.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)에는 격리된 신규 설치·소스 전환 테스트가 추가됐습니다. 이후 [2026-10-28 실환경 소스 전환 시험](docs/validation/v0.7.0-migration-trial-20261028.md)에서 기존 설치 한 건의 패키지를 0.6.0에서 0.7.0으로 옮겼습니다. 이미 설치된 Tailscale 1.104.4 실행 환경과 기기·SSH 정보를 유지했고, 전환 후 엄격한 호스트 키 검증을 적용한 새 SSH 연결과 릴레이 ping이 성공했습니다. 신규 설치, 다른 계정, 실환경 장애 주입, 중단된 작업 복구, VM 교체, 실행 상태의 하위 버전 전환이나 앞으로의 모든 버전을 검증한 것은 아닙니다. [공개 전 기본 버전·TLS 점검](docs/validation/security-baseline-20261028.md)은 별도의 과거 기록입니다.

@@ -4,13 +4,13 @@
 
 <p align="center"><a href="README.md">English</a> · <a href="README.ko.md">한국어</a> · 简体中文 · <a href="README.ja.md">日本語</a></p>
 
-**代理兼容性修复**：v0.9.1 将守护进程的大写和小写代理变量统一指向本地 shim。已经在冲突环境中运行的守护进程需要另外安全重启；软件包更新不会改变运行中进程的环境。请查看[诊断与恢复说明（英文）](docs/proxy-environment.md)，并在 v0.10.0 发布文件公开且验证完成后再执行示例。
+**v0.10.0：** 全新安装时，可以用 `DOTS_TS_SSH_PORT` 选择 2222 等 SSH 端口。默认仍为 22，现有安装的端口不会改变。请查看[发布说明（英文）](docs/releases/v0.10.0.md)和[端口选择指南](docs/usage.zh-CN.md#new-install-ssh-port)。
 
 通过 Tailscale 和 SSH，你可以从自己的设备连接 Dots 云电脑。dots-tailscale 不需要 root 权限或 systemd，会将安装文件、Tailscale 节点状态和 SSH 身份信息保存在 `/workspace` 中。环境变化后，只要这个目录还在，就可以继续使用原来的安装和身份。
 
 **本指南适用于 [v0.10.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.10.0)，安装前请在发布页面确认已发布的文件。** 此版本包含 v0.7.1 的安全修复，在生成证书前验证 CONNECT 目标主机（[GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)）；v0.7.0 及更早版本受影响。新安装使用 Tailscale 1.104.4。本项目独立开发，并非 OpenAI 或 Tailscale 的官方工具。
 
-**请在 v0.10.0 发布文件公开、且独立验证其来源后，再运行下方固定版本的示例。仅有标签不代表正式发布。**
+**v0.10.0 已正式发布。安装或更新前，请独立验证发布文件及其来源证明。仅有标签或校验和一致，不能认证发布者身份。**
 
 **从 v0.6.0 等旧基线更新时：** 默认声明为 Tailscale 1.102.4 的软件包，需要先更新运行时，再执行[明确的安全基线迁移（英文）](docs/security-baseline.md)。普通 `update apply` 仍保留跨基线变更检查。
 
@@ -49,7 +49,9 @@ v0.9.0 修正了对稳定版后端长版本号的诊断。研究用 MCP 配置�
 
 ## 快速开始
 
-**首次安装**请在 Dots 云终端中操作。需要 Linux x86_64、Python 3、Git、OpenSSH，以及绑定本地 22 端口的权限；完整依赖和 SSH 设置请参阅[使用指南](docs/usage.zh-CN.md)。已经安装的用户请按下一节更新，不要重新安装。
+**首次安装**请在 Dots 云终端中操作。需要 Linux x86_64、Python 3、Git、OpenSSH，以及绑定所选本地 SSH 端口（默认为 22）的权限；完整依赖和 SSH 设置请参阅[使用指南](docs/usage.zh-CN.md)。已经安装的用户请按下一节更新，不要重新安装。
+
+请在安装前选定端口。如果要使用 2222，请将下方的 `bash tailscale-setup.sh install` 行替换为 `DOTS_TS_SSH_PORT=2222 bash tailscale-setup.sh install`。之后常规的 start/login 命令无需此选项，会使用已保存的端口。此功能不会更改现有安装的端口。
 
 ```bash
 cd /workspace
@@ -87,6 +89,8 @@ bash /workspace/.dots-tailscale/start.sh
 /workspace/.dots-tailscale/dots-ts update check --tag v0.10.0 --proxy http://browser-proxy:8889 --json
 ```
 
+此版本保留了 v0.9.1 的代理环境修复，守护进程的大写和小写代理变量均使用本地 shim。已在冲突环境中运行的守护进程仍需单独安全重启；软件包更新不会改写运行中的进程环境。请查看[诊断与恢复说明（英文）](docs/proxy-environment.md)。
+
 从 v0.8.0 之前的更新器首次迁移时，请按[独立验证的首次迁移流程（英文）](docs/release-provenance.md)操作。在执行候选工具之前，先验证原始清单和四个源文件的来源。仅凭哈希一致无法认证发布者。
 
 v0.7.0 软件包声明相同的 Tailscale 基线，可通过普通[软件包更新](docs/usage.zh-CN.md#update-management)升级到 v0.7.1，应用后会以修复后的 shim 重新启动。Tailscale 基线声明为 1.102.4 的现有软件包（包括 v0.6.0），需要按[安全基线迁移流程（英文）](docs/security-baseline.md)更新到 v0.7.1。工具早于 v0.6.0 时，请先按[软件包更新说明](docs/usage.zh-CN.md#update-management)安装同一基线的 v0.6.0。缺少可信元数据的旧安装需要手动检查。这些旧版步骤用于对齐基线；迁移到 v0.10.0 时，请按上方的独立验证流程操作。
@@ -118,6 +122,7 @@ v0.7.0 软件包声明相同的 Tailscale 基线，可通过普通[软件包更�
 
 ## 已验证的范围
 
+- [v0.10.0 标签所指提交的 CI](https://github.com/abruption/dots-tailscale/actions/runs/43715115507)在 Linux Python 3.11 和 3.13 上分别通过了 601 项测试。[2026-11-15 验证记录（英文）](docs/validation/ssh-port-new-install-20261115.md)涵盖隔离环境中的 22、2222 端口安装、启动、doctor、更新、失败处理及身份保留检查。这些是测试环境结果，不是真实 tailnet 试验，也不能证明所选端口可从外部访问。
 - 一次 [Dots 实环境测试](docs/validation/runtime-update-trial-20261026.md)使用经过审核的开发版软件包，将 Tailscale 从 1.102.4 更新至 1.104.2。节点与 SSH 身份保持不变，随后通过了新的外部 SSH 连接和中继 ping 检查。
 - [v0.6.0 发布页](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)记录了最终提交的核心与研究测试，以及隔离环境中的官方二进制文件检查。这些结果不能证明所有未来版本都兼容，也不能证明实环境故障恢复或状态数据降级一定安全。
 - [v0.7.0 发布页](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)增加了隔离的新安装与源码迁移测试。随后的 [2026-10-28 实环境源码迁移测试](docs/validation/v0.7.0-migration-trial-20261028.md)将一个现有安装的软件包从 0.6.0 迁移至 0.7.0，保留了已安装的 Tailscale 1.104.4 运行环境以及节点与 SSH 身份；迁移后，采用严格主机密钥验证的新 SSH 连接和中继 ping 均成功。这不代表已验证全新安装、其他账户、实环境故障注入、中断事务修复、VM 更换、运行时状态降级或所有未来版本。[发布前的基线与 TLS 检查](docs/validation/security-baseline-20261028.md)仍是独立的历史记录。
