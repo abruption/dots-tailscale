@@ -11,6 +11,8 @@ import json
 import os
 from pathlib import Path
 import signal
+import hashlib
+import re
 import socket
 import stat
 import subprocess
@@ -18,6 +20,8 @@ import sys
 import threading
 import time
 
+SSH_PORT_CONFIG_SCHEMA = 1
+SSH_PORT_FILE = "ssh-port.json"
 CONFIG = "outbound-proxy.json"
 DEFAULT = {"socks_port": None, "http_port": None}
 STOP_TIMEOUT = 8
@@ -41,7 +45,7 @@ def _directory(path):
     return path
 
 
-def _read_private(path):
+def _read_private(path, maximum=4096, snapshot=False, allow_hardlink=False):
     try:
         fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as error:
@@ -50,10 +54,12 @@ def _read_private(path):
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
             raise ProxyError("configuration must be a regular owned mode 600 file")
-        data = stream.read(4097)
-    if len(data) > 4096:
+        if snapshot and not allow_hardlink and info.st_nlink != 1:
+            raise ProxyError("configuration hardlink refused")
+        data = stream.read(maximum + 1)
+    if len(data) > maximum:
         raise ProxyError("configuration is too large")
-    return data
+    return (data, info) if snapshot else data
 
 
 def _validate(value):
@@ -85,6 +91,281 @@ def load_config(d):
         return _validate(json.loads(_read_private(path).decode("utf-8"), object_pairs_hook=_unique_pairs))
     except (UnicodeError, ValueError) as error:
         raise ProxyError("invalid proxy configuration JSON") from error
+
+
+def ssh_port_value(value):
+    if type(value) is int:
+        port = value
+    elif isinstance(value, str) and re.fullmatch(r"[1-9][0-9]{0,4}", value):
+        port = int(value)
+    else:
+        raise ProxyError("SSH port must be a canonical integer 1..65535")
+    if not 1 <= port <= 65535 or port == 18089:
+        raise ProxyError("SSH port must be 1..65535 excluding shim port 18089")
+    return port
+
+
+def ssh_port_setting(d):
+    path = Path(d) / SSH_PORT_FILE
+    if not path.exists() and not path.is_symlink():
+        return 22, None
+    _directory(d)
+    try:
+        raw, info = _read_private(path, snapshot=True)
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_pairs)
+        if (not isinstance(value, dict) or set(value) != {"schema_version", "port"}
+                or type(value["schema_version"]) is not int or value["schema_version"] != 1
+                or type(value["port"]) is not int):
+            raise ValueError()
+        return ssh_port_value(value["port"]), _ssh_snapshot(raw, info)
+    except (UnicodeError, ValueError, KeyError) as error:
+        raise ProxyError("invalid SSH port configuration") from error
+
+
+def _ssh_snapshot(raw, info):
+    return {"sha256": hashlib.sha256(raw).hexdigest(),
+            "identity": [info.st_dev, info.st_ino, info.st_uid, stat.S_IMODE(info.st_mode),
+                         info.st_size, info.st_mtime_ns]}
+
+
+def ssh_config_text(d, r, port):
+    port = ssh_port_value(port)
+    d, r = Path(d), Path(r)
+    if any(not p.is_absolute() or any(c.isspace() or ord(c) < 32 or 127 <= ord(c) <= 159 for c in str(p)) for p in (d, r)):
+        raise ProxyError("SSH paths must be absolute without whitespace")
+    if any(c in {"\"", "'", "\\", "%", "#"} for p in (d, r) for c in str(p)):
+        raise ProxyError("SSH paths contain unsupported configuration syntax")
+    d, r = Path(os.path.normpath(d)), Path(os.path.normpath(r))
+    return ("Port {port}\nListenAddress 127.0.0.1\nHostKey {d}/sshd/ssh_host_ed25519_key\n"
+            "PidFile {r}/sshd.pid\nUsePAM no\nPasswordAuthentication no\n"
+            "KbdInteractiveAuthentication no\nPubkeyAuthentication yes\n"
+            "AuthorizedKeysFile {d}/sshd/authorized_keys\nStrictModes no\n"
+            "Subsystem sftp internal-sftp\n").format(port=port, d=d, r=r)
+
+
+def ssh_port_info(d, r, check_proxy=True):
+    _directory(d)
+    _directory(Path(d) / "sshd")
+    port, setting = ssh_port_setting(d)
+    raw, info = _read_private(Path(d) / "sshd/sshd_config", maximum=65536, snapshot=True)
+    try:
+        def rows(text):
+            result = {}
+            if any((ord(c) < 32 and c not in "\t\n") or 127 <= ord(c) <= 159
+                   or (c.isspace() and c not in " \t\n") for c in text):
+                raise ValueError()
+            for line in text.split("\n"):
+                line = line.strip(" \t")
+                if not line or line.startswith("#"):
+                    continue
+                # Only ASCII separators/case are part of sshd's directive syntax.
+                parts = re.split(r"[ \t]+", line)
+                if not parts[0].isascii():
+                    raise ValueError()
+                key = parts[0].lower()
+                if key in result:
+                    raise ValueError()
+                values = parts[1:]
+                if key in ("hostkey", "pidfile", "authorizedkeysfile"):
+                    if len(values) != 1 or not values[0].startswith("/"):
+                        raise ValueError()
+                    # Normalize only repeated Linux slash separators. Parent/dot
+                    # traversal can resolve differently in the presence of links.
+                    if any(part in (".", "..") for part in values[0].split("/")):
+                        raise ValueError()
+                    values = [re.sub(r"/+", "/", values[0])]
+                result[key] = values
+            return result
+        if rows(raw.decode("utf-8")) != rows(ssh_config_text(d, r, port)):
+            raise ValueError()
+    except (UnicodeError, ValueError):
+        raise ProxyError("SSH setting/config mismatch or unsupported sshd configuration") from None
+    if check_proxy and port in load_config(d).values():
+        raise ProxyError("SSH port conflicts with a configured application proxy")
+    return {"port": port, "origin": "legacy" if setting is None else "persisted",
+            "setting": setting, "sshd_config": _ssh_snapshot(raw, info)}
+
+
+def ssh_install_port(d, r, requested=None):
+    port, setting = ssh_port_setting(d)
+    completed = (Path(d) / "installed").exists() or (Path(d) / "installed").is_symlink()
+    if requested is not None:
+        chosen = ssh_port_value(requested)
+        if completed:
+            raise ProxyError("SSH port selection is only for new installations")
+        if setting is not None and chosen != port:
+            raise ProxyError("SSH port selection differs from persisted installation intent")
+        if setting is None and any((Path(d) / n).exists() or (Path(d) / n).is_symlink()
+                                   for n in ("sshd/sshd_config", "sshd/ssh_host_ed25519_key", "sshd/ssh_host_ed25519_key.pub", "authenticated", "state/tailscaled.state")):
+            raise ProxyError("existing identity/config cannot adopt a new SSH port")
+        port = chosen
+    if completed or (Path(d) / "sshd/sshd_config").exists() or (Path(d) / "sshd/sshd_config").is_symlink():
+        if ssh_port_info(d, r)["port"] != port:
+            raise ProxyError("SSH port selection/config mismatch")
+    config_path = Path(d) / CONFIG
+    if (config_path.exists() or config_path.is_symlink()) and port in load_config(d).values():
+        raise ProxyError("SSH port conflicts with a configured application proxy")
+    return port
+
+
+def ssh_persist_port(d, r, port):
+    d = _directory(d)
+    port = ssh_port_value(port)
+    if port in load_config(d).values():
+        raise ProxyError("SSH port conflicts with a configured application proxy")
+    current, setting = ssh_port_setting(d)
+    if setting is not None:
+        if current != port:
+            raise ProxyError("SSH port intent changed")
+        return
+    # Legacy installations keep the absence of metadata; never migrate identity.
+    if any((d / n).exists() or (d / n).is_symlink() for n in
+           ("installed", "authenticated", "sshd/sshd_config", "sshd/ssh_host_ed25519_key", "sshd/ssh_host_ed25519_key.pub", "state/tailscaled.state")):
+        if port != 22:
+            raise ProxyError("legacy SSH port migration is unsupported")
+        return
+    import tempfile
+    path = d / SSH_PORT_FILE
+    fd, temporary = tempfile.mkstemp(prefix=".ssh-port-", dir=d)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump({"schema_version": 1, "port": port}, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Publication must not overwrite a concurrently created intent.
+        os.link(temporary, path, follow_symlinks=False)
+        os.unlink(temporary)
+        parent = os.open(d, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    finally:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+
+
+def _ssh_config_operand(argv):
+    if not argv:
+        return None
+    if argv[0].startswith("sshd: "):
+        title = argv[0][6:].split()
+        if "[listener]" not in title:
+            return None
+        argv = title[:title.index("[listener]")]
+    # Supported installer listeners have only -f CONFIG and optional -E LOG.
+    if not argv or Path(argv[0]).name != "sshd":
+        return None
+    config = None
+    args = list(argv[1:])
+    while args:
+        flag = args.pop(0)
+        if flag not in ("-f", "-E") or not args:
+            return None
+        value = args.pop(0)
+        if flag == "-f":
+            if config is not None:
+                return None
+            config = value
+    return config
+
+
+def _ssh_listener(d, port):
+    matches = []
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            if proc.stat().st_uid != os.getuid():
+                continue
+            executable = os.readlink(proc / "exe")
+            if executable.endswith(" (deleted)"):
+                executable = executable[:-10]
+            if Path(executable).name != "sshd":
+                continue
+            args = (proc / "cmdline").read_bytes().rstrip(b"\0").decode("utf-8").split("\0")
+            operand = _ssh_config_operand(args)
+            expected = str(Path(d) / "sshd/sshd_config")
+            if (operand is not None and not any(p in (".", "..") for p in operand.split("/"))
+                    and re.sub(r"/+", "/", operand) == re.sub(r"/+", "/", expected)):
+                matches.append({"pid": int(proc.name)})
+        except (OSError, UnicodeError):
+            continue
+    return len(matches) == 1 and _listener_owned(matches[0], port)
+
+
+def ssh_recover_unpublished_links(d):
+    """Install-lock caller only: finish an interrupted publication, never migrate.
+
+    Only sibling temporary names linking this valid final intent can be removed;
+    unknown files/links and installations with identity remain untouched.
+    """
+    d = Path(d)
+    if not d.exists():
+        return
+    for name in ("installed", "authenticated", "state/tailscaled.state", "sshd/sshd_config", "sshd/ssh_host_ed25519_key", "sshd/ssh_host_ed25519_key.pub"):
+        if (d / name).exists() or (d / name).is_symlink():
+            return
+    final = d / SSH_PORT_FILE
+    if not final.exists() or final.is_symlink():
+        return
+    _directory(d)
+    raw, info = _read_private(final, snapshot=True, allow_hardlink=True)
+    if info.st_nlink <= 1:
+        return
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_pairs)
+        if (not isinstance(value, dict) or set(value) != {"schema_version", "port"}
+                or type(value["schema_version"]) is not int or value["schema_version"] != 1
+                or type(value["port"]) is not int):
+            return
+        ssh_port_value(value["port"])
+    except (ValueError, UnicodeError, ProxyError):
+        return
+    links = []
+    for candidate in d.glob(".ssh-port-*"):
+        st = candidate.lstat()
+        if (stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid()
+                and stat.S_IMODE(st.st_mode) == 0o600
+                and (st.st_dev, st.st_ino) == (info.st_dev, info.st_ino)):
+            links.append(candidate)
+    if info.st_nlink != len(links) + 1:
+        return  # Some link is outside this known publication; do not guess.
+    for candidate in links:
+        st = candidate.lstat()
+        if not stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino) != (info.st_dev, info.st_ino):
+            raise ProxyError("SSH intent publication changed during recovery")
+        candidate.unlink()
+    fd = os.open(d, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def ssh_preflight(d, r, mode, requested=None, threshold=None):
+    if mode != "install" and requested is not None:
+        raise ProxyError("DOTS_TS_SSH_PORT is only accepted for a new install")
+    ssh_config_text(d, r, 22)  # Validate path syntax before new intent/identity work.
+    if mode == "install":
+        ssh_recover_unpublished_links(d)
+    port = ssh_install_port(d, r, requested) if mode == "install" else ssh_port_info(d, r)["port"]
+    threshold = (Path("/proc/sys/net/ipv4/ip_unprivileged_port_start").read_text().strip()
+                 if threshold is None else threshold)
+    if not isinstance(threshold, str) or not re.fullmatch(r"0|[1-9][0-9]{0,4}", threshold) or int(threshold) > 65535:
+        raise ProxyError("invalid kernel unprivileged port threshold")
+    if port < int(threshold):
+        raise ProxyError("selected SSH port is below the kernel unprivileged threshold")
+    try:
+        with socket.socket() as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(("127.0.0.1", port))
+    except OSError as error:
+        if not _ssh_listener(d, port):
+            raise ProxyError("selected SSH port is unavailable or not owned by this installation") from error
+    return port
 
 
 def _flags(config):
@@ -278,6 +559,11 @@ def configure(d, r, socks_port=None, http_port=None):
     _directory(r)
     with _operation(d):
         load_config(d)  # Refuse unsafe existing config rather than overwriting it.
+        ssh_config = Path(d) / "sshd/sshd_config"
+        ssh_port = (ssh_port_info(d, r, check_proxy=False)["port"]
+                    if ssh_config.exists() or ssh_config.is_symlink() else ssh_port_setting(d)[0])
+        if ssh_port in config.values():
+            raise ProxyError("application proxy conflicts with SSH port")
         _ports_available(config, _daemon(d, r))
         _write_config(d, config)
     return inspect_config(d, r)
@@ -509,6 +795,18 @@ def apply(d, r):
 
 def main(argv=None, d=None, r=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ("ssh-preflight", "ssh-persist", "ssh-config", "ssh-port"):
+        if argv[0] == "ssh-preflight" and len(argv) == 4:
+            print(ssh_preflight(argv[1], argv[2], argv[3], os.environ.get("DOTS_TS_SSH_PORT")))
+        elif argv[0] == "ssh-persist" and len(argv) == 4:
+            ssh_persist_port(argv[1], argv[2], argv[3])
+        elif argv[0] == "ssh-config" and len(argv) == 4:
+            print(ssh_config_text(argv[1], argv[2], argv[3]), end="")
+        elif argv[0] == "ssh-port" and len(argv) == 3:
+            print(ssh_port_info(argv[1], argv[2])["port"])
+        else:
+            raise ProxyError("invalid SSH configuration helper arguments")
+        return 0
     if argv and argv[0] in ("startup", "validate"):
         if len(argv) != 3:
             raise ProxyError("startup/validate requires installation and runtime paths")

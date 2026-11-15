@@ -8,6 +8,8 @@ R="/tmp/dots-tailscale-$(id -u)"
 SOCK="$R/tailscaled.sock"
 S="$D/sshd"
 SOURCE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC2034 # Static updater compatibility declaration.
+SSH_PORT_CONFIG_SCHEMA=1
 TS_VERSION=1.104.4
 UPSTREAM_PROXY="${UPSTREAM_PROXY:-http://browser-proxy:8889}"
 NODE_HOSTNAME="${NODE_HOSTNAME:-dots-sandbox}"
@@ -176,9 +178,6 @@ preflight() {
   [[ "$D" = /* && "$D" != *[[:space:]]* ]] || fail 'DOTS_TS_DIR must be an absolute path without whitespace'
   local c
   for c in python3 timeout flock openssl ssh-keygen /usr/sbin/sshd; do require "$c"; done
-  local port_start
-  port_start="$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start)"
-  [[ "$port_start" -le 22 ]] || fail 'unprivileged port 22 unavailable'
 }
 install_all() {
   local source_layout=source
@@ -203,6 +202,7 @@ install_all() {
       cmp -s "$source_path" "$D/$installed_name" || fail "existing file differs: $D/$installed_name (manual review required)"
     fi
   done
+  python3 "$SOURCE/dots_proxy.py" ssh-persist "$D" "$R" "$SSH_PORT" || fail 'SSH port intent persistence failed'
   local tmp tgz url
   tmp="$(mktemp -d "$R/install.XXXXXX")"
   trap 'rm -rf -- "$tmp"' RETURN
@@ -274,19 +274,8 @@ STAGE_PAIR
       printf 'notice: add your public key to %s/authorized_keys before SSH use\n' "$S"
     fi
   fi
-  cat > "$tmp/sshd_config" <<CFG
-Port 22
-ListenAddress 127.0.0.1
-HostKey $S/ssh_host_ed25519_key
-PidFile $R/sshd.pid
-UsePAM no
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-PubkeyAuthentication yes
-AuthorizedKeysFile $S/authorized_keys
-StrictModes no
-Subsystem sftp internal-sftp
-CFG
+  python3 "$SOURCE/dots_proxy.py" ssh-config "$D" "$R" "$SSH_PORT" > "$tmp/sshd_config" || fail 'SSH config generation failed'
+
   place "$tmp/sshd_config" "$S/sshd_config" 600
   place "${BASH_SOURCE[0]}" "$D/setup.sh" 700
   place "$SOURCE/dots-ts" "$D/dots-ts" 700
@@ -314,6 +303,9 @@ start_all() {
     [[ -f "$f" && ! -L "$f" ]] || fail "missing or symlink file: $f"
   done
   private_dir "$D/shim"; private_dir "$D/state"; private_dir "$S"
+  local current_ssh_port
+  current_ssh_port="$(python3 "$D/dots_proxy.py" ssh-port "$D" "$R")" || fail 'invalid SSH port configuration; inspect dots-ts doctor'
+  [[ "$current_ssh_port" = "$SSH_PORT" ]] || fail 'SSH port changed after preflight; inspect dots-ts doctor'
   python3 "$D/dots_proxy.py" validate "$D" "$R" || fail 'invalid outbound proxy configuration'
   chmod 600 "$S/authorized_keys" "$S/ssh_host_ed25519_key" "$D/shim/ca.key"
   /usr/sbin/sshd -t -f "$S/sshd_config"
@@ -356,9 +348,9 @@ PY
     rotate "$R/sshd.log"
     /usr/sbin/sshd -f "$S/sshd_config" -E "$R/sshd.log" 9>&-
   fi
-  python3 - <<'PY'
-import socket
-with socket.create_connection(('127.0.0.1',22), timeout=5) as s:
+  python3 - "$SSH_PORT" <<'PY'
+import socket, sys
+with socket.create_connection(('127.0.0.1',int(sys.argv[1])), timeout=5) as s:
     if not s.recv(256).startswith(b'SSH-'): raise SystemExit('invalid SSH banner')
 PY
 }
@@ -440,6 +432,12 @@ flock -n 9 || fail 'another operation is running'
 if [[ -e "$D/.runtime-update-block" || -L "$D/.runtime-update-block" ]]; then
   fail 'runtime update fence exists; inspect update status before proceeding'
 fi
+if [[ -e "$S" || -L "$S" ]]; then private_dir "$S"; fi
+# The installed helper governs startup; source helpers are used only to install.
+SSH_HELPER="$D/dots_proxy.py"
+[[ "$MODE" != install ]] || SSH_HELPER="$SOURCE/dots_proxy.py"
+[[ -f "$SSH_HELPER" && ! -L "$SSH_HELPER" ]] || fail 'missing or symlink SSH helper; inspect dots-ts doctor'
+SSH_PORT="$(python3 "$SSH_HELPER" ssh-preflight "$D" "$R" "$MODE")" || fail 'invalid or unavailable SSH port; inspect dots-ts doctor'
 if [[ "$MODE" = install ]]; then install_all; exit 0; fi
 AUTH_COMMAND_STATUS=0
 start_all

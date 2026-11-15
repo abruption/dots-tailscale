@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local Tailscale CLI forwarding and bounded, shareable diagnostics."""
 import argparse
+import ast
 import base64
 import contextlib
 import fcntl
@@ -26,6 +27,7 @@ sys.dont_write_bytecode = True
 MANAGEMENT_TIMEOUT = 5
 
 
+SSH_PORT_CONFIG_SCHEMA = 1
 MANIFEST = "source-manifest.json"
 CORE_FILES = {"tailscale-setup.sh": "setup.sh", "shim.py": "shim/shim.py",
               "dots-ts": "dots-ts", "dots_proxy.py": "dots_proxy.py"}
@@ -1441,7 +1443,60 @@ def apply_baseline_guard(old, candidate, directory, runtime, proxy, migration=Fa
     return baseline
 
 
+def ssh_contract(directory, runtime, proxy):
+    try:
+        info = proxy.ssh_port_info(directory, runtime)
+        if not isinstance(info, dict) or type(info.get('port')) is not int or not 1 <= info['port'] <= 65535 or info['port'] == 18089:
+            raise ValueError()
+        return info
+    except (OSError, ValueError, RuntimeError, AttributeError, TypeError):
+        raise ApplyError('ssh_configuration_invalid') from None
+
+
+def ssh_candidate_contract(payload, port):
+    schemas = []
+    for name in ('tailscale-setup.sh', 'dots-ts', 'dots_proxy.py'):
+        body = payload[name]
+        if name.endswith('.sh'):
+            definitions = re.findall(rb'^SSH_PORT_CONFIG_SCHEMA=(.*)$', body, re.M)
+            if not definitions:
+                schemas.append(None)
+                continue
+            if definitions != [b'1']:
+                raise ApplyError('candidate_ssh_port_unsupported')
+            schemas.append(1)
+        else:
+            try:
+                tree = ast.parse(body)
+                values = []
+                top_level = {id(node) for node in tree.body}
+                for node in ast.walk(tree):
+                    targets = node.targets if isinstance(node, ast.Assign) else ([node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else [])
+                    if any(isinstance(t, ast.Name) and t.id == 'SSH_PORT_CONFIG_SCHEMA' for t in targets):
+                        if id(node) not in top_level or not isinstance(node, ast.Assign) or len(targets) != 1 or not isinstance(node.value, ast.Constant) or type(node.value.value) is not int:
+                            raise ValueError()
+                        values.append(node.value.value)
+                if values not in ([], [1]):
+                    raise ValueError()
+                schemas.append(values[0] if values else None)
+            except (SyntaxError, ValueError, UnicodeError, RecursionError):
+                raise ApplyError('candidate_ssh_port_unsupported') from None
+    if schemas == [1, 1, 1]:
+        return
+    if schemas == [None, None, None] and port == 22:
+        return
+    raise ApplyError('candidate_ssh_port_unsupported')
+
+
+def ssh_unchanged(directory, runtime, proxy, baseline):
+    current = ssh_contract(directory, runtime, proxy)
+    if baseline.get('_ssh') != current:
+        raise ApplyError('ssh_configuration_changed')
+    return current['port']
+
+
 def apply_components(directory, runtime, proxy):
+    ssh = ssh_contract(directory, runtime, proxy)
     matches = {'shim': [], 'sshd': []}
     for entry in pathlib.Path('/proc').iterdir():
         if not entry.name.isdigit(): continue
@@ -1465,6 +1520,8 @@ def apply_components(directory, runtime, proxy):
                     # Interpreter argv[0] may be a PATH alias; options are unsupported.
                     if len(argv) != 2 or argv[1] != str(directory / 'shim/shim.py'):
                         raise ApplyError('unsupported_shim_arguments')
+                if kind == 'sshd' and proxy._ssh_config_operand(argv) != str(directory / 'sshd/sshd_config'):
+                    raise ApplyError('unsupported_sshd_arguments')
                 matches[kind].append(identity)
     if any(len(value) != 1 for value in matches.values()): raise ApplyError('ambiguous_component_identity')
     result = {key: value[0] for key, value in matches.items()}
@@ -1474,9 +1531,10 @@ def apply_components(directory, runtime, proxy):
             or any(arg == '--state' or arg.startswith('--state=') for arg in daemon['argv'][1:])):
         raise ApplyError('unexpected_daemon_state_directory')
     result['_socket'] = proxy._socket_identity(runtime)
+    result['_ssh'] = ssh
     result['tailscaled'] = apply_identity(daemon['pid'])
     if not result['tailscaled']: raise ApplyError('daemon_exited')
-    for name, port in (('shim', 18089), ('sshd', 22)):
+    for name, port in (('shim', 18089), ('sshd', ssh['port'])):
         if not proxy._listener_owned(result[name], port): raise ApplyError('listener_identity_unknown')
     return result
 
@@ -1580,6 +1638,7 @@ def apply_candidate(child, baseline):
 
 def apply_ready(directory, runtime, proxy, baseline, candidate, public, config, host_public, timeout=30):
     if candidate['exe'] != baseline['shim']['exe']: raise ApplyError('candidate_executable_changed')
+    ssh_port = ssh_unchanged(directory, runtime, proxy, baseline)
     deadline = time.monotonic() + timeout
     def remaining():
         budget = deadline - time.monotonic()
@@ -1596,9 +1655,11 @@ def apply_ready(directory, runtime, proxy, baseline, candidate, public, config, 
             if proxy.inspect_config(directory, runtime) != config: raise ApplyError('proxy_configuration_changed')
             if bounded_code_read(directory, 'sshd/ssh_host_ed25519_key.pub', 16384) != host_public: raise ApplyError('host_public_key_changed')
             if not proxy._listener_owned(candidate, 18089): raise ApplyError('shim_listener_not_ready')
-            with socket.create_connection(('127.0.0.1', 22), timeout=min(2, remaining())) as connection:
+            if not proxy._listener_owned(baseline['sshd'], ssh_port): raise ApplyError('ssh_not_ready')
+            with socket.create_connection(('127.0.0.1', ssh_port), timeout=min(2, remaining())) as connection:
                 connection.settimeout(min(2, remaining()))
                 if not connection.recv(256).startswith(b'SSH-'): raise ApplyError('ssh_not_ready')
+            ssh_unchanged(directory, runtime, proxy, baseline)
             remaining()
             return
         except ApplyError as error:
@@ -1629,6 +1690,9 @@ def apply_transaction(directory, runtime, transaction, journal, proxy):
                 or receipt.get('manifest_sha256') != hashlib.sha256(candidate_payload[MANIFEST]).hexdigest()):
             raise ApplyError('provenance_staged_manifest_mismatch')
     apply_syntax(candidate_payload)
+    ssh = ssh_contract(directory, runtime, proxy)
+    ssh_candidate_contract(candidate_payload, ssh['port'])
+    if journal.get('ssh_configuration', ssh) != ssh: raise ApplyError('ssh_configuration_changed')
     operation = journal.get('operation', 'update')
     if type(operation) is not str or operation not in ('update', 'migrate_baseline'):
         raise ApplyError('invalid_baseline_migration')
@@ -1642,6 +1706,8 @@ def apply_transaction(directory, runtime, transaction, journal, proxy):
                 raise ApplyError('baseline_migration_source_changed')
     baseline = apply_baseline_guard(old, candidate_payload, directory, runtime, proxy, migration)
     if baseline is None: baseline = apply_components(directory, runtime, proxy)
+    if baseline.get('_ssh', ssh) != ssh: raise ApplyError('ssh_configuration_changed')
+    baseline['_ssh'] = ssh
     apply_interpreter(baseline['shim'])
     environment = apply_environment(baseline['shim'])
     public = apply_public_identity(directory, runtime)
@@ -1654,12 +1720,14 @@ def apply_transaction(directory, runtime, transaction, journal, proxy):
     if migration and apply_baseline_guard(old, candidate_payload, directory, runtime, proxy, True) != baseline:
         raise ApplyError('baseline_migration_daemon_changed')
     # The shim is long lived; discard output rather than leave an unbounded log.
+    ssh_unchanged(directory, runtime, proxy, baseline)
     logfd = os.open(os.devnull, os.O_WRONLY)
     child = None; candidate = None; stopped = False; mutation = False
     try:
         apply_journal(transaction, journal, phase='stop_old_shim', destructive=True, baseline=baseline)
         apply_stop(baseline['shim']); stopped = True
         apply_journal(transaction, journal, phase='replace_intent')
+        ssh_unchanged(directory, runtime, proxy, baseline)
         mutation = True
         apply_replace(directory, candidate_payload, transaction, journal, 'replace')
         apply_journal(transaction, journal, phase='launch_candidate')
@@ -1773,6 +1841,8 @@ def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, prox
             allow_unsigned_legacy=allow_unsigned_legacy,
             forbidden_directories=tuple(path for path in (directory, bundle) if path is not None))
         apply_syntax(payload)
+        ssh = ssh_contract(directory, runtime, proxy)
+        ssh_candidate_contract(payload, ssh['port'])
         if migrate_baseline and (caller_layout != 'source' or trusted != payload):
             raise ApplyError('baseline_migration_candidate_mismatch')
         apply_baseline_guard(baseline, payload, directory, runtime, proxy, migrate_baseline)
@@ -1781,7 +1851,7 @@ def _update_apply(directory, runtime, tag=None, bundle=None, confirm=False, prox
         context['transaction_id'] = identifier
         journal = {'schema': 1, 'state': 'prepared', 'boot_id': apply_boot(), 'selection': 'local_bundle' if bundle else tag,
                    'external_ssh': 'pending', 'checksum_trust': 'consistency_only_not_publisher_authentication',
-                   'provenance': provenance}
+                   'provenance': provenance, 'ssh_configuration': ssh}
         if tag and release.get('backoff_storage_warning'):
             journal['warning'] = 'backoff_storage_unavailable'
         if automatic is not None:
@@ -2181,6 +2251,8 @@ def runtime_pair_integrity(directory, hashes):
 
 
 def runtime_ready(directory, runtime, proxy, child, baseline, public, config, hostkey, version):
+    ssh_port = ssh_unchanged(directory, runtime, proxy, baseline)
+    if not proxy._listener_owned(baseline['sshd'], ssh_port): raise RuntimeUpdateError('preserved_component_changed')
     proxy._ready(directory,runtime,config['desired'],child)
     for name in ('shim','sshd'):
         if apply_identity(baseline[name]['pid'])!=baseline[name]:raise RuntimeUpdateError('preserved_component_changed')
@@ -2198,7 +2270,9 @@ def runtime_transaction(directory, runtime, transaction, journal, proxy, commit_
         try:os.lstat(directory/name)
         except FileNotFoundError:pass
         else:raise RuntimeUpdateError('staging_conflict')
-    baseline=apply_components(directory,runtime,proxy);old=proxy._daemon(directory,runtime)
+    baseline=apply_components(directory,runtime,proxy)
+    baseline.setdefault('_ssh', ssh_contract(directory,runtime,proxy))
+    old=proxy._daemon(directory,runtime)
     if not old or not proxy._socket_owned(old,runtime):raise RuntimeUpdateError('baseline_unavailable')
     if [a for a in old['argv'][1:] if a.startswith('--tun')]!=['--tun=userspace-networking']:raise RuntimeUpdateError('baseline_unavailable')
     environment=proxy._environment(old,directory);public=apply_public_identity(directory,runtime)
@@ -2229,6 +2303,7 @@ def runtime_transaction(directory, runtime, transaction, journal, proxy, commit_
             raise RuntimeUpdateError('source_changed')
     apply_journal(transaction,journal,baseline_version=before_version,
         baseline_binary_hashes={name:hashlib.sha256(body).hexdigest() for name,body in backup_bytes.items()})
+    ssh_unchanged(directory,runtime,proxy,baseline)
     with runtime_daemon_log(runtime) as log_fd:
         runtime_fence(directory,journal)
         stopped=False;exec_intent=False;child=None
@@ -2715,6 +2790,11 @@ def doctor(directory, runtime, target=None):
             checks["target_tcp"] = "unavailable"
     try:
         import dots_proxy
+        try:
+            ssh = ssh_contract(directory, runtime, dots_proxy)
+            checks['ssh'] = {'port': ssh['port'], 'bind': '127.0.0.1', 'status': 'configuration_verified', 'origin': ssh.get('origin', 'legacy')}
+        except ApplyError:
+            checks['ssh'] = {'port': None, 'status': 'invalid_configuration'}
         proxy = dots_proxy.inspect_config(directory, runtime)
         checks["proxy"] = {}
         for key in ("desired", "running"):
@@ -2733,6 +2813,7 @@ def doctor(directory, runtime, target=None):
                  or "not_running" in checks["processes"].values()
                  or checks["backend"] in ("needs_login", "no_state", "stopped", "needs_approval", "unavailable", "timeout", "invalid_response")
                  or checks["state"] in ("missing", "empty", "unsafe_symlink", "not_regular")
+                 or checks.get('ssh', {}).get('status') == 'invalid_configuration'
                  or checks["target_tcp"] in ("failed", "timeout", "unavailable", "invalid_response"))
     context_restricted = any(item["filesystem"] == "read_only" or item["readable"] == "denied"
                              or item["writable"] == "denied" or item["visibility"] != "present"
@@ -3312,11 +3393,13 @@ def recovery_probe(directory, runtime, managed_state=None):
     if sock == 'missing':
         return {'state': 'unknown', 'backend': backend, 'ssh': 'unknown'}
     try:
-        with socket.create_connection(('127.0.0.1', 22), timeout=2) as connection:
+        import dots_proxy
+        ssh_port = ssh_contract(directory, runtime, dots_proxy)['port']
+        with socket.create_connection(('127.0.0.1', ssh_port), timeout=2) as connection:
             banner = connection.recv(256)
         if not banner.startswith(b'SSH-2.0-'):
             raise OSError()
-    except OSError:
+    except (OSError, ApplyError, ImportError):
         return {'state': 'unknown', 'backend': backend, 'ssh': 'unavailable'}
     return {'state': 'healthy', 'backend': backend, 'ssh': 'banner_ready'}
 

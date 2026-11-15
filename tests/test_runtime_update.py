@@ -271,7 +271,7 @@ class RuntimeTransactionTests(unittest.TestCase):
         self.config={'restart_required':False,'daemon_running':True,'desired':{'socks_port':1080,'http_port':None}}
         self.argv=[str(self.directory/'tailscaled'),'--tun=userspace-networking','--statedir='+str(self.directory/'state'),
                    '--socket='+str(self.runtime/'tailscaled.sock'),'--port=0','--socks5-server=127.0.0.1:1080']
-        self.proxy=mock.Mock();self.proxy._daemon.return_value={'argv':self.argv};self.proxy._socket_owned.return_value=True
+        self.proxy=mock.Mock();self.proxy.ssh_port_info.return_value={'port':22};self.proxy._daemon.return_value={'argv':self.argv};self.proxy._socket_owned.return_value=True;self.proxy._listener_owned.return_value=True
         self.proxy._environment.return_value={'FIXTURE':'private environment not exposed'}
         self.proxy.inspect_config.return_value=self.config;self.proxy._flags.return_value=self.argv[-1:]
         self.child=mock.Mock(pid=201);self.proxy._launch.return_value=self.child
@@ -289,6 +289,21 @@ class RuntimeTransactionTests(unittest.TestCase):
         for name,expected in self.protected.items():
             p=self.directory/name;self.assertEqual((p.stat().st_ino,p.read_bytes()),expected,name)
     def pair(self):return {n:(self.directory/n).read_bytes() for n in self.old}
+
+    def test_ssh_drift_before_daemon_stop_never_creates_a_runtime_fence(self):
+        self.proxy.ssh_port_info.side_effect=[{'port':22},{'port':2222}]
+        with self.assertRaisesRegex(tool.ApplyError,'ssh_configuration_changed'):
+            self.run_transaction()
+        self.stop.assert_not_called();self.proxy._launch.assert_not_called()
+        self.assertFalse((self.directory/tool.RUNTIME_FENCE).exists())
+        self.assertEqual(self.pair(),self.old);self.assert_preserved()
+
+    def test_nondefault_ssh_port_is_preserved_during_runtime_update(self):
+        self.proxy.ssh_port_info.return_value = {'port':2222}
+        self.run_transaction()
+        self.assertEqual(self.journal['state'],'applied')
+        self.proxy._listener_owned.assert_any_call(self.baseline['sshd'],2222)
+        self.assert_preserved()
 
     def test_success_updates_pair_only_retains_node_ssh_proxy_and_no_external_success(self):
         self.run_transaction();self.assertEqual(self.journal['state'],'applied');self.assertEqual(self.pair(),self.new)
@@ -860,7 +875,7 @@ class RuntimeApplyWorkerTests(unittest.TestCase):
         proxy.__file__=str(tx/'supervisor'/'dots_proxy.py')
         # Real _operation owns and releases a real flock/file descriptor. Only
         # daemon/network operations below are mocked, never a live process.
-        for name in ('_daemon','_socket_owned','_environment','inspect_config','_flags','_remove_socket','_launch','_ready','_socket_identity'):
+        for name in ('_daemon','_socket_owned','_environment','inspect_config','_flags','_remove_socket','_launch','_ready','_socket_identity','ssh_port_info','_listener_owned'):
             setattr(proxy,name,getattr(self.proxy,name))
         actual_open=os.open;actual_close=os.close;actual_write=tool.apply_write
         lock_fds=set();fault=[];replacement_fault=[]

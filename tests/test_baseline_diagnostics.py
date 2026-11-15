@@ -62,7 +62,7 @@ class BaselineDiagnosticTests(unittest.TestCase):
             path = self.directory / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture")
-        proxy = types.SimpleNamespace(inspect_config=lambda d, r: {"desired": {}, "running": {},
+        proxy = types.SimpleNamespace(ssh_port_info=lambda d, r: {"port": 22}, inspect_config=lambda d, r: {"desired": {}, "running": {},
                                                                  "restart_required": False, "daemon_running": True})
         result = types.SimpleNamespace(returncode=0, stdout=json.dumps(status or {
             "BackendState": "Running", "Version": "1.104.4-t27047635f"}).encode())
