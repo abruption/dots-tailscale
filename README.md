@@ -4,22 +4,25 @@
 
 <p align="center">English · <a href="README.ko.md">한국어</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a></p>
 
-**Proxy compatibility fix:** v0.9.1 makes both uppercase and lowercase daemon proxy variables use the local shim. Existing conflicting daemons need a separate controlled restart; a package update alone does not change their environment. See [diagnosis and recovery](docs/proxy-environment.md). Run v0.9.1 examples only after its artifacts are published and verified.
+**Proxy compatibility fix:** v0.9.1 makes both uppercase and lowercase daemon proxy variables use the local shim. Existing conflicting daemons need a separate controlled restart; a package update alone does not change their environment. See [diagnosis and recovery](docs/proxy-environment.md). Run v0.10.0 examples only after its artifacts are published and verified.
 
 Use Tailscale and SSH to reach your Dots cloud computer from your own devices. dots-tailscale installs the tools without root or systemd and keeps the installation, Tailscale node state and SSH identity under `/workspace` so you can reuse them when that directory survives an environment change.
 
-**This guide covers [v0.9.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.9.1); check the release page for published artifacts before installing.** It includes the v0.7.1 security fix that validates CONNECT hosts before certificate generation ([GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)); v0.7.0 and earlier are affected. New installations use Tailscale 1.104.4. This is an independent project, not an official OpenAI or Tailscale tool.
+**This guide covers [v0.10.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.10.0); check the release page for published artifacts before installing.** It includes the v0.7.1 security fix that validates CONNECT hosts before certificate generation ([GHSA-84m8-25vr-f74m](https://github.com/abruption/dots-tailscale/security/advisories/GHSA-84m8-25vr-f74m)); v0.7.0 and earlier are affected. New installations use Tailscale 1.104.4. This is an independent project, not an official OpenAI or Tailscale tool.
 
-**Run the pinned examples only after the v0.9.1 release artifacts are published and independently verified. A tag alone is not a published release.**
+**Run the pinned examples only after the v0.10.0 release artifacts are published and independently verified. A tag alone is not a published release.**
 
 **Upgrading from v0.6.0 or an older baseline:** packages declaring Tailscale 1.102.4 need the [explicit security-baseline migration](docs/security-baseline.md), after a separate runtime upgrade. Ordinary `update apply` keeps its cross-baseline guard.
 
-## v0.9.1 features
+**First upgrade from v0.9.1 or older:** complete the [verified candidate SSH precheck](docs/usage.md#new-install-ssh-port) before using the old updater, including for port 22. Unsupported custom SSH configurations may be refused. Keep configuration unchanged and hold old automatic source updates during the transition.
 
-The installation examples below pin **v0.9.1**. Automatic updates and recovery runners remain opt-in; ordinary installation does not register a startup hook or recovery task.
+## v0.10.0 features
+
+The installation examples below pin **v0.10.0**. Automatic updates and recovery runners remain opt-in; ordinary installation does not register a startup hook or recovery task.
 
 | Feature | What to expect |
 |---|---|
+| New-install SSH port | Choose a port such as 2222 with `DOTS_TS_SSH_PORT` during a new install; the default remains 22. Existing-port migration is not supported. See [port selection](docs/usage.md#new-install-ssh-port). |
 | Runtime baseline diagnostics | `version` and `doctor` compare the declared baseline with separately observed versions. A healthy connection or matching baseline is not a security verdict. |
 | Stronger package-update verification | Targets from v0.8.0 onward require release provenance, a preinstalled trusted `gh` and an independently prepared trust root. Older unsigned targets need explicit manual review; automatic updates cannot use that exception. |
 | Offline release inspection | `update check --bundle` compares a reviewed local bundle without changing the installation. It does not establish fresh publication or publisher identity. |
@@ -28,7 +31,7 @@ The installation examples below pin **v0.9.1**. Automatic updates and recovery r
 
 The local recovery ledger is shared only after the older watchdog is stopped and **both** local and external actors use the coordinated entry point. Existing production tasks that call `start.sh` directly still follow the legacy path. The MCP route remains an advanced preview: a second real account has **not** completed setup/recovery reproduction, so this is not a claim of general automatic-recovery support.
 
-Read the [v0.9.1 usage notes](docs/usage.md#development-v091), [automatic updates](docs/automatic-updates.md), [release provenance](docs/release-provenance.md), [coordinated recovery](docs/recovery-lifecycle.md) and [preview readiness](docs/recovery-support-readiness.md) before opting in.
+Read the [v0.10.0 usage notes](docs/usage.md#development-v0100), [automatic updates](docs/automatic-updates.md), [release provenance](docs/release-provenance.md), [coordinated recovery](docs/recovery-lifecycle.md) and [preview readiness](docs/recovery-support-readiness.md) before opting in.
 
 In v0.9.0, the experimental broker adds [bounded follow-ups for acknowledged but unclaimed events](research/mcp-events/recovery-followups.md) and [aggregate recovery-budget diagnostics and operator warnings](research/mcp-events/recovery-budget-observability.md). Follow-ups and operator warnings are disabled by default and require separate broker/monitor deployment and configuration; installing this package does not enable them. The baseline diagnostic also recognizes official stable `-t…-g…` backend versions. Reminders do not grant execution or guarantee recovery after VM replacement.
 
@@ -51,7 +54,7 @@ For a **new installation**, use the Dots cloud terminal. You need Linux x86_64, 
 ```bash
 cd /workspace
 HTTPS_PROXY=http://browser-proxy:8889 HTTP_PROXY=http://browser-proxy:8889 \
-  git clone --branch v0.9.1 --depth 1 https://github.com/abruption/dots-tailscale.git
+  git clone --branch v0.10.0 --depth 1 https://github.com/abruption/dots-tailscale.git
 cd dots-tailscale
 bash tailscale-setup.sh check
 bash tailscale-setup.sh install
@@ -81,12 +84,12 @@ First check the installed package and available package release:
 
 ```bash
 /workspace/.dots-tailscale/dots-ts version
-/workspace/.dots-tailscale/dots-ts update check --tag v0.9.1 --proxy http://browser-proxy:8889 --json
+/workspace/.dots-tailscale/dots-ts update check --tag v0.10.0 --proxy http://browser-proxy:8889 --json
 ```
 
 For the first upgrade from a pre-v0.8.0 updater, follow the [independently verified bootstrap](docs/release-provenance.md): authenticate the original manifest and all four sources before executing a candidate helper. Matching hashes alone do not authenticate the publisher.
 
-v0.7.0 packages declare the same Tailscale baseline and reach v0.7.1 through the ordinary [package update](docs/usage.md#update-management); applying it restarts the shim with the fix. Existing packages declaring Tailscale 1.102.4, including v0.6.0, must follow the [security-baseline migration](docs/security-baseline.md) to reach v0.7.1. If your installed tools predate v0.6.0, first use the [package update instructions](docs/usage.md#update-management) to obtain v0.6.0 on the same baseline. Older installations without trusted metadata need the manual review procedure. These legacy steps establish the baseline; use the verified bootstrap above for the transition to v0.9.1.
+v0.7.0 packages declare the same Tailscale baseline and reach v0.7.1 through the ordinary [package update](docs/usage.md#update-management); applying it restarts the shim with the fix. Existing packages declaring Tailscale 1.102.4, including v0.6.0, must follow the [security-baseline migration](docs/security-baseline.md) to reach v0.7.1. If your installed tools predate v0.6.0, first use the [package update instructions](docs/usage.md#update-management) to obtain v0.6.0 on the same baseline. Older installations without trusted metadata need the manual review procedure. These legacy steps establish the baseline; use the verified bootstrap above for the transition to v0.10.0.
 
 Once v0.6.0 or later tools are installed, check the official stable Tailscale version:
 
@@ -94,7 +97,7 @@ Once v0.6.0 or later tools are installed, check the official stable Tailscale ve
 /workspace/.dots-tailscale/dots-ts runtime check --json
 ```
 
-**New v0.9.1 installations start with Tailscale 1.104.4.** Existing binaries are not silently replaced by a package update or `install`. To change them, review the reported version and upstream advisories, then follow the [manual runtime update guide](docs/runtime-updates.md). The baseline migration requires both installed binaries and the running backend to be exactly 1.104.4 before the source package changes.
+**New v0.10.0 installations start with Tailscale 1.104.4.** Existing binaries are not silently replaced by a package update or `install`. To change them, review the reported version and upstream advisories, then follow the [manual runtime update guide](docs/runtime-updates.md). The baseline migration requires both installed binaries and the running backend to be exactly 1.104.4 before the source package changes.
 
 Before applying an update, verify an independent cloud recovery terminal is usable. For runtime updates, pause external recovery jobs and resume them after fresh SSH/ping checks. Once execution of a candidate daemon has been attempted, even a failed startup does not permit automatic downgrade: uncertain failures require the guide's manual recovery procedure. Package code rollback and Tailscale state compatibility are different things.
 
@@ -135,7 +138,7 @@ The current experiment requires external server/SSO setup. Event processing can 
 
 - [Usage and troubleshooting](docs/usage.md) · [Manual Tailscale updates](docs/runtime-updates.md)
 - [Private HTTPS API example](docs/private-http-api.md) · [Experimental recovery](docs/experimental-recovery.md)
-- [Release notes](docs/releases/v0.9.1.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
+- [Release notes](docs/releases/v0.10.0.md) · [Changelog](CHANGELOG.md) · [MIT License](LICENSE)
 
 | Path | Purpose |
 |---|---|
