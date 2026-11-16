@@ -135,9 +135,13 @@ v0.7.0 软件包声明相同的 Tailscale 基线，可通过普通[软件包更�
 
 ## 外部恢复实验
 
-具备外部服务运维条件的用户，可以了解[通过 Dots 执行外部恢复的实验（英文）](docs/experimental-recovery.md)。它结合外部监控、带认证的 MCP Events 服务器和已获授权的 Dots 任务，在连接故障后请求执行启动命令。普通安装程序不会部署这些服务，也不会启用恢复任务。
+在 v0.10.0 中，本地 watchdog／恢复协调和软件包自动更新默认关闭，需要明确启用。[外部恢复实验（英文）](docs/experimental-recovery.md)需要单独配置。普通安装不会部署外部监控或 MCP Events 服务器，也不会连接 ChatGPT 应用或注册并授权 Dots 恢复任务。
 
-当前实验需要外部服务器和 SSO 设置。事件处理可能延迟，其他账号的设置复现和任意 VM 替换后的恢复仍未验证。watchdog 协调和可选自动更新已在 v0.8.0 中实现，但 v0.7.1 和普通安装都不会启用它们。请同时查看上方的预览准备条件。
+外部恢复路径需要运维者管理的服务器和 SSO 配置。事件处理可能延迟，其他账号的设置复现和任意 VM 替换后的恢复仍未验证。支持范围与运行环境生命周期的研究继续由现有 [#45](https://github.com/abruption/dots-tailscale/issues/45) 和 [#20](https://github.com/abruption/dots-tailscale/issues/20) 跟踪。
+
+[v0.10.0 验证记录（英文）](docs/validation/ssh-port-new-install-20261115.md)仅涵盖隔离测试环境中的检查，不能证明实际使用中的 VM 的恢复成功或真实 tailnet 的可达性。剩余验证范围请参阅[预览准备条件（英文）](docs/recovery-support-readiness.md)。
+
+从版本历史来看，[v0.8.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.8.0) 引入了 watchdog 协调和可选自动更新，而 [v0.7.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.1) 早于这些功能。这些是历史发布说明，不是当前功能的启用步骤。
 
 ## 文档与项目文件
 

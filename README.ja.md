@@ -135,9 +135,13 @@ v0.6.0 以降のツールを導入したら、Tailscale の公式安定版を確
 
 ## 外部からの復旧実験
 
-外部サービスを運用できる方は、[Dots を使った外部からの復旧実験（英語）](docs/experimental-recovery.md)を確認できます。外部監視、認証付き MCP Events サーバー、許可済みの Dots タスクを使い、接続障害の後に起動コマンドの実行を依頼します。通常のインストーラーは、この基盤を配備したり復旧タスクを有効にしたりしません。
+v0.10.0 では、ローカル watchdog・復旧の連携とパッケージの自動更新は既定では無効であり、明示的な有効化が必要です。[外部からの復旧実験（英語）](docs/experimental-recovery.md)は別途構成します。通常のインストールでは、外部監視や MCP Events サーバーの配備、ChatGPT アプリの接続、Dots 復旧タスクの登録・承認は行いません。
 
-現在の実験には外部サーバーと SSO 設定が必要です。イベント処理は遅延することがあり、別アカウントでの再現や任意の VM 交換後の復旧は未検証です。watchdog との連携とオプトイン自動更新は v0.8.0 に実装されていますが、v0.7.1 や通常のインストールで有効になる機能ではありません。上記のプレビュー公開条件も確認してください。
+外部からの復旧には、運用者が管理するサーバーと SSO 設定が必要です。イベント処理は遅れることがあり、別アカウントでの設定再現や任意の VM 交換後の復旧は未検証です。対応範囲と実行環境のライフサイクルの調査は、既存の [#45](https://github.com/abruption/dots-tailscale/issues/45) と [#20](https://github.com/abruption/dots-tailscale/issues/20) で継続します。
+
+[v0.10.0 の検証記録（英語）](docs/validation/ssh-port-new-install-20261115.md)は、隔離したフィクスチャでの検査を扱っています。運用 VM の復旧成功や実 tailnet での到達性を証明するものではありません。残る検証範囲は[プレビュー公開条件（英語）](docs/recovery-support-readiness.md)を確認してください。
+
+過去のリリースでは、[v0.8.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.8.0) で watchdog との連携とオプトイン自動更新を導入しました。[v0.7.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.1) は、それ以前のバージョンです。これはリリース履歴であり、現在の有効化手順ではありません。
 
 ## ドキュメントと構成ファイル
 
