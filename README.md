@@ -135,9 +135,13 @@ This maintainer-provided screenshot is a historical installation/status check, n
 
 ## Experimental external recovery
 
-Advanced users can explore [Dots-assisted external recovery](docs/experimental-recovery.md). It uses an external monitor, an authenticated MCP Events server and an authorized Dots task to request a start command after a connection failure. The normal installer does not deploy this infrastructure or enable a recovery task.
+In v0.10.0, local watchdog/recovery coordination and automatic package updates are off by default and require explicit opt-in. The [external recovery experiment](docs/experimental-recovery.md) is a separate setup: ordinary installation does not deploy an external monitor or MCP Events server, link a ChatGPT app, or register and authorize a Dots recovery task.
 
-The current experiment requires external server/SSO setup. Event processing can be delayed; setup on another account and recovery after arbitrary VM replacement remain unverified. Watchdog coordination and opt-in automatic updates are implemented in v0.8.0, but are not enabled by v0.7.1 or by ordinary installation. See the preview readiness gates above.
+The external route requires an operator-managed server and SSO setup. Events may be processed late; setup on another account and recovery after arbitrary VM replacement remain unverified. These support and execution-environment lifecycle questions remain in [#45](https://github.com/abruption/dots-tailscale/issues/45) and [#20](https://github.com/abruption/dots-tailscale/issues/20).
+
+The [v0.10.0 validation report](docs/validation/ssh-port-new-install-20261115.md) covers isolated fixtures. It does not establish successful recovery of an operating VM or live tailnet reachability. See the [preview readiness gates](docs/recovery-support-readiness.md) for the remaining scope.
+
+Historical context: [v0.8.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.8.0) introduced watchdog coordination and opt-in automatic updates; [v0.7.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.1) predates those additions. These are release-history references, not the current activation instructions.
 
 ## Documentation and project files
 

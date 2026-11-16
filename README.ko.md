@@ -122,7 +122,7 @@ v0.6.0 이상 도구가 설치됐다면 공식 Tailscale 안정 버전을 확인
 
 ## 검증한 범위
 
-- [v0.10.0 태그 커밋의 CI](https://github.com/abruption/dots-tailscale/actions/runs/43715115507)에서 Linux Python 3.11·3.13 각각 601개 테스트를 통과했습니다. [2026-11-15 검증 기록](docs/validation/ssh-port-new-install-20261115.md)은 22·2222번 포트의 설치·시작·doctor·업데이트, 실패 처리와 기기·SSH 정보 유지을 격리 환경에서 확인한 결과입니다. 실제 tailnet 시험이 아니며, 선택한 포트로 외부에서 접속할 수 있음을 입증하지도 않습니다.
+- [v0.10.0 태그 커밋의 CI](https://github.com/abruption/dots-tailscale/actions/runs/43715115507)에서 Linux Python 3.11·3.13 각각 601개 테스트를 통과했습니다. [2026-11-15 검증 기록](docs/validation/ssh-port-new-install-20261115.md)은 22·2222번 포트의 설치·시작·doctor·업데이트, 실패 처리와 기기·SSH 정보 유지를 격리 환경에서 확인한 결과입니다. 실제 tailnet 시험이 아니며, 선택한 포트로 외부에서 접속할 수 있음을 입증하지도 않습니다.
 - [실제 Dots 시험](docs/validation/runtime-update-trial-20261026.md)에서 검토한 개발 패키지로 Tailscale 1.102.4를 1.104.2로 업데이트했습니다. 기존 기기 정보와 SSH 키를 유지했고, 이후 새 외부 SSH 연결과 릴레이 ping도 확인했습니다.
 - [v0.6.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)에는 최종 커밋의 기본·연구 테스트와 격리된 환경에서 수행한 공식 실행 파일 검증 기록이 있습니다. 앞으로 나올 모든 버전과의 호환성이나 실환경 장애 복구, 이전 버전으로 되돌릴 때의 상태 호환성을 입증한 것은 아닙니다.
 - [v0.7.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)에는 격리된 신규 설치·소스 전환 테스트가 추가됐습니다. 이후 [2026-10-28 실환경 소스 전환 시험](docs/validation/v0.7.0-migration-trial-20261028.md)에서 기존 설치 한 건의 패키지를 0.6.0에서 0.7.0으로 옮겼습니다. 이미 설치된 Tailscale 1.104.4 실행 환경과 기기·SSH 정보를 유지했고, 전환 후 엄격한 호스트 키 검증을 적용한 새 SSH 연결과 릴레이 ping이 성공했습니다. 신규 설치, 다른 계정, 실환경 장애 주입, 중단된 작업 복구, VM 교체, 실행 상태의 하위 버전 전환이나 앞으로의 모든 버전을 검증한 것은 아닙니다. [공개 전 기본 버전·TLS 점검](docs/validation/security-baseline-20261028.md)은 별도의 과거 기록입니다.
@@ -135,9 +135,13 @@ v0.6.0 이상 도구가 설치됐다면 공식 Tailscale 안정 버전을 확인
 
 ## 외부 연결 복구 실험
 
-고급 설정이 필요하다면 [Dots를 통한 외부 복구 실험](docs/experimental-recovery.ko.md)을 살펴보세요. 외부 감시 도구, 인증을 거치는 MCP Events 서버, 사용자가 허용한 Dots 작업으로 연결 장애 후 시작 명령 실행을 요청하는 방식입니다. 일반 설치 과정에서 이 구성을 배포하거나 복구 작업을 켜지는 않습니다.
+v0.10.0에서는 로컬 watchdog·복구 조정과 패키지 자동 업데이트는 기본적으로 꺼져 있으며, 명시적으로 활성화해야 합니다. [외부 복구 실험](docs/experimental-recovery.ko.md)은 별도 구성이 필요합니다. 일반 설치는 외부 감시 도구나 MCP Events 서버를 배포하거나, ChatGPT 앱을 연결하거나, Dots 복구 작업을 등록·승인하지 않습니다.
 
-현재 실험에는 외부 서버와 SSO 설정이 필요합니다. 이벤트 처리가 지연될 수 있고, 다른 계정에서의 설정 재현이나 임의의 VM 교체 후 복구는 아직 검증하지 않았습니다. watchdog과 외부 복구 조정, 선택적 자동 업데이트는 v0.8.0에 구현돼 있지만 v0.7.1이나 일반 설치가 켜주는 기능은 아닙니다. 위의 실험 지원 조건을 함께 확인하세요.
+외부 복구 경로에는 운영자가 관리하는 서버와 SSO 설정이 필요합니다. 이벤트 처리가 지연될 수 있고, 다른 계정에서의 설정 재현이나 임의의 VM 교체 후 복구는 아직 검증하지 않았습니다. 지원 범위와 실행 환경 수명 주기에 관한 조사는 기존 [#45](https://github.com/abruption/dots-tailscale/issues/45)와 [#20](https://github.com/abruption/dots-tailscale/issues/20)에서 이어갑니다.
+
+[v0.10.0 검증 기록](docs/validation/ssh-port-new-install-20261115.md)은 격리된 모의 환경의 검사 결과입니다. 운영 VM의 복구 성공이나 실제 tailnet에서의 접속 가능성을 입증하지는 않습니다. 남은 검증 범위는 [실험 지원 조건(영문)](docs/recovery-support-readiness.md)을 확인하세요.
+
+버전 이력으로 보면 [v0.8.0](https://github.com/abruption/dots-tailscale/releases/tag/v0.8.0)에서 watchdog 조정과 선택적 자동 업데이트를 도입했으며, [v0.7.1](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.1)은 그 이전 버전입니다. 이 내용은 과거 릴리스 설명이며, 현재 기능을 켜는 절차를 뜻하지 않습니다.
 
 ## 문서와 구성 파일
 
