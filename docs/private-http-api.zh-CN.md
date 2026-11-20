@@ -151,6 +151,6 @@ HTTP 401 表示 HTTP 服务器已作出响应，不代表网络策略拒绝了�
 
 ## 验证状态
 
-2026-10-18（KST）的实时检查确认了原生 SOCKS5 和 HTTP 代理流量、关闭两个监听器，以及通过 SSH 严格主机密钥验证后重新连接。两个代理共完成十项 HTTPS 检查，全部通过：有效身份验证（`200`）、缺少令牌和错误令牌（`401`）、禁止访问的端点（`403`）以及不受信任的 CA（TLS 失败）。另一次“修改前/阻止后/恢复后”检查确认 tailnet 策略拒绝生效；随后恢复了原策略。临时 API 服务器和凭据均已删除。查看[代理结果](https://github.com/abruption/dots-tailscale/pull/24#issuecomment-6243157252)、[策略结果](https://github.com/abruption/dots-tailscale/pull/24#issuecomment-6243247818)和 [HTTPS 结果](https://github.com/abruption/dots-tailscale/pull/24#issuecomment-6243275452)。
+2026-10-18（KST）的实环境检查确认了原生 SOCKS5 和 HTTP 代理流量、两个监听器的关闭，以及通过严格 SSH 主机密钥验证后的重新连接。两个代理共完成十项 HTTPS 检查，全部通过：有效身份验证（`200`）、缺少令牌和错误令牌（`401`）、禁止访问的端点（`403`）以及不受信任的 CA（TLS 失败）。另一次“修改前/阻止后/恢复后”检查确认 tailnet 策略拒绝生效，随后恢复了原策略。临时 API 服务器和凭据均已删除。查看[代理结果](https://github.com/abruption/dots-tailscale/pull/24#issuecomment-6243157252)、[策略结果](https://github.com/abruption/dots-tailscale/pull/24#issuecomment-6243247818)和 [HTTPS 结果](https://github.com/abruption/dots-tailscale/pull/24#issuecomment-6243275452)。
 
 这些检查不能证明系统能在 VM 自然替换后恢复，也不能证明会自动启动。在所比较的环境中，Dots 直接 Bash 看到的 `/workspace` 为只读，也看不到运行时套接字；GUI 终端和 SSH 则共享可写文件及正在运行的套接字。应用代理更改时，请使用独立的 GUI 终端；不要假设直接通过 agent 执行命令就能重启服务。生命周期研究仍在进行中，见 [#20](https://github.com/abruption/dots-tailscale/issues/20#issuecomment-6243404537)。

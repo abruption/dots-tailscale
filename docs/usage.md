@@ -285,7 +285,7 @@ The selected release must be published before applying it. Replace `TRANSACTION_
 /workspace/.dots-tailscale/dots-ts update apply --bundle /workspace/reviewed-bundle --provenance-root /workspace/trusted-tools/dots-ts/trusted-root.jsonl --confirm-recovery-terminal --json
 ```
 
-The v0.10.0 bundle must contain the four sources, their matching original manifest, `release-provenance.json` and `source-manifest.sigstore.json`. v0.8.0 enforces a stricter rule: targets from v0.8.0 onward require provenance, including for local selection; an unsigned development bundle is not an exception. Unsigned targets below v0.8.0 require manual `--allow-unsigned-legacy`. Hash consistency alone is not publisher authentication. See the [provenance and bootstrap guide](release-provenance.md).
+The v0.10.0 bundle must contain the four sources, their matching original manifest, `release-provenance.json` and `source-manifest.sigstore.json`. v0.8.0 enforces a stricter rule: targets from v0.8.0 onward require provenance even for local selection, and an unsigned development bundle is no exception. Unsigned targets below v0.8.0 require manual `--allow-unsigned-legacy`. Hash consistency alone does not authenticate the publisher. See the [provenance and bootstrap guide](release-provenance.md).
 
 `started` means the detached worker has accepted the operation, not that the update succeeded. Poll `update status` after reconnecting. Terminal outcomes distinguish `applied`, `failed_rolled_back`, and `rollback_failed_manual_required`. Local readiness and version verification do not prove external SSH access: after `applied` or a successful rollback, open a new SSH connection with strict host-key checking and test the intended connection separately.
 

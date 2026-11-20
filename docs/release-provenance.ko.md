@@ -47,7 +47,7 @@
   --confirm-recovery-terminal --json
 ```
 
-검토한 오프라인 소스 묶음에는 원본 소스 네 개, 원본 명세, `release-provenance.json`, `source-manifest.sigstore.json`이 있어야 합니다. `update apply --bundle /path/to/bundle`에도 같은 `--provenance-root`를 지정합니다. 로컬 묶음이면 GitHub 릴리스·API 요청을 하지 않지만, 독립적인 로컬 `gh`와 신뢰 루트는 필요합니다. 증거가 없거나 검증에 실패하거나, 워크플로·ref·커밋이 틀리거나, 검증기를 쓸 수 없으면 중단합니다. 해시만 확인하는 성공으로 되돌아가지 않으며, 임의의 `--repo`로 바꾸는 옵션도 없습니다.
+검토한 오프라인 소스 묶음에는 원본 소스 파일 네 개, 원본 명세, `release-provenance.json`, `source-manifest.sigstore.json`이 포함되어야 합니다. `update apply --bundle /path/to/bundle`에도 같은 `--provenance-root`를 지정합니다. 로컬 묶음을 사용하면 GitHub 릴리스나 API 요청을 보내지 않지만, 독립적인 로컬 `gh`와 신뢰 루트는 여전히 필요합니다. 증거가 없거나 검증에 실패하거나, 워크플로·ref·커밋이 일치하지 않거나, 검증기를 쓸 수 없으면 즉시 중단합니다. 해시만 확인하고 통과시키는 방식으로는 동작하지 않으며, 임의의 `--repo`로 대상을 바꾸는 옵션도 없습니다.
 
 서명 없는 **v0.8.0 미만** 대상에는 명시적인 수동 검토가 필요합니다.
 

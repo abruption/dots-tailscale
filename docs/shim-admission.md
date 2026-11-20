@@ -53,8 +53,9 @@ validation and the upstream platform proxy's policy. Loopback binding is neither
 proxy authentication nor proof that the peer is restricted to slot occupancy.
 
 The regression suite uses isolated socket pairs and controlled startup failures
-to verify rejection without new threads, capacity reuse, socket cleanup, joining
-workers/timers even when startup raises after the thread began, and normal raw
-and multiple WebSocket streams that remain usable after setup deadlines (with
-TLS explicitly replaced by a fixture). These checks do not establish behavior
-under a live Dots outage, a VM replacement, or a production load test.
+to verify that rejected connections spawn no new threads, capacity is reused,
+sockets are cleaned up, and workers and timers are joined even when startup
+raises after a thread starts. It also verifies that raw and multiple WebSocket
+streams remain usable after setup deadlines, with TLS replaced by a fixture.
+These checks do not establish behavior during a live Dots outage, a VM
+replacement, or a production load test.

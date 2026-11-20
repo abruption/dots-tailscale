@@ -21,7 +21,7 @@ The baseline is the version selected by that installed package, not a universal 
 
 ## What each command observes
 
-- `version` reads package integrity, runs the installed CLI's `version` and the installed daemon binary's `--version`. Each binary probe has a five-second deadline and a 4 KiB output limit. The command never queries a daemon. The running backend is explicitly `not_queried`.
+- `version` checks package integrity and runs `version` on the installed CLI alongside `--version` on the installed daemon binary, with a five-second deadline and 4 KiB output limit per probe. It never queries a running daemon, leaving the running backend explicitly `not_queried`.
 - `doctor` performs those local binary probes and reuses its existing bounded local socket `status --json` query. Only that reply's `Version` supplies the running backend version. The CLI binary version never substitutes for a missing or inaccessible backend.
 - Reading a declaration does not execute `setup.sh`. A missing, unreadable, symlinked, ambiguous or unsupported declaration remains unknown. Binary leaf symlinks and non-regular binary files are not executed by the version probes.
 - The commands can only report what the current process can see. A different mount or process namespace, unreadable installation, missing socket or denied socket access can prevent the running-backend observation. An independent Dots cloud-computer terminal may have different visibility.

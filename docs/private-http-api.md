@@ -16,7 +16,7 @@ The optional SOCKS5 alternative is `socks5h://127.0.0.1:1080`; the `h` delegates
 Prepare these independently:
 
 - A Dots Tailscale node authenticated to the intended tailnet, with the complete helper set from v0.3.0 or newer installed.
-- A private API device reachable in that tailnet, with an HTTPS listener bound to its intended private/Tailscale interface and port. A listener bound only to the API device's `127.0.0.1` is not reachable from Dots. Avoid exposing it on a public interface as a shortcut.
+- A private API device reachable in that tailnet, with an HTTPS listener bound to its intended private or Tailscale interface and port. A listener bound only to the API device's `127.0.0.1` is not reachable from Dots. Avoid exposing it on a public interface as a shortcut.
 - A destination name that resolves through the chosen proxy and matches the API certificate. Use a trusted public CA or explicitly provide your private CA file to the client; an IP address also needs a matching certificate identity.
 - Tailnet permission for only the required source, destination, and TCP port, plus server-side bearer authentication and API authorization. Tailscale connectivity does not replace API authentication.
 - An authenticated, read-only `/health` endpoint that returns only a small response without sensitive information, for example `{"status":"ok"}`. Replace the sample endpoint with your server's equivalent, not a data-export or mutation endpoint.

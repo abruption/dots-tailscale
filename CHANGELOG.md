@@ -3,7 +3,7 @@
 ## v0.10.0
 
 - Allow explicit SSH port selection for new installations with `DOTS_TS_SSH_PORT`, retaining default/legacy port 22 and loopback-only public-key OpenSSH (#63, #91).
-- Persist one validated setting shared by install/start/doctor/source updates/runtime updates; reject reserved/conflicting ports, incompatible candidates and configuration drift before replacement.
+- Persist one validated setting shared across install, start, doctor, and source or runtime updates; reject reserved or conflicting ports, incompatible candidates, and configuration drift before replacement.
 - Compatibility: reject unsupported custom sshd directives, unsafe file modes/hardlinks and ambiguous paths even on legacy port 22. A first upgrade with v0.9.1 or older tools requires the independently verified read-only precheck. Existing port migration is unsupported.
 - Keep English, Korean, Japanese and Simplified Chinese installation examples and port-selection guidance aligned.
 

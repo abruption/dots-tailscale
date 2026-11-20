@@ -40,13 +40,13 @@ requests do not mutate proof. A long gap resets the streak. Once confirmed,
 the real recovered boundary is retained across later failures and restarts.
 A newer claim cannot reuse another incident's evidence.
 
-Evidence slots are created atomically with claims issued by the new code. Legacy
-claims, including claims issued while older code was running, cannot gain the
-shorter interval merely by receiving new healthy samples. The first explicit
-report is recorded separately in `recovery_reports`; an explicit unknown report
-cannot become short-path success through a later result correction. The existing
-result-reporting interface may still update an unknown displayed outcome, but
-that does not change the first-report evidence.
+Evidence slots are created atomically alongside claims issued by the new code.
+Legacy claims, including those issued while older code was running, cannot gain
+the shorter interval merely by receiving new healthy samples. Because the first
+explicit report is recorded separately in `recovery_reports`, an explicit
+unknown report cannot qualify for the shorter interval through a later result
+correction. The existing result-reporting interface may still update a displayed
+unknown outcome, but it never alters the first-report evidence.
 
 If the prior outcome is unknown, failed or blocked, or evidence is insufficient,
 the full global interval applies. The daily limit always applies, and its later
