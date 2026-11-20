@@ -123,7 +123,7 @@ v0.7.0 软件包声明相同的 Tailscale 基线，可通过普通[软件包更�
 ## 已验证的范围
 
 - [v0.10.0 标签所指提交的 CI](https://github.com/abruption/dots-tailscale/actions/runs/43715115507)在 Linux Python 3.11 和 3.13 上分别通过了 601 项测试。[2026-11-15 验证记录（英文）](docs/validation/ssh-port-new-install-20261115.md)涵盖隔离环境中的 22、2222 端口安装、启动、doctor、更新、失败处理及身份保留检查。这些是测试环境结果，不是真实 tailnet 试验，也不能证明所选端口可从外部访问。
-- 一次 [Dots 实环境测试](docs/validation/runtime-update-trial-20261026.md)使用经过审核的开发版软件包，将 Tailscale 从 1.102.4 更新至 1.104.2。节点与 SSH 身份保持不变，随后通过了新的外部 SSH 连接和中继 ping 检查。
+- [Dots 实环境测试](docs/validation/runtime-update-trial-20261026.md)使用经过审核的开发版软件包，将 Tailscale 从 1.102.4 更新至 1.104.2，期间保持节点与 SSH 身份不变，并在更新后通过了新的外部 SSH 连接和中继 ping 检查。
 - [v0.6.0 发布页](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)记录了最终提交的核心与研究测试，以及隔离环境中的官方二进制文件检查。这些结果不能证明所有未来版本都兼容，也不能证明实环境故障恢复或状态数据降级一定安全。
 - [v0.7.0 发布页](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)增加了隔离的新安装与源码迁移测试。随后的 [2026-10-28 实环境源码迁移测试](docs/validation/v0.7.0-migration-trial-20261028.md)将一个现有安装的软件包从 0.6.0 迁移至 0.7.0，保留了已安装的 Tailscale 1.104.4 运行环境以及节点与 SSH 身份；迁移后，采用严格主机密钥验证的新 SSH 连接和中继 ping 均成功。这不代表已验证全新安装、其他账户、实环境故障注入、中断事务修复、VM 更换、运行时状态降级或所有未来版本。[发布前的基线与 TLS 检查](docs/validation/security-baseline-20261028.md)仍是独立的历史记录。
 - `/workspace` 能够保留是使用条件，并非平台保证。运行时的套接字、PID 和日志会在 `/tmp` 中重新创建。进入新环境后，仍需要某种方式来执行启动命令。

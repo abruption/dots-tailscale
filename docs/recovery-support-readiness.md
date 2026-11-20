@@ -1,11 +1,11 @@
 # Recovery preview: audience, setup and release gates
 
-This is the v0.8.0 development plan for issue #45, not a claim of generally
-available automatic recovery. The first candidate route is the **advanced,
-self-hosted MCP Events route**. It is for an operator who can maintain HTTPS,
-browser SSO/OAuth, an external observer and an independent Dots cloud terminal.
-The existing code and recorded trial make this route testable without assuming
-every user has the maintainer's servers or browser automation tools.
+This is the v0.8.0 development plan for issue #45, not a claim that automatic
+recovery is generally available. The first candidate is the **advanced,
+self-hosted MCP Events route**, intended for operators who can maintain HTTPS,
+browser SSO/OAuth, an external observer, and an independent Dots cloud terminal.
+While the existing code and recorded trial make this route testable, it does not
+assume users have access to the maintainer's servers or browser automation tools.
 
 A shared scheduled-task link remains a separate candidate. A share button does
 not prove that another account can import, authorize and execute the task in a

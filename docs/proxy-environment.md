@@ -2,9 +2,10 @@
 
 [한국어](proxy-environment.ko.md)
 
-v0.9.1 fixes inherited lowercase HTTP proxy variables bypassing the local shim.
-Verify published artifacts before installing. The package's Tailscale baseline
-remains 1.104.4; this fix does not change installed runtime binaries or identity.
+v0.9.1 fixes an issue where inherited lowercase HTTP proxy variables bypassed
+the local shim. Verify published artifacts before installing. The package's
+Tailscale baseline remains 1.104.4, and this fix does not change installed
+runtime binaries or identity.
 
 ## What happened
 

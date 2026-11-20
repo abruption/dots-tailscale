@@ -2,7 +2,7 @@
 
 [한국어](recovery-followups.ko.md)
 
-Issue [#79](https://github.com/abruption/dots-tailscale/issues/79) covers an acknowledged event that never leads to a Dots claim. HTTP 200 confirms callback receipt, not task evaluation, terminal access or startup. This opt-in broker feature can send a few requests to re-evaluate the **same incident**. It never grants execution or guarantees that Dots will respond.
+Issue [#79](https://github.com/abruption/dots-tailscale/issues/79) addresses acknowledged events that never result in a Dots claim. HTTP 200 confirms receipt of the callback. Confirm task evaluation, terminal access, and startup separately. This opt-in broker feature sends a bounded number of requests to re-evaluate the **same incident**, without granting execution permission or guaranteeing a Dots response.
 
 ## Policy and limits
 

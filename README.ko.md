@@ -123,7 +123,7 @@ v0.6.0 이상 도구가 설치됐다면 공식 Tailscale 안정 버전을 확인
 ## 검증한 범위
 
 - [v0.10.0 태그 커밋의 CI](https://github.com/abruption/dots-tailscale/actions/runs/43715115507)에서 Linux Python 3.11·3.13 각각 601개 테스트를 통과했습니다. [2026-11-15 검증 기록](docs/validation/ssh-port-new-install-20261115.md)은 22·2222번 포트의 설치·시작·doctor·업데이트, 실패 처리와 기기·SSH 정보 유지를 격리 환경에서 확인한 결과입니다. 실제 tailnet 시험이 아니며, 선택한 포트로 외부에서 접속할 수 있음을 입증하지도 않습니다.
-- [실제 Dots 시험](docs/validation/runtime-update-trial-20261026.md)에서 검토한 개발 패키지로 Tailscale 1.102.4를 1.104.2로 업데이트했습니다. 기존 기기 정보와 SSH 키를 유지했고, 이후 새 외부 SSH 연결과 릴레이 ping도 확인했습니다.
+- [실제 Dots 시험](docs/validation/runtime-update-trial-20261026.md)에서 검토를 거친 개발 패키지로 Tailscale 1.102.4를 1.104.2로 업데이트했습니다. 기존 기기 정보와 SSH 키를 유지했고, 이후 새 외부 SSH 연결과 릴레이 ping도 확인했습니다.
 - [v0.6.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.6.0)에는 최종 커밋의 기본·연구 테스트와 격리된 환경에서 수행한 공식 실행 파일 검증 기록이 있습니다. 앞으로 나올 모든 버전과의 호환성이나 실환경 장애 복구, 이전 버전으로 되돌릴 때의 상태 호환성을 입증한 것은 아닙니다.
 - [v0.7.0 릴리스](https://github.com/abruption/dots-tailscale/releases/tag/v0.7.0)에는 격리된 신규 설치·소스 전환 테스트가 추가됐습니다. 이후 [2026-10-28 실환경 소스 전환 시험](docs/validation/v0.7.0-migration-trial-20261028.md)에서 기존 설치 한 건의 패키지를 0.6.0에서 0.7.0으로 옮겼습니다. 이미 설치된 Tailscale 1.104.4 실행 환경과 기기·SSH 정보를 유지했고, 전환 후 엄격한 호스트 키 검증을 적용한 새 SSH 연결과 릴레이 ping이 성공했습니다. 신규 설치, 다른 계정, 실환경 장애 주입, 중단된 작업 복구, VM 교체, 실행 상태의 하위 버전 전환이나 앞으로의 모든 버전을 검증한 것은 아닙니다. [공개 전 기본 버전·TLS 점검](docs/validation/security-baseline-20261028.md)은 별도의 과거 기록입니다.
 - `/workspace`가 남아 있어야 사용할 수 있으며, 플랫폼이 이 경로의 보존을 보장한다는 뜻은 아닙니다. 실행 중 필요한 소켓·PID·로그는 `/tmp`에 다시 만듭니다. 새 실행 환경에서는 여전히 시작 명령을 실행할 방법이 필요합니다.

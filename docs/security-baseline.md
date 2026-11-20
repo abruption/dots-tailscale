@@ -74,7 +74,7 @@ At publication, the new source migration had only isolated validation. A later [
 
 ## Runtime failure and source rollback are different
 
-Before candidate daemon execution, the runtime updater can attempt a verified old-pair rollback. Once execution of the candidate daemon has been attempted, even a failed startup may have affected state compatibility; automatic downgrade is not assumed safe. Keep the independent terminal, transaction records and fence, and follow the [runtime recovery runbook](runtime-updates.md#manual-resolution-runbook). A source-package rollback does not authorize downgrading Tailscale or restoring authentication state.
+Before attempting to start the candidate daemon, the runtime updater can attempt a verified rollback to the old binary pair. Once candidate execution is attempted, even a failed startup may alter state compatibility, so an automatic downgrade is not assumed safe. Keep the independent terminal, transaction records, and fence intact, and follow the [runtime recovery runbook](runtime-updates.md#manual-resolution-runbook). Rolling back the source package does not authorize downgrading Tailscale or restoring authentication state.
 
 ## Inspect the host TLS path without changing trust
 
